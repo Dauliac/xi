@@ -142,7 +142,7 @@ fn display_cache_name(url: &str) -> String {
 #[derive(Debug, Args)]
 pub struct CommonRebuildArgs {
   /// Only print actions, without performing them
-  #[arg(long, short = 'n')]
+  #[arg(long, short = 'n', alias = "dry-run")]
   pub dry: bool,
 
   /// Ask for confirmation
@@ -299,6 +299,13 @@ pub struct NixBuildPassthroughArgs {
   pub connect_timeout: Option<u64>,
 }
 
+/// Push `--$flag` onto `$args` when `$self.$field` is `true`.
+macro_rules! bool_flags {
+  ($self:expr, $args:expr, $( $field:ident => $flag:expr ),* $(,)?) => {
+    $( if $self.$field { $args.push($flag.into()); } )*
+  };
+}
+
 impl NixBuildPassthroughArgs {
   #[must_use]
   pub fn generate_passthrough_args(&self) -> Vec<String> {
@@ -316,18 +323,12 @@ impl NixBuildPassthroughArgs {
       args.push("--log-format".into());
       args.push(format.clone());
     }
-    if self.keep_going {
-      args.push("--keep-going".into());
-    }
-    if self.keep_failed {
-      args.push("--keep-failed".into());
-    }
-    if self.fallback {
-      args.push("--fallback".into());
-    }
-    if self.repair {
-      args.push("--repair".into());
-    }
+    bool_flags!(self, args,
+      keep_going           => "--keep-going",
+      keep_failed          => "--keep-failed",
+      fallback             => "--fallback",
+      repair               => "--repair",
+    );
     if let Some(ref builders) = self.builders {
       args.push("--builders".into());
       args.push(builders.clone());
@@ -336,39 +337,19 @@ impl NixBuildPassthroughArgs {
       args.push("--include".into());
       args.push(inc.clone());
     }
-    if self.print_build_logs {
-      args.push("--print-build-logs".into());
-    }
-    if self.show_trace {
-      args.push("--show-trace".into());
-    }
-    if self.accept_flake_config {
-      args.push("--accept-flake-config".into());
-    }
-    if self.refresh {
-      args.push("--refresh".into());
-    }
-    if self.impure {
-      args.push("--impure".into());
-    }
-    if self.offline {
-      args.push("--offline".into());
-    }
-    if self.no_net {
-      args.push("--no-net".into());
-    }
-    if self.recreate_lock_file {
-      args.push("--recreate-lock-file".into());
-    }
-    if self.no_update_lock_file {
-      args.push("--no-update-lock-file".into());
-    }
-    if self.no_write_lock_file {
-      args.push("--no-write-lock-file".into());
-    }
-    if self.no_use_registries {
-      args.push("--no-use-registries".into());
-    }
+    bool_flags!(self, args,
+      print_build_logs     => "--print-build-logs",
+      show_trace           => "--show-trace",
+      accept_flake_config  => "--accept-flake-config",
+      refresh              => "--refresh",
+      impure               => "--impure",
+      offline              => "--offline",
+      no_net               => "--no-net",
+      recreate_lock_file   => "--recreate-lock-file",
+      no_update_lock_file  => "--no-update-lock-file",
+      no_write_lock_file   => "--no-write-lock-file",
+      no_use_registries    => "--no-use-registries",
+    );
     if self.no_registries {
       warn!("--no-registries is deprecated, use --no-use-registries instead");
       args.push("--no-use-registries".into());
@@ -376,9 +357,11 @@ impl NixBuildPassthroughArgs {
     if self.no_build_output {
       args.push("--quiet".into());
     }
-    if self.json {
-      args.push("--json".into());
-    }
+    bool_flags!(self, args,
+      commit_lock_file     => "--commit-lock-file",
+      use_substitutes      => "--use-substitutes",
+      json                 => "--json",
+    );
     // Inject connect-timeout before user --option pairs so explicit
     // `--option connect-timeout N` from the CLI takes precedence.
     let user_sets_timeout = self
@@ -443,6 +426,48 @@ impl NixBuildPassthroughArgs {
       self.connect_timeout = connect_timeout;
     }
   }
+}
+
+impl HasCacheArgs for CommonRebuildArgs {
+  fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
+    Some(&mut self.cache)
+  }
+}
+
+impl HasBuildArgs for CommonRebuildArgs {
+  fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
+    Some(&mut self.passthrough)
+  }
+
+  fn no_nom_mut(&mut self) -> Option<&mut bool> {
+    Some(&mut self.no_nom)
+  }
+}
+
+/// Trait for command args that contain cache push configuration.
+///
+/// Implement this on any args struct that embeds [`CacheArgs`] so that
+/// config-file defaults can be applied generically without matching on
+/// every command variant.
+pub trait HasCacheArgs {
+  /// Return a mutable reference to the embedded cache args, or `None`
+  /// if this command variant doesn't support cache push.
+  fn cache_args_mut(&mut self) -> Option<&mut CacheArgs>;
+}
+
+/// Trait for command args that accept Nix build passthrough flags.
+///
+/// Implement this on any args struct that embeds
+/// [`NixBuildPassthroughArgs`] and/or a `no_nom` toggle so that
+/// config-file build defaults can be applied generically.
+pub trait HasBuildArgs {
+  /// Return a mutable reference to the embedded passthrough args, or
+  /// `None` if this command variant doesn't support build passthroughs.
+  fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs>;
+
+  /// Return a mutable reference to the `no_nom` flag, or `None` if
+  /// this command variant doesn't have one.
+  fn no_nom_mut(&mut self) -> Option<&mut bool>;
 }
 
 #[cfg(test)]
