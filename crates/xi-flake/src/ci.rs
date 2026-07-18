@@ -36,53 +36,6 @@ enum StepStatus {
 }
 
 impl StepResult {
-  /// Finish a spinner and print the final step result line.
-  fn finish_spinner(&self, spinner: &progress::Spinner) {
-    let duration = format!("({:.1}s)", self.duration.as_secs_f64());
-
-    let mut msg = match &self.status {
-      StepStatus::Ok => {
-        format!(
-          "    {} {} {}",
-          Paint::new(self.name).bold(),
-          Paint::new("ok").fg(Color::Green).bold(),
-          Paint::new(&duration).dim(),
-        )
-      },
-      StepStatus::Warn(msg) => {
-        format!(
-          "    {} {} {}\n      {}",
-          Paint::new(self.name).bold(),
-          Paint::new("warn").fg(Color::Yellow).bold(),
-          Paint::new(&duration).dim(),
-          Paint::new(msg).fg(Color::Yellow),
-        )
-      },
-      StepStatus::Fail(msg) => {
-        format!(
-          "    {} {} {}\n      {}",
-          Paint::new(self.name).bold(),
-          Paint::new("FAIL").fg(Color::Red).bold(),
-          Paint::new(&duration).dim(),
-          Paint::new(msg).fg(Color::Red),
-        )
-      },
-      StepStatus::Skipped => {
-        format!(
-          "    {} {}",
-          Paint::new(self.name).bold(),
-          Paint::new("skipped").dim(),
-        )
-      },
-    };
-
-    if let Some(ref detail) = self.detail {
-      msg.push_str(&format!("\n      {}", Paint::new(detail).dim()));
-    }
-
-    spinner.finish_with_message(msg);
-  }
-
   const fn is_failure(&self) -> bool {
     matches!(self.status, StepStatus::Fail(_))
   }
