@@ -105,12 +105,10 @@ impl NixPassthroughArgs {
       .option
       .chunks(2)
       .any(|pair| pair[0] == "connect-timeout");
-    if !user_sets_timeout {
-      if let Some(timeout) = self.connect_timeout {
-        args.push("--option".into());
-        args.push("connect-timeout".into());
-        args.push(timeout.to_string());
-      }
+    if !user_sets_timeout && let Some(timeout) = self.connect_timeout {
+      args.push("--option".into());
+      args.push("connect-timeout".into());
+      args.push(timeout.to_string());
     }
     for pair in self.option.chunks(2) {
       args.push("--option".into());
@@ -127,7 +125,7 @@ impl NixPassthroughArgs {
   /// when the corresponding CLI flag / env var was not provided.
   ///
   /// Priority: CLI flag > env var > config file > default
-  #[allow(clippy::fn_params_excessive_bools)]
+  #[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
   pub const fn apply_build_defaults(
     &mut self,
     show_trace: bool,
@@ -539,7 +537,7 @@ pub struct TestArgs {
 ///   name = "cargo-hash"
 ///   command = "nix eval .#cargoHash --json"
 ///   output = "cargo-hash.json"
-///   sources = ["Cargo.lock"]
+///   sources = [`Cargo.lock`]
 pub struct MaterializeArgs {
   /// Flake reference (defaults to current directory)
   pub flake_ref: Option<String>,

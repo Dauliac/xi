@@ -48,7 +48,8 @@ impl MaterializeArgs {
     let targets = self.filter_targets(&config.materialize)?;
 
     if self.list {
-      return list_targets(&local_dir, &targets, &config.materialize);
+      list_targets(&local_dir, &targets, &config.materialize);
+      return Ok(());
     }
 
     if self.check {
@@ -76,16 +77,15 @@ impl MaterializeArgs {
     let mut result = Vec::new();
     for name in &self.targets {
       let found = config.targets.iter().find(|t| t.name == *name);
-      match found {
-        Some(t) => result.push(t),
-        None => {
-          let available: Vec<_> =
-            config.targets.iter().map(|t| t.name.as_str()).collect();
-          bail!(
-            "Unknown target '{name}'. Available: {}",
-            available.join(", ")
-          );
-        },
+      if let Some(t) = found {
+        result.push(t);
+      } else {
+        let available: Vec<_> =
+          config.targets.iter().map(|t| t.name.as_str()).collect();
+        bail!(
+          "Unknown target '{name}'. Available: {}",
+          available.join(", ")
+        );
       }
     }
     Ok(result)
@@ -271,9 +271,9 @@ fn git_skip_worktree(project_dir: &Path, files: &[PathBuf]) -> Result<()> {
 }
 
 /// Remove `--skip-worktree` so files show in `git status` again.
-fn git_no_skip_worktree(project_dir: &Path, files: &[PathBuf]) -> Result<()> {
+fn git_no_skip_worktree(project_dir: &Path, files: &[PathBuf]) {
   if files.is_empty() {
-    return Ok(());
+    return;
   }
 
   let mut cmd = Command::new("git");
@@ -287,7 +287,6 @@ fn git_no_skip_worktree(project_dir: &Path, files: &[PathBuf]) -> Result<()> {
   }
 
   let _ = cmd.status();
-  Ok(())
 }
 
 /// Stage materialized files with `git add`.
@@ -371,9 +370,8 @@ fn ensure_gitattributes_merge_driver(
     if !new_content.ends_with('\n') {
       new_content.push('\n');
     }
-    new_content.push_str(&format!(
-      "\n# xi materialized files — avoid merge conflicts\n{pattern}\n"
-    ));
+    use std::fmt::Write;
+    let _ = write!(new_content, "\n# xi materialized files — avoid merge conflicts\n{pattern}\n");
     std::fs::write(&gitattributes, new_content)?;
   } else {
     std::fs::write(
@@ -449,7 +447,7 @@ fn list_targets(
   project_dir: &Path,
   targets: &[&MaterializeTarget],
   config: &ProjectMaterializeConfig,
-) -> Result<()> {
+) {
   let cache_dir = project_dir.join(CACHE_DIR);
 
   println!();
@@ -489,8 +487,6 @@ fn list_targets(
     println!("  commit path: {}", Paint::new(&config.commit_path).dim());
   }
   println!();
-
-  Ok(())
 }
 
 /// Check all targets are fresh, exit 1 if any are stale.
@@ -565,7 +561,7 @@ fn run_targets(
   // If committing with git-hide, lift skip-worktree first
   if commit && config.git_hide {
     let existing = committed_materialized_files(project_dir, config);
-    git_no_skip_worktree(project_dir, &existing)?;
+    git_no_skip_worktree(project_dir, &existing);
   }
 
   let mut ran = 0;

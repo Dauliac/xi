@@ -999,12 +999,12 @@ pub(crate) fn ensure_flake_locked(flake_dir: Option<PathBuf>) -> Result<()> {
 /// When nom is disabled, stderr is filtered to suppress the noisy
 /// "incompatible systems" warning that nix emits.
 fn execute_flake_check(cmd: &NixCommand, no_nom: bool) -> Result<()> {
+  use std::io::{BufRead, BufReader, Write};
+  use std::process::Stdio;
+
   if !no_nom {
     return run_with_nom(cmd.to_exec());
   }
-
-  use std::io::{BufRead, BufReader, Write};
-  use std::process::Stdio;
 
   let mut child = cmd
     .to_std_command()
