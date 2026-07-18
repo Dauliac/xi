@@ -5,7 +5,7 @@ use anstyle::Style;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::Styles};
 use clap_verbosity_flag::InfoLevel;
 use xi_core::{
-  args::CacheArgs,
+  args::{HasBuildArgs, HasCacheArgs},
   checks::{FeatureRequirements, NoFeatures},
   command::ElevationStrategy,
 };
@@ -65,19 +65,29 @@ pub struct Main {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(disable_help_subcommand = true)]
+#[command(
+  disable_help_subcommand = true,
+  subcommand_help_heading = "Commands",
+  after_help = "\x1b[1mCommand groups:\x1b[0m
+  Config mgmt:  os, home, darwin, system
+  Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, doctor, materialize
+  Development:  develop, search
+  Maintenance:  cache, clean, nix, completions"
+)]
 pub enum NHCommand {
+  // -- Configuration Management --
   Os(xi_nixos::args::OsArgs),
   Home(xi_home::args::HomeArgs),
   Darwin(xi_darwin::args::DarwinArgs),
   System(crate::system::args::SystemArgs),
+
+  // -- Flake Operations --
   Build(xi_flake::args::BuildArgs),
   Check(xi_flake::args::CheckArgs),
   Run(xi_flake::args::RunArgs),
   Fmt(xi_flake::args::FmtArgs),
   #[command(name = "show")]
   FlakeShow(xi_flake::args::ShowArgs),
-  Develop(xi_develop::args::DevelopArgs),
   Init(xi_flake::args::InitArgs),
   Update(xi_flake::args::UpdateArgs),
   Ci(xi_flake::args::CiArgs),
@@ -85,7 +95,12 @@ pub enum NHCommand {
   Test(xi_flake::args::TestArgs),
   Doctor(xi_flake::args::DoctorArgs),
   Materialize(xi_flake::args::MaterializeArgs),
+
+  // -- Development --
+  Develop(xi_develop::args::DevelopArgs),
   Search(xi_search::args::SearchArgs),
+
+  // -- Maintenance --
   Cache(crate::cache::args::CacheProxy),
   Clean(crate::clean::args::CleanProxy),
   Nix(crate::proxy::NixProxyArgs),
@@ -143,69 +158,18 @@ impl NHCommand {
   /// Apply cache defaults from config.toml to all commands that have
   /// cache args. Config values are lowest priority (CLI > env > config).
   pub fn apply_cache_config(&mut self, cache_config: &CacheConfig) {
-    let apply = |cache: &mut CacheArgs| {
-      cache
-        .apply_config_defaults(&cache_config.targets, cache_config.async_push);
+    let cache = match self {
+      Self::Os(args) => args.cache_args_mut(),
+      Self::Home(args) => args.cache_args_mut(),
+      Self::Darwin(args) => args.cache_args_mut(),
+      Self::System(args) => args.cache_args_mut(),
+      Self::Build(args) => Some(&mut args.cache),
+      _ => None,
     };
 
-    match self {
-      Self::Os(args) => match &mut args.subcommand {
-        xi_nixos::args::OsSubcommand::Switch(a)
-        | xi_nixos::args::OsSubcommand::Boot(a)
-        | xi_nixos::args::OsSubcommand::Test(a) => {
-          apply(&mut a.rebuild.common.cache);
-        },
-        xi_nixos::args::OsSubcommand::Build(a) => {
-          apply(&mut a.common.cache);
-        },
-        xi_nixos::args::OsSubcommand::BuildVm(a) => {
-          apply(&mut a.common.common.cache);
-        },
-        xi_nixos::args::OsSubcommand::BuildImage(a) => {
-          apply(&mut a.common.common.cache);
-        },
-        xi_nixos::args::OsSubcommand::Repl(_)
-        | xi_nixos::args::OsSubcommand::Info(_)
-        | xi_nixos::args::OsSubcommand::Rollback(_) => {},
-      },
-      Self::Home(args) => match &mut args.subcommand {
-        xi_home::args::HomeSubcommand::Switch(a)
-        | xi_home::args::HomeSubcommand::Build(a) => {
-          apply(&mut a.common.cache);
-        },
-        xi_home::args::HomeSubcommand::Repl(_) => {},
-      },
-      Self::Darwin(args) => match &mut args.subcommand {
-        xi_darwin::args::DarwinSubcommand::Switch(a)
-        | xi_darwin::args::DarwinSubcommand::Build(a) => {
-          apply(&mut a.common.cache);
-        },
-        xi_darwin::args::DarwinSubcommand::Repl(_) => {},
-      },
-      Self::System(args) => match &mut args.subcommand {
-        crate::system::args::SystemSubcommand::Switch(a)
-        | crate::system::args::SystemSubcommand::Build(a) => {
-          apply(&mut a.common.cache);
-        },
-      },
-      Self::Build(args) => apply(&mut args.cache),
-      Self::Check(_)
-      | Self::Run(_)
-      | Self::Fmt(_)
-      | Self::FlakeShow(_)
-      | Self::Develop(_)
-      | Self::Init(_)
-      | Self::Update(_)
-      | Self::Ci(_)
-      | Self::Lib(_)
-      | Self::Test(_)
-      | Self::Doctor(_)
-      | Self::Materialize(_)
-      | Self::Search(_)
-      | Self::Cache(_)
-      | Self::Clean(_)
-      | Self::Nix(_)
-      | Self::Completions(_) => {},
+    if let Some(cache) = cache {
+      cache
+        .apply_config_defaults(&cache_config.targets, cache_config.async_push);
     }
   }
 
@@ -220,20 +184,6 @@ impl NHCommand {
     let offline = build_config.offline;
     let max_jobs = build_config.max_jobs;
     let connect_timeout = build_config.connect_timeout;
-
-    // Helper: apply passthrough defaults to NixBuildPassthroughArgs (xi-core)
-    let apply_core =
-      |passthrough: &mut xi_core::args::NixBuildPassthroughArgs| {
-        passthrough.apply_build_defaults(
-          show_trace,
-          keep_going,
-          impure,
-          accept_flake_config,
-          offline,
-          max_jobs,
-          connect_timeout,
-        );
-      };
 
     // Helper: apply passthrough defaults to NixPassthroughArgs (xi-flake)
     let apply_flake = |passthrough: &mut xi_flake::args::NixPassthroughArgs| {
@@ -266,53 +216,46 @@ impl NHCommand {
       }
     };
 
+    // Config-management commands: use HasBuildArgs trait for passthrough
+    {
+      let passthrough = match self {
+        Self::Os(args) => args.build_passthrough_mut(),
+        Self::Home(args) => args.build_passthrough_mut(),
+        Self::Darwin(args) => args.build_passthrough_mut(),
+        Self::System(args) => args.build_passthrough_mut(),
+        Self::Develop(args) => Some(&mut args.passthrough),
+        _ => None,
+      };
+      if let Some(pt) = passthrough {
+        pt.apply_build_defaults(
+          show_trace,
+          keep_going,
+          impure,
+          accept_flake_config,
+          offline,
+          max_jobs,
+          connect_timeout,
+        );
+      }
+    }
+
+    // Config-management commands: use HasBuildArgs trait for no_nom
+    {
+      let no_nom_field = match self {
+        Self::Os(args) => args.no_nom_mut(),
+        Self::Home(args) => args.no_nom_mut(),
+        Self::Darwin(args) => args.no_nom_mut(),
+        Self::System(args) => args.no_nom_mut(),
+        Self::Develop(args) => Some(&mut args.no_nom),
+        _ => None,
+      };
+      if let Some(field) = no_nom_field {
+        apply_nom(field);
+      }
+    }
+
+    // Flake commands: use xi-flake's NixPassthroughArgs directly
     match self {
-      Self::Os(args) => match &mut args.subcommand {
-        xi_nixos::args::OsSubcommand::Switch(a)
-        | xi_nixos::args::OsSubcommand::Boot(a)
-        | xi_nixos::args::OsSubcommand::Test(a) => {
-          apply_nom(&mut a.rebuild.common.no_nom);
-          apply_core(&mut a.rebuild.common.passthrough);
-        },
-        xi_nixos::args::OsSubcommand::Build(a) => {
-          apply_nom(&mut a.common.no_nom);
-          apply_core(&mut a.common.passthrough);
-        },
-        xi_nixos::args::OsSubcommand::BuildVm(a) => {
-          apply_nom(&mut a.common.common.no_nom);
-          apply_core(&mut a.common.common.passthrough);
-        },
-        xi_nixos::args::OsSubcommand::BuildImage(a) => {
-          apply_nom(&mut a.common.common.no_nom);
-          apply_core(&mut a.common.common.passthrough);
-        },
-        xi_nixos::args::OsSubcommand::Repl(_)
-        | xi_nixos::args::OsSubcommand::Info(_)
-        | xi_nixos::args::OsSubcommand::Rollback(_) => {},
-      },
-      Self::Home(args) => match &mut args.subcommand {
-        xi_home::args::HomeSubcommand::Switch(a)
-        | xi_home::args::HomeSubcommand::Build(a) => {
-          apply_nom(&mut a.common.no_nom);
-          apply_core(&mut a.common.passthrough);
-        },
-        xi_home::args::HomeSubcommand::Repl(_) => {},
-      },
-      Self::Darwin(args) => match &mut args.subcommand {
-        xi_darwin::args::DarwinSubcommand::Switch(a)
-        | xi_darwin::args::DarwinSubcommand::Build(a) => {
-          apply_nom(&mut a.common.no_nom);
-          apply_core(&mut a.common.passthrough);
-        },
-        xi_darwin::args::DarwinSubcommand::Repl(_) => {},
-      },
-      Self::System(args) => match &mut args.subcommand {
-        crate::system::args::SystemSubcommand::Switch(a)
-        | crate::system::args::SystemSubcommand::Build(a) => {
-          apply_nom(&mut a.common.no_nom);
-          apply_core(&mut a.common.passthrough);
-        },
-      },
       Self::Build(args) => {
         apply_nom(&mut args.no_nom);
         apply_ci_backend(&mut args.backend);
@@ -339,21 +282,7 @@ impl NHCommand {
         apply_nom(&mut args.no_nom);
         apply_flake(&mut args.passthrough);
       },
-      Self::Develop(args) => {
-        apply_nom(&mut args.no_nom);
-        apply_core(&mut args.passthrough);
-      },
-      Self::FlakeShow(_)
-      | Self::Init(_)
-      | Self::Update(_)
-      | Self::Lib(_)
-      | Self::Doctor(_)
-      | Self::Materialize(_)
-      | Self::Search(_)
-      | Self::Cache(_)
-      | Self::Clean(_)
-      | Self::Nix(_)
-      | Self::Completions(_) => {},
+      _ => {},
     }
   }
 
@@ -401,55 +330,23 @@ impl NHCommand {
 impl CompletionsArgs {
   pub fn run(&self) {
     let mut cmd = Main::command();
-    match self.shell {
-      CompletionShell::Bash => {
-        clap_complete::generate(
-          clap_complete::Shell::Bash,
-          &mut cmd,
-          "xi",
-          &mut io::stdout(),
-        );
-      },
-      CompletionShell::Elvish => {
-        clap_complete::generate(
-          clap_complete::Shell::Elvish,
-          &mut cmd,
-          "xi",
-          &mut io::stdout(),
-        );
-      },
-      CompletionShell::Fish => {
-        clap_complete::generate(
-          clap_complete::Shell::Fish,
-          &mut cmd,
-          "xi",
-          &mut io::stdout(),
-        );
-      },
-      CompletionShell::PowerShell => {
-        clap_complete::generate(
-          clap_complete::Shell::PowerShell,
-          &mut cmd,
-          "xi",
-          &mut io::stdout(),
-        );
-      },
-      CompletionShell::Zsh => {
-        clap_complete::generate(
-          clap_complete::Shell::Zsh,
-          &mut cmd,
-          "xi",
-          &mut io::stdout(),
-        );
-      },
-      CompletionShell::Nushell => {
-        clap_complete::generate(
-          clap_complete_nushell::Nushell,
-          &mut cmd,
-          "xi",
-          &mut io::stdout(),
-        );
-      },
+    if let CompletionShell::Nushell = self.shell {
+      clap_complete::generate(
+        clap_complete_nushell::Nushell,
+        &mut cmd,
+        "xi",
+        &mut io::stdout(),
+      );
+    } else {
+      let shell = match self.shell {
+        CompletionShell::Bash => clap_complete::Shell::Bash,
+        CompletionShell::Elvish => clap_complete::Shell::Elvish,
+        CompletionShell::Fish => clap_complete::Shell::Fish,
+        CompletionShell::PowerShell => clap_complete::Shell::PowerShell,
+        CompletionShell::Zsh => clap_complete::Shell::Zsh,
+        CompletionShell::Nushell => return, // Already handled above
+      };
+      clap_complete::generate(shell, &mut cmd, "xi", &mut io::stdout());
     }
   }
 }
