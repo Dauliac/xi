@@ -2,7 +2,10 @@ use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use xi_core::installable::CommandContext;
 use xi_core::{
-  args::CommonRebuildArgs,
+  args::{
+    CacheArgs, CommonRebuildArgs, HasBuildArgs, HasCacheArgs,
+    NixBuildPassthroughArgs,
+  },
   checks::{FeatureRequirements, FlakeFeatures},
   complete,
   update::UpdateArgs,
@@ -68,5 +71,33 @@ impl SystemRebuildArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.common.installable.uses_flakes(CommandContext::System)
+  }
+}
+
+impl HasCacheArgs for SystemArgs {
+  fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
+    match &mut self.subcommand {
+      SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
+        Some(&mut a.common.cache)
+      },
+    }
+  }
+}
+
+impl HasBuildArgs for SystemArgs {
+  fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
+    match &mut self.subcommand {
+      SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
+        Some(&mut a.common.passthrough)
+      },
+    }
+  }
+
+  fn no_nom_mut(&mut self) -> Option<&mut bool> {
+    match &mut self.subcommand {
+      SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
+        Some(&mut a.common.no_nom)
+      },
+    }
   }
 }

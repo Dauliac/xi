@@ -7,7 +7,8 @@ use color_eyre::{
   Result,
   eyre::{Context, bail},
 };
-use xi_core::installable::{CommandContext, Installable};
+use tracing::{debug, warn};
+use xi_core::installable::{CommandContext, resolve_toplevel};
 use xi_core::{
   args::DiffType,
   command::{Command, ElevationStrategy, find_real_nix_binary},
@@ -15,7 +16,6 @@ use xi_core::{
   util::get_hostname,
 };
 use xi_diff::print_dix_diff;
-use tracing::{debug, info, warn};
 
 /// Profile path used by system-manager for nix-env generations
 const SYSTEM_PROFILE: &str =
@@ -87,7 +87,8 @@ impl SystemRebuildArgs {
       )?;
     }
 
-    let toplevel = toplevel_for(hostname, installable)?;
+    let toplevel =
+      resolve_toplevel(&hostname, installable, "systemConfigs", &[])?;
 
     xi_core::command::Build::new(toplevel)
       .extra_arg("--out-link")
@@ -163,59 +164,4 @@ impl SystemRebuildArgs {
 
     Ok(())
   }
-}
-
-/// Resolve a system-manager installable to the correct flake attribute.
-///
-/// system-manager outputs are at `systemConfigs.<hostname>`. Unlike NixOS
-/// or nix-darwin, the flake output IS the final derivation — there is no
-/// `.config.system.build.toplevel` nesting.
-///
-/// # Errors
-///
-/// Returns an error if the installable is a store path.
-pub fn toplevel_for<S: AsRef<str>>(
-  hostname: S,
-  installable: Installable,
-) -> Result<Installable> {
-  let mut res = installable;
-  let hostname_str = hostname.as_ref();
-
-  match res {
-    Installable::Flake {
-      ref mut attribute, ..
-    } => {
-      if attribute.is_empty() {
-        attribute.push(String::from("systemConfigs"));
-        attribute.push(hostname_str.to_owned());
-      } else if attribute.len() == 1 && attribute[0] == "systemConfigs" {
-        info!("Inferring hostname '{hostname_str}' for systemConfigs");
-        attribute.push(hostname_str.to_owned());
-      } else if attribute[0] == "systemConfigs" {
-        if attribute.len() == 2 {
-          // systemConfigs.hostname - fine
-        } else if attribute.len() > 2 {
-          bail!(
-            "Attribute path is too specific: {}. Please either:\n  \
-             1. Use the flake reference without attributes (e.g., \
-             '.')\n  2. Specify only the configuration name (e.g., \
-             '.#{}')",
-            attribute.join("."),
-            attribute[1]
-          );
-        }
-      } else {
-        // User provided ".#myhost" - prepend systemConfigs
-        attribute.insert(0, String::from("systemConfigs"));
-      }
-    },
-    Installable::File { .. } | Installable::Expression { .. } => {
-      // For file/expression mode, keep attributes as-is
-    },
-    Installable::Store { .. } => {
-      bail!("Store paths are not supported for system-manager.");
-    },
-  }
-
-  Ok(res)
 }
