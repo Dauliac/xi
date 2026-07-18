@@ -16,7 +16,6 @@ clap_complete.workspace = true
 color-eyre.workspace    = true
 glob.workspace          = true
 indicatif.workspace     = true
-xi-core.workspace       = true
 nix-command.workspace   = true
 serde.workspace         = true
 serde_json.workspace    = true
@@ -26,6 +25,7 @@ toml_edit.workspace     = true
 tracing.workspace       = true
 walkdir.workspace       = true
 which.workspace         = true
+xi-core.workspace       = true
 yansi.workspace         = true
 
 [dev-dependencies]

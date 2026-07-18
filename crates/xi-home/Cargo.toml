@@ -14,12 +14,12 @@ path = "src/home.rs"
 clap.workspace          = true
 clap_complete.workspace = true
 color-eyre.workspace    = true
-inquire.workspace    = true
-xi-core.workspace    = true
-xi-diff.workspace    = true
-xi-remote.workspace  = true
-tempfile.workspace   = true
-tracing.workspace    = true
+inquire.workspace       = true
+tempfile.workspace      = true
+tracing.workspace       = true
+xi-core.workspace       = true
+xi-diff.workspace       = true
+xi-remote.workspace     = true
 
 [lints]
 workspace = true

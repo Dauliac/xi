@@ -9,7 +9,8 @@ rust-version = "1.95.0"
 version      = "4.4.0"
 
 [workspace.dependencies]
-xi = { path = "crates/xi", version = "4.4.0" }
+nix-command = { path = "crates/nix-command", version = "0.2.3" }
+xi          = { path = "crates/xi", version = "4.4.0" }
 xi-core     = { path = "crates/xi-core", version = "4.4.0" }
 xi-darwin   = { path = "crates/xi-darwin", version = "4.4.0" }
 xi-develop  = { path = "crates/xi-develop", version = "4.4.0" }
@@ -19,7 +20,6 @@ xi-home     = { path = "crates/xi-home", version = "4.4.0" }
 xi-nixos    = { path = "crates/xi-nixos", version = "4.4.0" }
 xi-remote   = { path = "crates/xi-remote", version = "4.4.0" }
 xi-search   = { path = "crates/xi-search", version = "4.4.0" }
-nix-command = { path = "crates/nix-command", version = "0.2.3" }
 
 anstyle = "1.0.13"
 chrono = "0.4.42"

@@ -10,9 +10,9 @@ rust-version.workspace = true
 [dependencies]
 color-eyre.workspace = true
 dix.workspace        = true
+tracing.workspace    = true
 xi-core.workspace    = true
 xi-remote.workspace  = true
-tracing.workspace    = true
 yansi.workspace      = true
 
 [lints]
