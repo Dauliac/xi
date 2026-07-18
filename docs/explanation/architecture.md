@@ -2,167 +2,93 @@
 
 ## Philosophy
 
-Xi is a unified CLI that reimplements Nix ecosystem tools from scratch in
-Rust. It does not wrap `nixos-rebuild` or `home-manager` — it calls `nix`
-directly and handles evaluation, building, diffing, and activation itself.
+Xi is a unified CLI that reimplements Nix ecosystem tools from scratch in Rust.
+It does not wrap `nixos-rebuild` or `home-manager` — it calls `nix` directly and
+handles evaluation, building, diffing, and activation itself.
 
 The design serves three goals:
 
 1. **Cohesion** — one tool for NixOS, Home Manager, Darwin, search, clean,
    develop, and CI.
-2. **Safety** — no panics, strict error handling, configuration validation,
-   privilege elevation done correctly.
+2. **Safety** — strict error handling, configuration validation, privilege
+   elevation done correctly.
 3. **Polish** — pretty output (nom), fast diffs (dix), shell integration that
    feels invisible.
 
-## Crate structure
+## How xi runs commands
 
-Xi is a Cargo workspace with each concern isolated into its own crate:
+Xi does not shell out to `nixos-rebuild` or `home-manager`. It builds `nix`
+commands directly and handles:
 
-```
-crates/
-├── xi/              Main binary: CLI parsing, logging, config, subcommand dispatch
-├── xi-core/         Shared foundation: command execution, installable resolution,
-│                    checks, cache, completions, styling, progress
-├── xi-nixos/        NixOS: switch, boot, test, build, rollback, generations, build-vm
-├── xi-home/         Home Manager: switch, build
-├── xi-darwin/       nix-darwin: switch, build
-├── xi-flake/        Flake operations: build, check, run, fmt, show, ci, test,
-│                    doctor, materialize, project config
-├── xi-develop/      Devshell daemon: enter, trust, watcher, protocol, shell
-│                    registry, notifications, env files, prompt hooks
-├── xi-search/       Search: packages, options, offline (SPAM), PRs, issues,
-│                    GitHub API, rendering
-├── xi-diff/         Package diffing via dix
-├── xi-remote/       Remote build/deploy: SSH, closure copy, remote diff
-└── nix-command/     Typed Nix CLI wrapper with schema-driven flag generation
-```
-
-### Dependency flow
-
-```
-xi (binary)
-├── xi-core
-├── xi-nixos   → xi-core, xi-diff, xi-remote
-├── xi-home    → xi-core, xi-diff, xi-remote
-├── xi-darwin  → xi-core, xi-diff, xi-remote
-├── xi-flake   → xi-core
-├── xi-develop → xi-core
-├── xi-search  → xi-core
-├── xi-diff    → xi-core
-├── xi-remote  → xi-core
-└── nix-command (standalone, published to crates.io)
-```
-
-`xi-core` is the only shared dependency. Crates never depend on siblings
-except through `xi-core`.
-
-## Key architectural patterns
-
-### Command builder
-
-All subprocess execution goes through `xi-core`'s `Command` type:
-
-```rust
-Command::new("nix")
-    .arg("build")
-    .passthrough(&build_args)
-    .elevate(strategy)
-    .nom(use_nom)
-    .dry(is_dry)
-    .run()?;
-```
-
-This builder handles:
-- Argument construction with proper quoting
 - Privilege elevation (auto-detecting sudo/doas/run0/pkexec)
-- Nom integration (piping through nix-output-monitor)
+- Piping through nix-output-monitor for pretty output
 - Dry-run mode
-- Streaming output to terminal
-- Password caching for remote SSH
+- Streaming output to the terminal
+- Password caching for remote SSH operations
 
-### Installable resolution
+## Installable resolution
 
-Xi supports four installable modes, resolved in order:
+When you pass a target to xi, it resolves in this order:
 
-1. **Store path** — `/nix/store/...` used directly
-2. **File mode** — `--file <path>` with optional attribute path
-3. **Expression mode** — `--expr '<expr>'` with optional attribute path
-4. **Flake reference** — `path#attribute` with environment variable fallback
+1. `/nix/store/...` — store path, used directly
+2. `--file <path>` — classical Nix file evaluation
+3. `--expr '<expr>'` — inline Nix expression
+4. Everything else — flake reference (`path#attribute`)
 
-The resolution chain for flake references checks context-specific variables
-first (`XI_OS_FLAKE`, `XI_HOME_FLAKE`, etc.) before falling back to
-`XI_FLAKE`.
+For flake references, context-specific environment variables take priority:
 
-### Configuration cascade
+```
+XI_OS_FLAKE > XI_HOME_FLAKE > XI_DARWIN_FLAKE > XI_SYSTEM_FLAKE > XI_FLAKE
+```
 
-Every tuneable setting follows the same three-level priority:
+Local flake references must point at a directory containing `flake.nix`.
+
+## Configuration cascade
+
+Every setting follows the same priority, always:
 
 ```
 CLI flag  >  Environment variable  >  config.toml  >  Built-in default
 ```
 
-This applies to `--show-trace`/`XI_SHOW_TRACE`/`build.show_trace`, to
-`--no-nom`/`XI_NO_NOM`/`build.nom`, and to every other option.
+This applies uniformly to `--show-trace`, `--no-nom`, `--keep-going`, and every
+other option.
 
-### Feature requirements
+## Two configuration layers
 
-Before running a command, xi validates that the Nix installation has the
-required experimental features:
+| File          | Scope           | Controls                                                       |
+| ------------- | --------------- | -------------------------------------------------------------- |
+| `config.toml` | User / machine  | Build defaults, cache targets, daemon, formatters              |
+| `.xi.toml`    | Project / flake | CI pipeline, doctor thresholds, test backends, materialization |
 
-- Flake commands need `nix-command` and `flakes`
-- Lix below 2.93.0 also needs `repl-flake`
+`config.toml` follows the user (via `$XI_CONFIG` or `$XDG_CONFIG_HOME`).
+`.xi.toml` lives at the flake root and is committed to version control. Both are
+optional.
 
-This check is skippable via `XI_NO_CHECKS=1`.
+## Privilege elevation
 
-### Error handling
+Xi never assumes `sudo` is available. The auto-detection order is:
 
-Xi uses `color_eyre::Result` throughout. Panics (`panic!`, `unwrap()`,
-`expect()`) are banned via workspace-level Clippy lints. Errors include
-context chains, location info, and a link to the issue tracker.
+1. `XI_ELEVATION_STRATEGY` environment variable (if set)
+2. `doas` > `sudo` > `run0` > `pkexec` (first found)
 
-### Styling system
-
-Icons and colours are standardised across all output:
-
-| Icon | Colour | Meaning |
-|------|--------|---------|
-| `✓` | Green | Success |
-| `✗` | Red | Error |
-| `⟳` | Blue | Loading |
-| `▲` | Yellow | Warning |
-| `●` | White | Info |
-| `+` | Green | Added (diff) |
-| `-` | Red | Removed (diff) |
-| `~` | Yellow | Changed (diff) |
+The `none` strategy skips elevation. The `passwordless` strategy uses `-n`
+flags. Password caching works per-host for remote operations.
 
 ## Module system
 
-The Nix modules (NixOS, Home Manager, flake-parts) share types and library
-functions from `modules/shared/`:
+The NixOS, Home Manager, and flake-parts modules share a common wrapper system
+that:
 
-```
-modules/
-├── shared/
-│   ├── types/    Type definitions: wrapper, settings, tool, devshell, shellHook
-│   └── lib/      Functions: mkWrappedPackage, mkConfigFile, mkComposedShellHook
-├── flake-parts/  xi.* options
-├── nixos/        programs.xi.* options
-└── home-manager/ programs.xi.* options
-```
+1. Generates `config.toml` from your `settings` options
+2. Injects enabled tool packages (nom, formatters, test frameworks) into PATH
+3. Wraps the xi binary so configuration is baked in
+4. Preserves completions and man pages
 
-The wrapper system:
-1. Generates `config.toml` from settings
-2. Creates a bash script exporting `XI_CONFIG`
-3. Collects tool packages into PATH
-4. Combines via `symlinkJoin` preserving completions and man pages
+## Platform support
 
-## Testing
+First-class targets:
 
-- **Unit tests** in each crate with `#[cfg(test)]`
-- **BDD feature specs** in `tests/features/` (20 Gherkin files as source of
-  truth for develop daemon behaviour)
-- **BDD step implementations** in `crates/xi-develop/tests/` (12 test files)
-- **Module integration tests** in `tests/flake-module/`
-- **CI checks**: `cargo clippy --deny warnings`, `cargo doc -D warnings`,
-  `cargo nextest run`
+- `x86_64-linux`
+- `aarch64-linux`
+- `aarch64-darwin`

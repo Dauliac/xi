@@ -97,8 +97,8 @@ xi search --platforms hello
 
 ## GitHub authentication
 
-`xi search prs` and `xi search issues` use GitHub's API. Authentication
-sources (in priority order):
+`xi search prs` and `xi search issues` use GitHub's API. Authentication sources
+(in priority order):
 
 1. `GH_TOKEN` environment variable
 2. `XI_GITHUB_TOKEN_FILE` pointing to a file containing the token

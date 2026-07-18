@@ -92,5 +92,4 @@ xi os switch --no-push
 ## Queue storage
 
 The queue is persisted at `$XDG_STATE_HOME/xi/cache/queue.json`. Entries are
-deduplicated by (store path, target name) and expire after
-`queue_expiry_days`.
+deduplicated by (store path, target name) and expire after `queue_expiry_days`.

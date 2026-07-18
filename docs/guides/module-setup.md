@@ -1,7 +1,7 @@
 # How to Set Up Xi Modules
 
-Xi provides NixOS, Home Manager, and flake-parts modules that handle
-wrapping, configuration generation, shell hooks, and tool injection.
+Xi provides NixOS, Home Manager, and flake-parts modules that handle wrapping,
+configuration generation, shell hooks, and tool injection.
 
 ## NixOS module
 
@@ -82,8 +82,8 @@ gaining nom output and enhanced UX. All other nix binaries (`nix-build`,
 }
 ```
 
-Enabled tools are injected into PATH and their backends are auto-configured
-in `config.toml`.
+Enabled tools are injected into PATH and their backends are auto-configured in
+`config.toml`.
 
 ### Custom settings
 
@@ -176,8 +176,8 @@ Home Manager hooks integrate per-shell: `programs.bash.initExtra`,
 
 ### Use the shell hook script
 
-The `shellHookScript` option gives you the composed hook as a string for
-manual inclusion in devShells:
+The `shellHookScript` option gives you the composed hook as a string for manual
+inclusion in devShells:
 
 ```nix
 devShells.default = pkgs.mkShellNoCC {
@@ -187,8 +187,8 @@ devShells.default = pkgs.mkShellNoCC {
 
 ## How the wrapper works
 
-When `wrapper.enable` is true (the default when any configuration exists),
-the module:
+When `wrapper.enable` is true (the default when any configuration exists), the
+module:
 
 1. Generates `config.toml` from `settings`
 2. Creates a bash wrapper that exports `XI_CONFIG=/nix/store/...`

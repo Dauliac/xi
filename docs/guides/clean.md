@@ -1,7 +1,7 @@
 # How to Clean the Nix Store
 
-Xi reimplements `nix-collect-garbage` with finer control over what is kept
-and additional context before cleanup.
+Xi reimplements `nix-collect-garbage` with finer control over what is kept and
+additional context before cleanup.
 
 ## Clean all profiles
 
@@ -9,8 +9,8 @@ and additional context before cleanup.
 xi clean all
 ```
 
-This removes old generations from all profiles (system, user, and Home
-Manager), cleans orphaned GC roots, and runs `nix store gc`.
+This removes old generations from all profiles (system, user, and Home Manager),
+cleans orphaned GC roots, and runs `nix store gc`.
 
 ## Clean the current user only
 
@@ -44,8 +44,8 @@ Combine both:
 xi clean all --keep 3 --keep-since 7d
 ```
 
-Duration format follows [humantime](https://docs.rs/humantime/) syntax:
-`30s`, `5m`, `2h`, `7d`, `4w`.
+Duration format follows [humantime](https://docs.rs/humantime/) syntax: `30s`,
+`5m`, `2h`, `7d`, `4w`.
 
 ## Dry run
 

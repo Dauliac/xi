@@ -1,8 +1,8 @@
 # Getting Started with Xi
 
-This tutorial takes you from zero to your first NixOS system switch with xi.
-By the end you will have xi installed, understand the basic command structure,
-and have switched your running NixOS system using xi instead of `nixos-rebuild`.
+This tutorial takes you from zero to your first NixOS system switch with xi. By
+the end you will have xi installed, understand the basic command structure, and
+have switched your running NixOS system using xi instead of `nixos-rebuild`.
 
 ## Prerequisites
 
@@ -35,8 +35,8 @@ structure:
 xi --help
 ```
 
-Notice the main subcommands: `os`, `home`, `darwin`, `search`, `clean`. Each
-has its own `--help` page.
+Notice the main subcommands: `os`, `home`, `darwin`, `search`, `clean`. Each has
+its own `--help` page.
 
 ## Set your flake path
 
@@ -95,14 +95,13 @@ Remove old system generations and reclaim disk space:
 xi clean all --keep 3 --keep-since 7d
 ```
 
-This keeps the 3 most recent generations and anything less than 7 days old,
-then runs garbage collection.
+This keeps the 3 most recent generations and anything less than 7 days old, then
+runs garbage collection.
 
 ## Next steps
 
 - Read the [NixOS guide](../guides/nixos.md) for advanced switch/boot/test
   workflows
-- Set up xi permanently with the [Module Setup](../guides/module-setup.md)
-  guide
+- Set up xi permanently with the [Module Setup](../guides/module-setup.md) guide
 - Explore [xi develop](./develop-workflow.md) for daemon-driven devshells
 - See the full [CLI Reference](../reference/cli.md) for every flag

@@ -1,7 +1,7 @@
 # How to Build and Deploy Remotely
 
-Xi supports SSH-based remote builds and deployments. Derivations are copied
-to the remote host, built there, and results transferred back.
+Xi supports SSH-based remote builds and deployments. Derivations are copied to
+the remote host, built there, and results transferred back.
 
 ## Build on a remote host
 
@@ -71,8 +71,8 @@ XI_SSHOPTS="-p 2222" xi os switch --target-host user@host
 
 ## Elevation on the remote host
 
-By default, xi elevates with `sudo` on the remote. If the remote user is
-already root, no elevation is attempted.
+By default, xi elevates with `sudo` on the remote. If the remote user is already
+root, no elevation is attempted.
 
 For passwordless sudo:
 

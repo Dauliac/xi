@@ -62,13 +62,13 @@ Xi auto-detects available test backends and runs them all.
 
 ### Test backends
 
-| Backend | What it runs |
-|---------|-------------|
-| `runTests` | Eval-time tests via `lib.runTests` (assertion failures) |
-| `checks` | Build check derivations from `nix flake check` |
+| Backend    | What it runs                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------- |
+| `runTests` | Eval-time tests via `lib.runTests` (assertion failures)                                  |
+| `checks`   | Build check derivations from `nix flake check`                                           |
 | `nix-unit` | [nix-unit](https://github.com/nix-community/nix-unit) — unit testing for Nix expressions |
-| `nixt` | [nixt](https://github.com/nix-community/nixt) — Nix integration testing |
-| `namaka` | [namaka](https://github.com/nix-community/namaka) — snapshot testing |
+| `nixt`     | [nixt](https://github.com/nix-community/nixt) — Nix integration testing                  |
+| `namaka`   | [namaka](https://github.com/nix-community/namaka) — snapshot testing                     |
 
 ### Run specific backends
 
@@ -171,6 +171,7 @@ xi flake doctor
 ```
 
 Checks:
+
 - Flake validity and structure
 - Input freshness (warns if inputs are older than threshold)
 - Nixpkgs source verification (warns on unofficial forks)
@@ -192,21 +193,21 @@ supported-branches = ["nixos-unstable", "master"]
 xi flake show
 ```
 
-Xi does not just list raw Nix output. It recognizes implicit output types
-and renders them with standardised annotations:
+Xi does not just list raw Nix output. It recognizes implicit output types and
+renders them with standardised annotations:
 
 ### Recognised output types
 
-| Pattern | Recognised as | Rendering |
-|---------|--------------|-----------|
-| `packages`, `devShells`, `checks`, `apps` | Per-system outputs | Name, version, `[default]` flag |
-| `formatter` | Per-system | Inline: `formatter :: <tool>` |
-| `lib`, `*Lib`, `*libs` | Library outputs | Compact: `lib :: lib (N attrs)` with hint to use `xi lib` |
-| `*Module`, `*Modules`, `*modules` | Module outputs | `:: module` type annotation |
-| `*Configuration`, `*Configurations`, `*Config` | Configuration outputs | `:: configuration` type annotation |
-| `nixosConfigurations`, `homeConfigurations`, `darwinConfigurations` | System configs | Discovered tree rendering |
-| `overlays`, `templates` | Standard outputs | Flat listing |
-| `debug`, `allSystems` | Internal outputs | Hidden by default |
+| Pattern                                                             | Recognised as         | Rendering                                                 |
+| ------------------------------------------------------------------- | --------------------- | --------------------------------------------------------- |
+| `packages`, `devShells`, `checks`, `apps`                           | Per-system outputs    | Name, version, `[default]` flag                           |
+| `formatter`                                                         | Per-system            | Inline: `formatter :: <tool>`                             |
+| `lib`, `*Lib`, `*libs`                                              | Library outputs       | Compact: `lib :: lib (N attrs)` with hint to use `xi lib` |
+| `*Module`, `*Modules`, `*modules`                                   | Module outputs        | `:: module` type annotation                               |
+| `*Configuration`, `*Configurations`, `*Config`                      | Configuration outputs | `:: configuration` type annotation                        |
+| `nixosConfigurations`, `homeConfigurations`, `darwinConfigurations` | System configs        | Discovered tree rendering                                 |
+| `overlays`, `templates`                                             | Standard outputs      | Flat listing                                              |
+| `debug`, `allSystems`                                               | Internal outputs      | Hidden by default                                         |
 
 ### The `[default]` flag
 
@@ -215,9 +216,9 @@ Any output named `default` is flagged with `[default]` in all render paths
 
 ### Test-only categories
 
-When a discovered tree contains only test results (`{expected, expr}`
-nodes), it collapses to a summary line: `tests (20 tests)` instead of
-listing every test name.
+When a discovered tree contains only test results (`{expected, expr}` nodes), it
+collapses to a summary line: `tests (20 tests)` instead of listing every test
+name.
 
 ### Show hidden outputs
 
@@ -256,9 +257,9 @@ tree.
 xi lib --eval
 ```
 
-Runs `builtins.deepSeq` on the entire lib output, catching type errors,
-missing attributes, and infinite recursion that would otherwise only surface
-at use time.
+Runs `builtins.deepSeq` on the entire lib output, catching type errors, missing
+attributes, and infinite recursion that would otherwise only surface at use
+time.
 
 ```sh
 xi lib --eval --show-trace    # detailed error output

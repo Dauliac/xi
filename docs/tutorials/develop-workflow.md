@@ -1,7 +1,7 @@
 # Setting Up xi develop
 
-This tutorial walks you through setting up daemon-driven development shells
-with xi. By the end you will have a project where entering the directory
+This tutorial walks you through setting up daemon-driven development shells with
+xi. By the end you will have a project where entering the directory
 automatically activates a devshell with live reload on flake changes.
 
 ## Prerequisites
@@ -61,8 +61,7 @@ Exit the devshell with `exit` or `Ctrl+D`.
 
 ## Trust the flake for auto-activation
 
-Xi requires explicit trust before auto-activating devshells. Trust this
-project:
+Xi requires explicit trust before auto-activating devshells. Trust this project:
 
 ```sh
 xi develop trust
@@ -73,8 +72,8 @@ The ID is deterministic and derived from the flake path.
 
 ## Install the shell hook
 
-For auto-activation to work, your shell needs the xi develop prompt hook. Add
-it to your shell configuration.
+For auto-activation to work, your shell needs the xi develop prompt hook. Add it
+to your shell configuration.
 
 **bash** (`~/.bashrc`):
 
@@ -94,8 +93,9 @@ eval "$(xi develop activate zsh)"
 xi develop activate fish | source
 ```
 
-Or, if you use the NixOS/Home Manager module, set `programs.xi.shellHook.develop = true`
-and it handles this for you (see [Module Setup](../guides/module-setup.md)).
+Or, if you use the NixOS/Home Manager module, set
+`programs.xi.shellHook.develop = true` and it handles this for you (see
+[Module Setup](../guides/module-setup.md)).
 
 Start a new shell (or source your config) for the hook to take effect.
 
