@@ -219,97 +219,45 @@ impl FeatureRequirements for LegacyFeatures {
   }
 }
 
-/// Feature requirements for OS repl commands
-#[derive(Debug)]
-pub struct OsReplFeatures {
-  pub is_flake: bool,
+/// Distinguishes repl command variants for feature resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplVariant {
+  Os,
+  Home,
+  Darwin,
 }
 
-impl FeatureRequirements for OsReplFeatures {
-  fn required_features(&self) -> Vec<&'static str> {
-    let mut features = vec![];
+/// Unified feature requirements for all repl commands.
+#[derive(Debug)]
+pub struct ReplFeatures {
+  pub is_flake: bool,
+  pub variant: ReplVariant,
+}
 
-    // For non-flake repls, no experimental features needed
+impl FeatureRequirements for ReplFeatures {
+  fn required_features(&self) -> Vec<&'static str> {
     if !self.is_flake {
-      return features;
+      return vec![];
     }
 
-    // For flake repls, check if we need experimental features
-    match util::get_nix_variant() {
-      NixVariant::Determinate => {
-        // Determinate Nix doesn't need experimental features
-      },
-      NixVariant::Lix => {
-        features.push("nix-command");
-        features.push("flakes");
+    let variant = util::get_nix_variant();
+    if matches!(variant, NixVariant::Determinate) {
+      return vec![];
+    }
 
-        // Lix-specific repl-flake feature for older versions
-        if let Ok(version) = util::get_nix_version() {
-          let normalized_version = normalize_version_string(&version);
-          if let Ok(current) = Version::parse(&normalized_version)
-            && let Ok(threshold) = Version::parse("2.93.0")
-            && current < threshold
-          {
-            features.push("repl-flake");
-          }
+    let mut features = vec!["nix-command", "flakes"];
+
+    // Lix-specific repl-flake feature for older versions (OS repl only)
+    if self.variant == ReplVariant::Os && matches!(variant, NixVariant::Lix) {
+      if let Ok(version) = util::get_nix_version() {
+        let normalized_version = normalize_version_string(&version);
+        if let Ok(current) = Version::parse(&normalized_version)
+          && let Ok(threshold) = Version::parse("2.93.0")
+          && current < threshold
+        {
+          features.push("repl-flake");
         }
-      },
-      NixVariant::Nix => {
-        features.push("nix-command");
-        features.push("flakes");
-      },
-    }
-
-    features
-  }
-}
-
-/// Feature requirements for Home Manager repl commands
-#[derive(Debug)]
-pub struct HomeReplFeatures {
-  pub is_flake: bool,
-}
-
-impl FeatureRequirements for HomeReplFeatures {
-  fn required_features(&self) -> Vec<&'static str> {
-    let mut features = vec![];
-
-    // For non-flake repls, no experimental features needed
-    if !self.is_flake {
-      return features;
-    }
-
-    // For flake repls, only need nix-command and flakes
-    let variant = util::get_nix_variant();
-    if !matches!(variant, NixVariant::Determinate) {
-      features.push("nix-command");
-      features.push("flakes");
-    }
-
-    features
-  }
-}
-
-/// Feature requirements for Darwin repl commands
-#[derive(Debug)]
-pub struct DarwinReplFeatures {
-  pub is_flake: bool,
-}
-
-impl FeatureRequirements for DarwinReplFeatures {
-  fn required_features(&self) -> Vec<&'static str> {
-    let mut features = vec![];
-
-    // For non-flake repls, no experimental features needed
-    if !self.is_flake {
-      return features;
-    }
-
-    // For flake repls, only need nix-command and flakes
-    let variant = util::get_nix_variant();
-    if !matches!(variant, NixVariant::Determinate) {
-      features.push("nix-command");
-      features.push("flakes");
+      }
     }
 
     features
@@ -335,36 +283,7 @@ mod tests {
   use serial_test::serial;
 
   use super::*;
-
-  // This helps set environment variables safely in tests
-  struct EnvGuard {
-    key: String,
-    original: Option<String>,
-  }
-
-  impl EnvGuard {
-    fn new(key: &str, value: &str) -> Self {
-      let original = env::var(key).ok();
-      unsafe {
-        env::set_var(key, value);
-      }
-      Self {
-        key: key.to_string(),
-        original,
-      }
-    }
-  }
-
-  impl Drop for EnvGuard {
-    fn drop(&mut self) {
-      unsafe {
-        match &self.original {
-          Some(val) => env::set_var(&self.key, val),
-          None => env::remove_var(&self.key),
-        }
-      }
-    }
-  }
+  use crate::test_utils::EnvGuard;
 
   proptest! {
       #[test]
@@ -457,15 +376,15 @@ mod tests {
           is_flake in any::<bool>()
       ) {
           // Test OS repl features
-          let os_features = OsReplFeatures { is_flake };
+          let os_features = ReplFeatures { is_flake, variant: ReplVariant::Os };
           let os_result = os_features.required_features();
 
           // Test Home repl features
-          let home_features = HomeReplFeatures { is_flake };
+          let home_features = ReplFeatures { is_flake, variant: ReplVariant::Home };
           let home_result = home_features.required_features();
 
           // Test Darwin repl features
-          let darwin_features = DarwinReplFeatures { is_flake };
+          let darwin_features = ReplFeatures { is_flake, variant: ReplVariant::Darwin };
           let darwin_result = darwin_features.required_features();
 
           if is_flake {
@@ -509,9 +428,9 @@ mod tests {
           let test_cases = vec![
               Box::new(FlakeFeatures) as Box<dyn FeatureRequirements>,
               Box::new(LegacyFeatures) as Box<dyn FeatureRequirements>,
-              Box::new(OsReplFeatures { is_flake }) as Box<dyn FeatureRequirements>,
-              Box::new(HomeReplFeatures { is_flake }) as Box<dyn FeatureRequirements>,
-              Box::new(DarwinReplFeatures { is_flake }) as Box<dyn FeatureRequirements>,
+              Box::new(ReplFeatures { is_flake, variant: ReplVariant::Os }) as Box<dyn FeatureRequirements>,
+              Box::new(ReplFeatures { is_flake, variant: ReplVariant::Home }) as Box<dyn FeatureRequirements>,
+              Box::new(ReplFeatures { is_flake, variant: ReplVariant::Darwin }) as Box<dyn FeatureRequirements>,
               Box::new(NoFeatures) as Box<dyn FeatureRequirements>,
           ];
 

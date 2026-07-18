@@ -11,5 +11,8 @@ pub mod suggest;
 pub mod update;
 pub mod util;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 pub const XI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const XI_REV: Option<&str> = option_env!("XI_REV");
