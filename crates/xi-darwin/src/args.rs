@@ -2,9 +2,13 @@ use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use xi_core::installable::{CommandContext, InstallableArgs};
 use xi_core::{
-  args::CommonRebuildArgs,
+  args::{
+    CacheArgs, CommonRebuildArgs, HasBuildArgs, HasCacheArgs,
+    NixBuildPassthroughArgs,
+  },
   checks::{
-    DarwinReplFeatures, FeatureRequirements, FlakeFeatures, LegacyFeatures,
+    FeatureRequirements, FlakeFeatures, LegacyFeatures, ReplFeatures,
+    ReplVariant,
   },
   complete,
   update::UpdateArgs,
@@ -26,7 +30,10 @@ impl DarwinArgs {
     match &self.subcommand {
       DarwinSubcommand::Repl(args) => {
         let is_flake = args.uses_flakes();
-        Box::new(DarwinReplFeatures { is_flake })
+        Box::new(ReplFeatures {
+          is_flake,
+          variant: ReplVariant::Darwin,
+        })
       },
       DarwinSubcommand::Switch(args) | DarwinSubcommand::Build(args) => {
         if args.uses_flakes() {
@@ -101,5 +108,36 @@ impl DarwinReplArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.installable.uses_flakes(CommandContext::Darwin)
+  }
+}
+
+impl HasCacheArgs for DarwinArgs {
+  fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
+    match &mut self.subcommand {
+      DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
+        Some(&mut a.common.cache)
+      },
+      DarwinSubcommand::Repl(_) => None,
+    }
+  }
+}
+
+impl HasBuildArgs for DarwinArgs {
+  fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
+    match &mut self.subcommand {
+      DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
+        Some(&mut a.common.passthrough)
+      },
+      DarwinSubcommand::Repl(_) => None,
+    }
+  }
+
+  fn no_nom_mut(&mut self) -> Option<&mut bool> {
+    match &mut self.subcommand {
+      DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
+        Some(&mut a.common.no_nom)
+      },
+      DarwinSubcommand::Repl(_) => None,
+    }
   }
 }
