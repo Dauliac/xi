@@ -2,9 +2,27 @@ use std::{path::Path, process::Stdio};
 
 use color_eyre::{Result, eyre::Context};
 use nix_command::find_real_nix_binary;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::args::{CacheArgs, CacheTarget};
+
+/// Notification written by background cache push processes.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CacheNotification {
+  pub success: bool,
+  pub label: String,
+  #[serde(default)]
+  pub stderr: String,
+  #[serde(default)]
+  pub store_path: String,
+  #[serde(default)]
+  pub push_url: Option<String>,
+  #[serde(default)]
+  pub signing_key: Option<String>,
+  #[serde(default)]
+  pub push_command: Vec<String>,
+}
 
 /// Push a built store path to all configured binary caches.
 ///
@@ -223,58 +241,30 @@ pub fn drain_notification() -> Option<String> {
 
     #[allow(clippy::option_if_let_else)]
     let rendered =
-      if let Ok(notif) = serde_json::from_str::<serde_json::Value>(&content) {
-        let success = notif
-          .get("success")
-          .and_then(serde_json::Value::as_bool)
-          .unwrap_or(false);
-        let label = notif
-          .get("label")
-          .and_then(|v| v.as_str())
-          .unwrap_or("cache");
-        let stderr = notif.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
-        let store_path = notif
-          .get("store_path")
-          .and_then(|v| v.as_str())
-          .unwrap_or("");
-
-        if success {
+      if let Ok(notif) = serde_json::from_str::<CacheNotification>(&content) {
+        if notif.success {
           crate::style::labeled_status(
             crate::style::Icon::Success,
             "cache",
-            &format!("push complete ({label})"),
+            &format!("push complete ({})", notif.label),
           )
         } else {
-          if !stderr.is_empty() {
-            debug!("[cache] push stderr for {label}: {stderr}");
+          if !notif.stderr.is_empty() {
+            debug!("[cache] push stderr for {}: {}", notif.label, notif.stderr);
           }
 
           // Enqueue for retry so async failures aren't silently lost
-          if !store_path.is_empty() {
+          if !notif.store_path.is_empty() {
             let target = CacheTarget {
-              name: label.to_string(),
-              push_url: notif
-                .get("push_url")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-              signing_key: notif
-                .get("signing_key")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-              push_command: notif
-                .get("push_command")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                  a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-                })
-                .unwrap_or_default(),
+              name: notif.label.clone(),
+              push_url: notif.push_url.clone(),
+              signing_key: notif.signing_key.clone(),
+              push_command: notif.push_command.clone(),
             };
             crate::cache_queue::enqueue(
-              store_path,
+              &notif.store_path,
               &target,
-              stderr,
+              &notif.stderr,
               &queue_config,
             );
           }
@@ -283,7 +273,8 @@ pub fn drain_notification() -> Option<String> {
             crate::style::Icon::Error,
             "cache",
             &format!(
-              "push failed ({label}), queued for retry — run {} to flush",
+              "push failed ({}), queued for retry — run {} to flush",
+              notif.label,
               crate::style::bold("xi cache retry")
             ),
           )
@@ -362,12 +353,20 @@ fn spawn_detached_push(target: &CacheTarget, out_path: &Path) -> Result<u32> {
 
   // Pre-build the full JSON from Rust so the shell only needs to splice in
   // stderr. Include target info so drain_notification() can enqueue failures.
-  let success_json = serde_json::json!({
-    "success": true,
-    "label": target.name,
-    "stderr": "",
-    "store_path": out_path_str,
-  });
+  let success_notif = CacheNotification {
+    success: true,
+    label: target.name.clone(),
+    stderr: String::new(),
+    store_path: out_path_str.to_string(),
+    push_url: None,
+    signing_key: None,
+    push_command: vec![],
+  };
+  let success_json =
+    serde_json::to_string(&success_notif).unwrap_or_else(|_| {
+      r#"{"success":true,"label":"cache","stderr":"","store_path":""}"#
+        .to_string()
+    });
   let failure_prefix = serde_json::json!({
     "success": false,
     "label": target.name,
@@ -591,17 +590,17 @@ mod tests {
   #[test]
   fn notification_json_parses_success() {
     let json = r#"{"success":true,"label":"my-s3","stderr":""}"#;
-    let v: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(v["success"], true);
-    assert_eq!(v["label"], "my-s3");
+    let v: super::CacheNotification = serde_json::from_str(json).unwrap();
+    assert!(v.success);
+    assert_eq!(v.label, "my-s3");
   }
 
   #[test]
   fn notification_json_parses_failure() {
     let json =
       r#"{"success":false,"label":"cachix","stderr":"connection refused"}"#;
-    let v: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(v["success"], false);
-    assert_eq!(v["stderr"], "connection refused");
+    let v: super::CacheNotification = serde_json::from_str(json).unwrap();
+    assert!(!v.success);
+    assert_eq!(v.stderr, "connection refused");
   }
 }
