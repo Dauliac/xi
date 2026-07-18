@@ -84,7 +84,7 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        programs.xi.finalPackage = config._xi.lib.mkFinalPackage { inherit pkgs cfg; };
+        programs.xi.finalPackage = config.lib.mkFinalPackage { inherit pkgs cfg; };
         environment.systemPackages = [ cfg.finalPackage ];
       }
 
@@ -100,7 +100,7 @@ in
       })
 
       (lib.mkIf cfg.nix.wrapAlias {
-        nix.package = config._xi.lib.mkWrappedNixPackage {
+        nix.package = config.lib.mkWrappedNixPackage {
           inherit pkgs;
           inherit (cfg) package binPath;
           nixPackage = cfg.nix.package;

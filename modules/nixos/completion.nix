@@ -7,7 +7,7 @@ in
   # This standalone path handles the case where shellHook is disabled but
   # the user still wants completions registered.
   config = lib.mkIf (cfg.enable && !cfg.shellHook.enable && cfg.shellHook.completion) {
-    environment.interactiveShellInit = config._xi.lib.mkCompletionShellHook {
+    environment.interactiveShellInit = config.lib.mkCompletionShellHook {
       inherit (cfg) package;
       inherit (cfg) binPath;
     };

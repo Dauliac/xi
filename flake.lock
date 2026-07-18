@@ -50,6 +50,29 @@
         "type": "github"
       }
     },
+    "nix-lib": {
+      "inputs": {
+        "flake-parts": [
+          "flake-parts"
+        ],
+        "nixpkgs-lib": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1784211768,
+        "narHash": "sha256-JFwllRzQJg1oiT+1qY6oizYEpI+Bq08UDbW9AyQeeZg=",
+        "owner": "Dauliac",
+        "repo": "nix-lib",
+        "rev": "744da1dc18f8c7f2ab326e64155adbff52f09cb5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Dauliac",
+        "repo": "nix-lib",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1783224372,
@@ -68,6 +91,7 @@
         "crane": "crane",
         "flake-parts": "flake-parts",
         "import-tree": "import-tree",
+        "nix-lib": "nix-lib",
         "nixpkgs": "nixpkgs",
         "treefmt-nix": "treefmt-nix"
       }

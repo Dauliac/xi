@@ -72,7 +72,7 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        xi.finalPackage = config._xi.lib.mkFinalPackage { inherit pkgs cfg; };
+        xi.finalPackage = config.lib.mkFinalPackage { inherit pkgs cfg; };
       }
 
       (lib.mkIf (!cfg.nom.enable) {

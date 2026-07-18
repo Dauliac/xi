@@ -14,7 +14,7 @@ in
 
   config.xi.completionShellHook =
     if cfg.enable && cfg.shellHook.completion then
-      config._xi.lib.mkCompletionShellHook {
+      config.lib.mkCompletionShellHook {
         inherit (cfg) package;
         inherit (cfg) binPath;
       }

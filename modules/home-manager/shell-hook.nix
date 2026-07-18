@@ -28,8 +28,8 @@ in
   };
 
   config = lib.mkIf (cfg.enable && cfg.shellHook.enable) {
-    programs.bash.initExtra = config._xi.lib.mkComposedShellHook hookArgs;
-    programs.zsh.initContent = config._xi.lib.mkComposedShellHook hookArgs;
-    programs.fish.interactiveShellInit = config._xi.lib.mkComposedFishShellHook hookArgs;
+    programs.bash.initExtra = config.lib.mkComposedShellHook hookArgs;
+    programs.zsh.initContent = config.lib.mkComposedShellHook hookArgs;
+    programs.fish.interactiveShellInit = config.lib.mkComposedFishShellHook hookArgs;
   };
 }

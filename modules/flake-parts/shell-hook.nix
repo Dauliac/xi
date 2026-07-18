@@ -26,7 +26,7 @@ in
 
   config.xi.shellHookScript =
     if cfg.enable && cfg.shellHook.enable then
-      config._xi.lib.mkComposedShellHook {
+      config.lib.mkComposedShellHook {
         inherit pkgs;
         inherit (cfg)
           package

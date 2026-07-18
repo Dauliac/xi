@@ -17,6 +17,11 @@
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
     import-tree.url = "github:vic/import-tree";
+    nix-lib = {
+      url = "github:Dauliac/nix-lib";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
     crane.url = "github:ipetkov/crane";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";

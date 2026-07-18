@@ -1,27 +1,8 @@
 { config, lib, ... }:
 {
-  options._xi.lib = {
-    mkWrappedPackage = lib.mkOption {
-      type = lib.types.raw;
-      internal = true;
-      description = "Build a bash wrapper that sets XI_CONFIG and execs the real xi binary.";
-    };
-
-    mkToolPackages = lib.mkOption {
-      type = lib.types.raw;
-      internal = true;
-      description = "Collect enabled tool packages (nom, nix-fast-build) from cfg.";
-    };
-
-    mkFinalPackage = lib.mkOption {
-      type = lib.types.raw;
-      internal = true;
-      description = "Produce the final xi package, optionally wrapped with config.";
-    };
-  };
-
-  config._xi.lib = {
-    mkWrappedPackage =
+  nix-lib.lib.mkWrappedPackage = {
+    type = lib.types.raw;
+    fn =
       {
         pkgs,
         package,
@@ -49,16 +30,12 @@
         wrapper = pkgs.writeShellScriptBin "xi" wrapperBody;
       in
       if binPath != null then
-        # When binPath is set, only ship the wrapper script — don't pull
-        # the store package into PATH via symlinkJoin.
         pkgs.symlinkJoin {
           name = "xi-wrapped";
           paths = [ wrapper ];
           meta.mainProgram = "xi";
         }
       else
-        # No binPath: symlink the real package so completions/man pages
-        # are available, and the wrapper shadows bin/xi.
         pkgs.symlinkJoin {
           name = "xi-wrapped";
           paths = [
@@ -67,9 +44,12 @@
           ];
           meta.mainProgram = "xi";
         };
+    description = "Build a bash wrapper that sets XI_CONFIG and execs the real xi binary.";
+  };
 
-    ## Collect enabled tool packages from cfg.
-    mkToolPackages =
+  nix-lib.lib.mkToolPackages = {
+    type = lib.types.raw;
+    fn =
       cfg:
       builtins.filter (p: p != null) [
         (if (cfg.nom.enable or false) then (cfg.nom.package or null) else null)
@@ -80,25 +60,30 @@
         (if (cfg.fmt.alejandra.enable or false) then (cfg.fmt.alejandra.package or null) else null)
         (if (cfg.fmt.treefmt.enable or false) then (cfg.fmt.treefmt.package or null) else null)
       ];
+    description = "Collect enabled tool packages (nom, nix-fast-build) from cfg.";
+  };
 
-    mkFinalPackage =
+  nix-lib.lib.mkFinalPackage = {
+    type = lib.types.raw;
+    fn =
       { pkgs, cfg }:
       let
-        configFile = config._xi.lib.mkConfigFile {
+        configFile = config.lib.mkConfigFile {
           inherit pkgs;
           inherit (cfg) settings;
         };
-        toolPackages = config._xi.lib.mkToolPackages cfg;
+        toolPackages = config.lib.mkToolPackages cfg;
         hasConfig = configFile != null;
         hasTools = toolPackages != [ ];
         needsWrapper = cfg.wrapper.enable && (hasConfig || cfg.binPath != null || hasTools);
       in
       if needsWrapper then
-        config._xi.lib.mkWrappedPackage {
+        config.lib.mkWrappedPackage {
           inherit pkgs configFile toolPackages;
           inherit (cfg) package binPath;
         }
       else
         cfg.package;
+    description = "Produce the final xi package, optionally wrapped with config.";
   };
 }

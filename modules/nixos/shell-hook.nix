@@ -31,8 +31,8 @@ in
       };
     in
     {
-      environment.interactiveShellInit = config._xi.lib.mkComposedShellHook hookArgs;
-      programs.fish.interactiveShellInit = config._xi.lib.mkComposedFishShellHook hookArgs;
+      environment.interactiveShellInit = config.lib.mkComposedShellHook hookArgs;
+      programs.fish.interactiveShellInit = config.lib.mkComposedFishShellHook hookArgs;
     }
   );
 }
