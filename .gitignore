@@ -16,3 +16,6 @@ report*
 
 # nh managed state
 /.nh/
+
+# Claude Code
+.claude/
