@@ -391,6 +391,68 @@ impl ElevationStrategy {
   }
 }
 
+/// Identifies a resolved elevation program by its known type.
+///
+/// Replaces string-based program name matching with a typed enum,
+/// enabling compile-time exhaustiveness checks and centralising
+/// program-specific behaviour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElevationProgram {
+  Doas,
+  Sudo,
+  Run0,
+  Pkexec,
+  /// An unrecognised program found via PATH or explicit specification.
+  Other(String),
+}
+
+impl ElevationProgram {
+  /// Classify a resolved binary path into a known program type.
+  pub fn classify(path: &std::path::Path) -> Self {
+    match path.file_name().and_then(|n| n.to_str()) {
+      Some("doas") => Self::Doas,
+      Some("sudo") => Self::Sudo,
+      Some("run0") => Self::Run0,
+      Some("pkexec") => Self::Pkexec,
+      Some(other) => Self::Other(other.to_string()),
+      None => Self::Other(String::new()),
+    }
+  }
+
+  /// Whether this program supports `SUDO_ASKPASS` / `-A`.
+  pub const fn supports_askpass(&self) -> bool {
+    matches!(self, Self::Sudo)
+  }
+
+  /// Extra arguments needed by this program.
+  pub fn extra_args(&self) -> &[&str] {
+    match self {
+      Self::Run0 => &["--pty-late"],
+      _ => &[],
+    }
+  }
+
+  /// Whether this program supports `--stdin` password input.
+  pub const fn supports_stdin_password(&self) -> bool {
+    matches!(self, Self::Sudo)
+  }
+
+  /// Whether this program accepts custom sudo options from `XI_SUDOOPTS`.
+  pub const fn accepts_sudo_opts(&self) -> bool {
+    matches!(self, Self::Sudo)
+  }
+}
+
+/// Intermediate representation of an elevation command, shared between
+/// `build_sudo_cmd` (returns `Exec`) and `build_sudo_parts` (returns
+/// `Vec<String>`).
+struct SudoSpec {
+  program_path: PathBuf,
+  program_kind: ElevationProgram,
+  pre_args: Vec<String>,
+  env_args: Vec<String>,
+}
+
 #[derive(Debug)]
 #[allow(clippy::struct_field_names)]
 pub struct Command {
@@ -599,124 +661,103 @@ impl Command {
     cmd
   }
 
-  /// Creates a Exec that contains elevates the program with proper environment
-  /// handling.
-  ///
-  /// Panics: If called when `self.elevate` is `None`
-  fn build_sudo_cmd(&self) -> Result<Exec> {
+  /// Resolve the elevation command specification. Shared by
+  /// `build_sudo_cmd` and `build_sudo_parts`.
+  fn resolve_sudo_spec(&self) -> Result<SudoSpec> {
     let elevation_strategy = self
       .elevate
       .as_ref()
       .ok_or_else(|| eyre::eyre!("Command not found for elevation"))?;
 
-    let elevation_program = elevation_strategy
+    let program_path = elevation_strategy
       .resolve()
       .context("Failed to resolve elevation program")?;
 
-    let mut cmd = Exec::cmd(&elevation_program);
+    let program_kind = ElevationProgram::classify(&program_path);
+
+    let mut pre_args = Vec::new();
 
     // Use XI_SUDO_ASKPASS program for sudo if present, but NOT for
-    // Passwordless variant (Passwordless expects NOPASSWD config without
-    // password input)
-    let program_name = elevation_program
-      .file_name()
-      .and_then(|name| name.to_str())
-      .ok_or_else(|| {
-        eyre::eyre!("Failed to determine elevation program name")
-      })?;
-    if program_name == "sudo"
+    // Passwordless variant
+    if program_kind.supports_askpass()
       && !matches!(elevation_strategy, ElevationStrategy::Passwordless)
-      && let Ok(askpass) = env::var("XI_SUDO_ASKPASS")
+      && env::var("XI_SUDO_ASKPASS").is_ok()
     {
-      cmd = cmd.env("SUDO_ASKPASS", askpass).arg("-A");
-    }
-    // Request allocation of a pseudo TTY for the run0 session. Without this,
-    // running `run0` changes the user of `/dev/pts/<current-terminal>
-    // to `root`, which we want to avoid since it can cause issues with
-    // subsequent commands.
-    if program_name == "run0" {
-      cmd = cmd.arg("--pty-late");
+      pre_args.push("-A".to_string());
     }
 
-    if program_name == "sudo" {
-      cmd = cmd.args(get_sudo_opts());
+    // Program-specific extra args (e.g. --pty-late for run0)
+    for arg in program_kind.extra_args() {
+      pre_args.push((*arg).to_string());
     }
 
-    // XI_PRESERVE_ENV: set to "0" to disable preserving environment variables,
-    // "1" to force, unset defaults to force
+    // Sudo-specific opts from XI_SUDOOPTS / NIX_SUDOOPTS
+    if program_kind.accepts_sudo_opts() {
+      pre_args.extend(get_sudo_opts());
+    }
+
+    // XI_PRESERVE_ENV: set to "0" to disable preserving environment
+    // variables, "1" to force, unset defaults to force
     let preserve_env = env::var("XI_PRESERVE_ENV")
       .as_deref()
       .map_or(true, |x| !matches!(x, "0"));
 
-    // Insert 'env' command to explicitly pass environment variables to the
-    // elevated command
-    cmd = cmd.arg("env");
-    for arg in self
-      .env_vars
-      .iter()
-      .filter_map(|(key, action)| match action {
-        EnvAction::Set(value) => Some(format!("{key}={value}")),
-        EnvAction::Preserve if preserve_env => {
-          env::var(key).ok().map(|value| format!("{key}={value}"))
+    let mut env_args = Vec::new();
+    for (key, action) in &self.env_vars {
+      match action {
+        EnvAction::Set(value) => {
+          env_args.push(format!("{key}={value}"));
         },
-        _ => None,
-      })
+        EnvAction::Preserve if preserve_env => {
+          if let Ok(value) = env::var(key) {
+            env_args.push(format!("{key}={value}"));
+          }
+        },
+        _ => {},
+      }
+    }
+
+    Ok(SudoSpec {
+      program_path,
+      program_kind,
+      pre_args,
+      env_args,
+    })
+  }
+
+  /// Creates an `Exec` that elevates the program with proper environment
+  /// handling.
+  fn build_sudo_cmd(&self) -> Result<Exec> {
+    let spec = self.resolve_sudo_spec()?;
+    let mut cmd = Exec::cmd(&spec.program_path);
+
+    // Set SUDO_ASKPASS env var when askpass is in use
+    if spec.program_kind.supports_askpass()
+      && !matches!(self.elevate.as_ref(), Some(ElevationStrategy::Passwordless))
+      && let Ok(askpass) = env::var("XI_SUDO_ASKPASS")
     {
+      cmd = cmd.env("SUDO_ASKPASS", askpass);
+    }
+
+    for arg in &spec.pre_args {
+      cmd = cmd.arg(arg);
+    }
+
+    cmd = cmd.arg("env");
+    for arg in &spec.env_args {
       cmd = cmd.arg(arg);
     }
 
     Ok(cmd)
   }
 
+  #[allow(dead_code, reason = "Kept for symmetry with build_sudo_cmd")]
   fn build_sudo_parts(&self) -> Result<Vec<String>> {
-    let elevation_program = self
-      .elevate
-      .as_ref()
-      .ok_or_else(|| eyre::eyre!("Command not found for elevation"))?
-      .resolve()
-      .context("Failed to resolve elevation program")?;
-
-    let mut parts = vec![elevation_program.to_string_lossy().to_string()];
-
-    let program_name = elevation_program
-      .file_name()
-      .and_then(|name| name.to_str())
-      .ok_or_else(|| {
-        eyre::eyre!("Failed to determine elevation program name")
-      })?;
-    if program_name == "sudo"
-      && let Ok(_askpass) = env::var("XI_SUDO_ASKPASS")
-    {
-      parts.push("-A".to_string());
-    }
-    // Request allocation of a pseudo TTY for the run0 session. Without this,
-    // running `run0` changes the user of `/dev/pts/<current-terminal>
-    // to `root`, which we want to avoid since it can cause issues with
-    // subsequent commands.
-    if program_name == "run0" {
-      parts.push("--pty-late".to_string());
-    }
-
-    if program_name == "sudo" {
-      parts.extend(get_sudo_opts());
-    }
-
-    let preserve_env = env::var("XI_PRESERVE_ENV")
-      .as_deref()
-      .map_or(true, |x| !matches!(x, "0"));
-
+    let spec = self.resolve_sudo_spec()?;
+    let mut parts = vec![spec.program_path.to_string_lossy().to_string()];
+    parts.extend(spec.pre_args);
     parts.push("env".to_string());
-    for env_arg in self.env_vars.iter().filter_map(|(key, action)| match action
-    {
-      EnvAction::Set(value) => Some(format!("{key}={value}")),
-      EnvAction::Preserve if preserve_env => {
-        env::var(key).map_or(None, |value| Some(format!("{key}={value}")))
-      },
-      _ => None,
-    }) {
-      parts.push(env_arg);
-    }
-
+    parts.extend(spec.env_args);
     Ok(parts)
   }
 
@@ -738,7 +779,11 @@ impl Command {
       .elevate(Some(strategy))
       .with_required_env();
 
-    let mut sudo_parts = cmd_builder.build_sudo_parts()?;
+    let spec = cmd_builder.resolve_sudo_spec()?;
+    let mut sudo_parts = vec![spec.program_path.to_string_lossy().to_string()];
+    sudo_parts.extend(spec.pre_args);
+    sudo_parts.push("env".to_string());
+    sudo_parts.extend(spec.env_args);
 
     // Add the target executable and arguments
     sudo_parts.push(current_exe.to_string_lossy().to_string());
@@ -750,8 +795,8 @@ impl Command {
       std_cmd.args(&sudo_parts[1..]);
     }
 
-    // check if using SUDO_ASKPASS
-    if sudo_parts[1] == "-A"
+    // Set SUDO_ASKPASS env var when the resolved program supports it
+    if spec.program_kind.supports_askpass()
       && let Ok(askpass) = env::var("XI_SUDO_ASKPASS")
     {
       std_cmd.env("SUDO_ASKPASS", askpass);
@@ -800,7 +845,7 @@ impl Command {
       // Local elevation
       self.build_sudo_cmd()?.arg(&self.command).args(&self.args)
     } else if self.elevate.is_some() && self.ssh.is_some() {
-      // Build elevation command
+      // Build elevation command for SSH remote deployment
       let elevation_program = self
         .elevate
         .as_ref()
@@ -810,19 +855,19 @@ impl Command {
         .resolve()
         .context("Failed to resolve elevation program")?;
 
-      let program_name = elevation_program
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-          eyre::eyre!("Failed to determine elevation program name")
-        })?;
+      let program_kind = ElevationProgram::classify(&elevation_program);
 
       let mut elev_cmd = Exec::cmd(&elevation_program);
 
       // Add program-specific arguments
-      if program_name == "sudo" {
+      if program_kind.supports_stdin_password() {
         elev_cmd = elev_cmd.arg("--prompt=").arg("--stdin");
+      }
+      if program_kind.accepts_sudo_opts() {
         elev_cmd = elev_cmd.args(get_sudo_opts());
+      }
+      for arg in program_kind.extra_args() {
+        elev_cmd = elev_cmd.arg(*arg);
       }
 
       // Add env command to handle environment variables
@@ -1081,36 +1126,7 @@ mod tests {
   use serial_test::serial;
 
   use super::*;
-
-  // Safely manage environment variables in tests
-  struct EnvGuard {
-    key: String,
-    original: Option<String>,
-  }
-
-  impl EnvGuard {
-    fn new(key: &str, value: &str) -> Self {
-      let original = env::var(key).ok();
-      unsafe {
-        env::set_var(key, value);
-      }
-      Self {
-        key: key.to_string(),
-        original,
-      }
-    }
-  }
-
-  impl Drop for EnvGuard {
-    fn drop(&mut self) {
-      unsafe {
-        match &self.original {
-          Some(val) => env::set_var(&self.key, val),
-          None => env::remove_var(&self.key),
-        }
-      }
-    }
-  }
+  use crate::test_utils::EnvGuard;
 
   #[test]
   fn test_env_action_variants() {
