@@ -536,7 +536,12 @@ impl CiArgs {
     println!();
     println!("  {}", Paint::new("Validate").bold());
 
-    // Phase 1: validation steps in parallel with spinners
+    let validate_spinner = progress::spinner(format!(
+      "    {} ...",
+      Paint::new("Running checks").bold()
+    ));
+
+    // Phase 1: validation steps in parallel
     let phase1_results = {
       let flake_ref_owned = flake_ref.to_string();
       let no_lock = self.no_lock_check;
@@ -548,11 +553,6 @@ impl CiArgs {
       let extra_names = project_config.ci.extra_outputs.clone();
       let doctor_config = project_config.doctor;
       let test_attr = project_config.test.run_tests_attr.clone();
-
-      let validate_spinner = progress::spinner(format!(
-        "    {} ...",
-        Paint::new("Running checks").bold()
-      ));
 
       std::thread::scope(|s| {
         // Lock check
