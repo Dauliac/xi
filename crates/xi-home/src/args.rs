@@ -2,9 +2,13 @@ use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use xi_core::installable::{CommandContext, InstallableArgs};
 use xi_core::{
-  args::CommonRebuildArgs,
+  args::{
+    CacheArgs, CommonRebuildArgs, HasBuildArgs, HasCacheArgs,
+    NixBuildPassthroughArgs,
+  },
   checks::{
-    FeatureRequirements, FlakeFeatures, HomeReplFeatures, LegacyFeatures,
+    FeatureRequirements, FlakeFeatures, LegacyFeatures, ReplFeatures,
+    ReplVariant,
   },
   complete,
 };
@@ -35,7 +39,10 @@ impl HomeArgs {
     match &self.subcommand {
       HomeSubcommand::Repl(args) => {
         let is_flake = args.uses_flakes();
-        Box::new(HomeReplFeatures { is_flake })
+        Box::new(ReplFeatures {
+          is_flake,
+          variant: ReplVariant::Home,
+        })
       },
       HomeSubcommand::Switch(args) | HomeSubcommand::Build(args) => {
         if args.uses_flakes() {
@@ -114,5 +121,36 @@ impl HomeReplArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.installable.uses_flakes(CommandContext::Home)
+  }
+}
+
+impl HasCacheArgs for HomeArgs {
+  fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
+    match &mut self.subcommand {
+      HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
+        Some(&mut a.common.cache)
+      },
+      HomeSubcommand::Repl(_) => None,
+    }
+  }
+}
+
+impl HasBuildArgs for HomeArgs {
+  fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
+    match &mut self.subcommand {
+      HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
+        Some(&mut a.common.passthrough)
+      },
+      HomeSubcommand::Repl(_) => None,
+    }
+  }
+
+  fn no_nom_mut(&mut self) -> Option<&mut bool> {
+    match &mut self.subcommand {
+      HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
+        Some(&mut a.common.no_nom)
+      },
+      HomeSubcommand::Repl(_) => None,
+    }
   }
 }
