@@ -248,15 +248,16 @@ impl FeatureRequirements for ReplFeatures {
     let mut features = vec!["nix-command", "flakes"];
 
     // Lix-specific repl-flake feature for older versions (OS repl only)
-    if self.variant == ReplVariant::Os && matches!(variant, NixVariant::Lix) {
-      if let Ok(version) = util::get_nix_version() {
-        let normalized_version = normalize_version_string(&version);
-        if let Ok(current) = Version::parse(&normalized_version)
-          && let Ok(threshold) = Version::parse("2.93.0")
-          && current < threshold
-        {
-          features.push("repl-flake");
-        }
+    if self.variant == ReplVariant::Os
+      && matches!(variant, NixVariant::Lix)
+      && let Ok(version) = util::get_nix_version()
+    {
+      let normalized_version = normalize_version_string(&version);
+      if let Ok(current) = Version::parse(&normalized_version)
+        && let Ok(threshold) = Version::parse("2.93.0")
+        && current < threshold
+      {
+        features.push("repl-flake");
       }
     }
 

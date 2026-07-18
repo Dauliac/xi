@@ -408,6 +408,7 @@ pub enum ElevationProgram {
 
 impl ElevationProgram {
   /// Classify a resolved binary path into a known program type.
+  #[must_use]
   pub fn classify(path: &std::path::Path) -> Self {
     match path.file_name().and_then(|n| n.to_str()) {
       Some("doas") => Self::Doas,
@@ -420,12 +421,14 @@ impl ElevationProgram {
   }
 
   /// Whether this program supports `SUDO_ASKPASS` / `-A`.
+  #[must_use]
   pub const fn supports_askpass(&self) -> bool {
     matches!(self, Self::Sudo)
   }
 
   /// Extra arguments needed by this program.
-  pub fn extra_args(&self) -> &[&str] {
+  #[must_use]
+  pub const fn extra_args(&self) -> &[&str] {
     match self {
       Self::Run0 => &["--pty-late"],
       _ => &[],
@@ -433,11 +436,13 @@ impl ElevationProgram {
   }
 
   /// Whether this program supports `--stdin` password input.
+  #[must_use]
   pub const fn supports_stdin_password(&self) -> bool {
     matches!(self, Self::Sudo)
   }
 
   /// Whether this program accepts custom sudo options from `XI_SUDOOPTS`.
+  #[must_use]
   pub const fn accepts_sudo_opts(&self) -> bool {
     matches!(self, Self::Sudo)
   }
