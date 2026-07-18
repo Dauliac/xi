@@ -4,9 +4,12 @@ use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use xi_core::installable::{CommandContext, InstallableArgs};
 use xi_core::{
-  args::{DiffType, NixBuildPassthroughArgs},
+  args::{
+    CacheArgs, DiffType, HasBuildArgs, HasCacheArgs, NixBuildPassthroughArgs,
+  },
   checks::{
-    FeatureRequirements, FlakeFeatures, LegacyFeatures, OsReplFeatures,
+    FeatureRequirements, FlakeFeatures, LegacyFeatures, ReplFeatures,
+    ReplVariant,
   },
   complete,
 };
@@ -44,7 +47,10 @@ impl OsArgs {
     match &self.subcommand {
       OsSubcommand::Repl(args) => {
         let is_flake = args.uses_flakes();
-        Box::new(OsReplFeatures { is_flake })
+        Box::new(ReplFeatures {
+          is_flake,
+          variant: ReplVariant::Os,
+        })
       },
       OsSubcommand::Switch(args)
       | OsSubcommand::Boot(args)
@@ -205,10 +211,56 @@ impl OsRebuildArgs {
   }
 }
 
+impl HasCacheArgs for OsArgs {
+  fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
+    match &mut self.subcommand {
+      OsSubcommand::Switch(a)
+      | OsSubcommand::Boot(a)
+      | OsSubcommand::Test(a) => Some(&mut a.rebuild.common.cache),
+      OsSubcommand::Build(a) => Some(&mut a.common.cache),
+      OsSubcommand::BuildVm(a) => Some(&mut a.common.common.cache),
+      OsSubcommand::BuildImage(a) => Some(&mut a.common.common.cache),
+      OsSubcommand::Repl(_)
+      | OsSubcommand::Info(_)
+      | OsSubcommand::Rollback(_) => None,
+    }
+  }
+}
+
+impl HasBuildArgs for OsArgs {
+  fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
+    match &mut self.subcommand {
+      OsSubcommand::Switch(a)
+      | OsSubcommand::Boot(a)
+      | OsSubcommand::Test(a) => Some(&mut a.rebuild.common.passthrough),
+      OsSubcommand::Build(a) => Some(&mut a.common.passthrough),
+      OsSubcommand::BuildVm(a) => Some(&mut a.common.common.passthrough),
+      OsSubcommand::BuildImage(a) => Some(&mut a.common.common.passthrough),
+      OsSubcommand::Repl(_)
+      | OsSubcommand::Info(_)
+      | OsSubcommand::Rollback(_) => None,
+    }
+  }
+
+  fn no_nom_mut(&mut self) -> Option<&mut bool> {
+    match &mut self.subcommand {
+      OsSubcommand::Switch(a)
+      | OsSubcommand::Boot(a)
+      | OsSubcommand::Test(a) => Some(&mut a.rebuild.common.no_nom),
+      OsSubcommand::Build(a) => Some(&mut a.common.no_nom),
+      OsSubcommand::BuildVm(a) => Some(&mut a.common.common.no_nom),
+      OsSubcommand::BuildImage(a) => Some(&mut a.common.common.no_nom),
+      OsSubcommand::Repl(_)
+      | OsSubcommand::Info(_)
+      | OsSubcommand::Rollback(_) => None,
+    }
+  }
+}
+
 #[derive(Debug, Args)]
 pub struct OsRollbackArgs {
   /// Only print actions, without performing them
-  #[arg(long, short = 'n')]
+  #[arg(long, short = 'n', alias = "dry-run")]
   pub dry: bool,
 
   /// Ask for confirmation
