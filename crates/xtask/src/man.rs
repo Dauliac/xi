@@ -87,7 +87,7 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
     ),
     (
       "XI_SUDO_ASKPASS",
-      "Path to a program used as SUDO_ASKPASS when XIself-elevates with sudo.",
+      "Path to a program used as SUDO_ASKPASS when XItself-elevates with sudo.",
     ),
     (
       "XI_PRESERVE_ENV",

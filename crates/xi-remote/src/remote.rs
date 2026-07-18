@@ -14,6 +14,9 @@ use color_eyre::{
   Report, Result,
   eyre::{Context, bail, eyre},
 };
+use secrecy::{ExposeSecret, SecretString};
+use subprocess::{Exec, Redirection};
+use tracing::{debug, error, info, warn};
 use xi_core::installable::Installable;
 use xi_core::{
   command::{
@@ -22,9 +25,6 @@ use xi_core::{
   },
   util::NixVariant,
 };
-use secrecy::{ExposeSecret, SecretString};
-use subprocess::{Exec, Redirection};
-use tracing::{debug, error, info, warn};
 
 mod copy;
 mod dix;

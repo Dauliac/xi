@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 
-use xi_core::command::{CommandKind, NixCommand};
 use regex::Regex;
 use subprocess::Redirection;
 use tracing::warn;
+use xi_core::command::{CommandKind, NixCommand};
 
 use xi_core::style::color;
 

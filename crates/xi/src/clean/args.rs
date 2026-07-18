@@ -33,7 +33,7 @@ pub struct CleanArgs {
   pub keep_since: humantime::Duration,
 
   /// Only print actions, without performing them
-  #[arg(long, short = 'n')]
+  #[arg(long, short = 'n', alias = "dry-run")]
   pub dry: bool,
 
   /// Ask for confirmation

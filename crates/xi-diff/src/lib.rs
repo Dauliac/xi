@@ -5,9 +5,9 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, eyre};
+use tracing::{debug, info, warn};
 use xi_core::{args::DiffType, progress};
 use xi_remote::{RemoteHost, ResolvedRemoteStorePath};
-use tracing::{debug, info, warn};
 use yansi::Paint;
 
 const NIXOS_CURRENT_PROFILE: &str = "/run/current-system";

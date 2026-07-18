@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::Result;
 use color_eyre::eyre::bail;
-use xi_core::command::ExitError;
-use xi_core::installable::Installable;
 use nix_command::{CommandKind, NixCommand};
 use subprocess::{Exec, Redirection};
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
+use xi_core::command::ExitError;
+use xi_core::installable::Installable;
 
 use crate::args::{
   BuildArgs, CheckArgs, CiBackend, FmtArgs, FmtBackend, InitArgs, RunArgs,
@@ -175,9 +175,7 @@ impl BuildArgs {
       return self.run_build_all();
     }
 
-    let local_dir = resolve_local_flake_dir_from_installable(
-      &self.installable,
-    );
+    let local_dir = resolve_local_flake_dir_from_installable(&self.installable);
 
     // Pre-build materialization (if configured in .xi.toml)
     if let Some(ref dir) = local_dir {

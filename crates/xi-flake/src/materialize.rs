@@ -123,8 +123,7 @@ pub fn check_materialize_freshness(
 ) -> Result<Option<(usize, usize)>> {
   let config = project_config::load_project_config(Some(project_dir));
 
-  if !config.materialize.check_in_ci || config.materialize.targets.is_empty()
-  {
+  if !config.materialize.check_in_ci || config.materialize.targets.is_empty() {
     return Ok(None);
   }
 
@@ -155,8 +154,7 @@ fn compute_source_hash(
   let mut matched = false;
 
   for pattern in sources {
-    let full_pattern =
-      project_dir.join(pattern).to_string_lossy().to_string();
+    let full_pattern = project_dir.join(pattern).to_string_lossy().to_string();
     for entry in glob::glob(&full_pattern).map_err(|e| {
       color_eyre::eyre::eyre!("Invalid glob pattern '{pattern}': {e}")
     })? {
@@ -178,10 +176,7 @@ fn compute_source_hash(
   }
 
   if !matched {
-    warn!(
-      "No source files matched patterns: {}",
-      sources.join(", ")
-    );
+    warn!("No source files matched patterns: {}", sources.join(", "));
   }
 
   Ok(format!("{:x}", hasher.finalize()))
@@ -207,8 +202,7 @@ fn is_target_fresh(
     return Ok(false);
   }
 
-  let stored_hash =
-    std::fs::read_to_string(&hash_path).unwrap_or_default();
+  let stored_hash = std::fs::read_to_string(&hash_path).unwrap_or_default();
   let current_hash = compute_source_hash(project_dir, &target.sources)?;
 
   Ok(stored_hash.trim() == current_hash)
@@ -277,10 +271,7 @@ fn git_skip_worktree(project_dir: &Path, files: &[PathBuf]) -> Result<()> {
 }
 
 /// Remove `--skip-worktree` so files show in `git status` again.
-fn git_no_skip_worktree(
-  project_dir: &Path,
-  files: &[PathBuf],
-) -> Result<()> {
+fn git_no_skip_worktree(project_dir: &Path, files: &[PathBuf]) -> Result<()> {
   if files.is_empty() {
     return Ok(());
   }
@@ -315,9 +306,9 @@ fn git_stage_files(project_dir: &Path, files: &[PathBuf]) -> Result<()> {
     }
   }
 
-  let status = cmd.status().map_err(|e| {
-    color_eyre::eyre::eyre!("Failed to run git add: {e}")
-  })?;
+  let status = cmd
+    .status()
+    .map_err(|e| color_eyre::eyre::eyre!("Failed to run git add: {e}"))?;
 
   if !status.success() {
     warn!("git add exited with {status}");
@@ -360,10 +351,7 @@ fn should_auto_stage(
     return true;
   }
 
-  config
-    .auto_stage_branches
-    .iter()
-    .any(|b| b == &branch)
+  config.auto_stage_branches.iter().any(|b| b == &branch)
 }
 
 /// Write `.gitattributes` merge driver for materialized files.
@@ -375,8 +363,7 @@ fn ensure_gitattributes_merge_driver(
   let pattern = format!("{}/** merge=ours", config.commit_path);
 
   if gitattributes.exists() {
-    let content =
-      std::fs::read_to_string(&gitattributes).unwrap_or_default();
+    let content = std::fs::read_to_string(&gitattributes).unwrap_or_default();
     if content.contains(&pattern) {
       return Ok(());
     }
@@ -384,15 +371,14 @@ fn ensure_gitattributes_merge_driver(
     if !new_content.ends_with('\n') {
       new_content.push('\n');
     }
-    new_content
-      .push_str(&format!("\n# xi materialized files — avoid merge conflicts\n{pattern}\n"));
+    new_content.push_str(&format!(
+      "\n# xi materialized files — avoid merge conflicts\n{pattern}\n"
+    ));
     std::fs::write(&gitattributes, new_content)?;
   } else {
     std::fs::write(
       &gitattributes,
-      format!(
-        "# xi materialized files — avoid merge conflicts\n{pattern}\n"
-      ),
+      format!("# xi materialized files — avoid merge conflicts\n{pattern}\n"),
     )?;
   }
 
@@ -435,8 +421,7 @@ fn setup_git_hide(
   );
   println!(
     "  {}",
-    Paint::new("Use `xi materialize --commit` to update and stage them.")
-      .dim()
+    Paint::new("Use `xi materialize --commit` to update and stage them.").dim()
   );
 
   Ok(())
@@ -501,10 +486,7 @@ fn list_targets(
 
   println!();
   if !config.commit_path.is_empty() {
-    println!(
-      "  commit path: {}",
-      Paint::new(&config.commit_path).dim()
-    );
+    println!("  commit path: {}", Paint::new(&config.commit_path).dim());
   }
   println!();
 
@@ -697,8 +679,7 @@ fn run_targets(
 
   // Auto-stage + re-apply skip-worktree after commit
   if commit {
-    let committed_files =
-      committed_materialized_files(project_dir, config);
+    let committed_files = committed_materialized_files(project_dir, config);
 
     if should_auto_stage(project_dir, config) {
       git_stage_files(project_dir, &committed_files)?;
@@ -731,10 +712,7 @@ fn run_targets(
   }
 
   if commit {
-    println!(
-      "  Wrote to {}",
-      Paint::new(&config.commit_path).bold()
-    );
+    println!("  Wrote to {}", Paint::new(&config.commit_path).bold());
   }
 
   println!();
@@ -766,8 +744,8 @@ mod tests {
     let dir = tempdir().expect("tempdir");
     std::fs::write(dir.path().join("test.txt"), "hello").expect("write");
 
-    let hash = compute_source_hash(dir.path(), &["test.txt".into()])
-      .expect("hash");
+    let hash =
+      compute_source_hash(dir.path(), &["test.txt".into()]).expect("hash");
     assert!(!hash.is_empty());
     assert_eq!(hash.len(), 64);
   }
@@ -776,12 +754,12 @@ mod tests {
   fn compute_hash_changes_with_content() {
     let dir = tempdir().expect("tempdir");
     std::fs::write(dir.path().join("test.txt"), "hello").expect("write");
-    let hash1 = compute_source_hash(dir.path(), &["test.txt".into()])
-      .expect("hash");
+    let hash1 =
+      compute_source_hash(dir.path(), &["test.txt".into()]).expect("hash");
 
     std::fs::write(dir.path().join("test.txt"), "world").expect("write");
-    let hash2 = compute_source_hash(dir.path(), &["test.txt".into()])
-      .expect("hash");
+    let hash2 =
+      compute_source_hash(dir.path(), &["test.txt".into()]).expect("hash");
 
     assert_ne!(hash1, hash2);
   }

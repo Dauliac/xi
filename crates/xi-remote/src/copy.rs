@@ -8,12 +8,12 @@ use color_eyre::{
   Result,
   eyre::{Context, eyre},
 };
+use subprocess::{Exec, Redirection};
+use tracing::{debug, error, info};
 use xi_core::{
   command::{CommandKind, NixCommand, exec_with_streaming},
   progress::{self, Spinner},
 };
-use subprocess::{Exec, Redirection};
-use tracing::{debug, error, info};
 
 use super::{RemoteHost, get_flake_flags, get_nix_sshopts_env};
 

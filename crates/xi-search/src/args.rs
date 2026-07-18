@@ -147,7 +147,6 @@ pub struct LimitArg {
   #[arg(
     id = "limit",
     long = "limit",
-    short = 'l',
     default_value_t = DEFAULT_LIMIT
   )]
   pub value: u64,

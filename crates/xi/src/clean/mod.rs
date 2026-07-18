@@ -13,7 +13,6 @@ use color_eyre::{
   eyre::{Context, ContextCompat, bail, eyre},
 };
 use inquire::Confirm;
-use xi_core::command::{Command, ElevationStrategy, find_real_nix_binary};
 use nix::{
   errno::Errno,
   fcntl::AtFlags,
@@ -22,6 +21,7 @@ use nix::{
 use regex::Regex;
 use tracing::{Level, debug, info, instrument, span, warn};
 use walkdir::WalkDir;
+use xi_core::command::{Command, ElevationStrategy, find_real_nix_binary};
 use yansi::{Color, Paint};
 
 // Nix impl:

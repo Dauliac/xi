@@ -181,7 +181,7 @@ pub struct BuildArgs {
   pub no_link: bool,
 
   /// Only print actions, without performing them
-  #[arg(long, short = 'n')]
+  #[arg(long, short = 'n', alias = "dry-run")]
   pub dry: bool,
 
   #[command(flatten)]
@@ -422,7 +422,7 @@ pub struct CiArgs {
   pub no_nom: bool,
 
   /// Only print actions, without performing them
-  #[arg(long, short = 'n')]
+  #[arg(long, short = 'n', alias = "dry-run")]
   pub dry: bool,
 
   /// Continue running CI steps after a failure instead of stopping
@@ -498,7 +498,7 @@ pub struct TestArgs {
   pub backend: Vec<TestBackend>,
 
   /// Filter test names (glob pattern)
-  #[arg(long, short = 'f')]
+  #[arg(long, short = 'F')]
   pub filter: Option<String>,
 
   /// Don't use nix-output-monitor for check builds
@@ -560,7 +560,7 @@ pub struct MaterializeArgs {
   pub list: bool,
 
   /// Re-run all targets, ignoring freshness cache
-  #[arg(long, short = 'f')]
+  #[arg(long)]
   pub force: bool,
 
   /// Set up git to hide materialized files from git status

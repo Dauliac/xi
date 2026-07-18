@@ -166,6 +166,7 @@ fn eval_and_update(
     return Ok((dev_env, std::env::temp_dir()));
   };
   let state_dir = dirs::state_dir(&fid);
+  std::fs::create_dir_all(&state_dir)?;
   let profile_path = dirs::profile_path(&state_dir, target);
 
   let old_meta = meta::load(&state_dir).ok();

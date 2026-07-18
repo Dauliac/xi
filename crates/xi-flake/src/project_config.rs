@@ -327,27 +327,19 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
       config.materialize.commit_path = path.to_string();
     }
 
-    if let Some(v) =
-      mat.get("check-in-ci").and_then(toml_edit::Item::as_bool)
-    {
+    if let Some(v) = mat.get("check-in-ci").and_then(toml_edit::Item::as_bool) {
       config.materialize.check_in_ci = v;
     }
 
-    if let Some(v) =
-      mat.get("git-hide").and_then(toml_edit::Item::as_bool)
-    {
+    if let Some(v) = mat.get("git-hide").and_then(toml_edit::Item::as_bool) {
       config.materialize.git_hide = v;
     }
 
-    if let Some(v) =
-      mat.get("pre-build").and_then(toml_edit::Item::as_bool)
-    {
+    if let Some(v) = mat.get("pre-build").and_then(toml_edit::Item::as_bool) {
       config.materialize.pre_build = v;
     }
 
-    if let Some(v) =
-      mat.get("auto-stage").and_then(toml_edit::Item::as_bool)
-    {
+    if let Some(v) = mat.get("auto-stage").and_then(toml_edit::Item::as_bool) {
       config.materialize.auto_stage = v;
     }
 

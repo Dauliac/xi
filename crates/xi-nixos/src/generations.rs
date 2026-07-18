@@ -8,8 +8,8 @@ use std::{
 use chrono::{DateTime, Local, TimeZone, Utc};
 use clap::ValueEnum;
 use color_eyre::eyre::Result;
-use xi_core::command::{CommandKind, NixCommand};
 use tracing::{debug, warn};
+use xi_core::command::{CommandKind, NixCommand};
 
 #[derive(Debug, Clone)]
 pub struct GenerationInfo {

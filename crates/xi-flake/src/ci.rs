@@ -3,9 +3,9 @@ use std::time::Instant;
 
 use color_eyre::Result;
 use color_eyre::eyre::bail;
-use xi_core::progress;
 use nix_command::{CommandKind, NixCommand};
 use tracing::{debug, info};
+use xi_core::progress;
 use yansi::{Color, Paint};
 
 use crate::args::{CiArgs, CiBackend, NixPassthroughArgs};
@@ -40,7 +40,7 @@ impl StepResult {
   fn finish_spinner(&self, spinner: &progress::Spinner) {
     let duration = format!("({:.1}s)", self.duration.as_secs_f64());
 
-    let msg = match &self.status {
+    let mut msg = match &self.status {
       StepStatus::Ok => {
         format!(
           "    {} {} {}",
@@ -76,6 +76,10 @@ impl StepResult {
       },
     };
 
+    if let Some(ref detail) = self.detail {
+      msg.push_str(&format!("\n      {}", Paint::new(detail).dim()));
+    }
+
     spinner.finish_with_message(msg);
   }
 
@@ -90,9 +94,6 @@ impl StepResult {
 
 /// Step: verify flake.lock is in sync (quiet — captures output).
 fn step_lock_check(flake_ref: &str) -> StepResult {
-  let spinner =
-    progress::spinner(format!("    {} ...", Paint::new("Lock check").bold()));
-
   let start = Instant::now();
 
   let cmd = NixCommand::new(CommandKind::Flake)
@@ -100,7 +101,7 @@ fn step_lock_check(flake_ref: &str) -> StepResult {
     .arg("--no-update-lock-file")
     .arg(flake_ref);
 
-  let result = match cmd.output() {
+  match cmd.output() {
     Ok(output) => {
       if output.status.success() {
         StepResult {
@@ -129,10 +130,7 @@ fn step_lock_check(flake_ref: &str) -> StepResult {
       duration: start.elapsed(),
       detail: None,
     },
-  };
-
-  result.finish_spinner(&spinner);
-  result
+  }
 }
 
 /// Step: run flake health checks (input freshness, branch, source).
@@ -144,20 +142,15 @@ fn step_health_check(
   flake_dir: Option<&Path>,
   doctor_config: &project_config::ProjectDoctorConfig,
 ) -> StepResult {
-  let spinner =
-    progress::spinner(format!("    {} ...", Paint::new("Health check").bold()));
-
   let start = Instant::now();
 
   let Some(dir) = flake_dir else {
-    let result = StepResult {
+    return StepResult {
       name: "Health check",
       status: StepStatus::Skipped,
       duration: start.elapsed(),
       detail: Some("remote flake, skipping health check".to_string()),
     };
-    result.finish_spinner(&spinner);
-    return result;
   };
 
   match crate::doctor::run_health_checks(dir, flake_ref, doctor_config) {
@@ -165,7 +158,7 @@ fn step_health_check(
       let warnings = checks.iter().filter(|c| c.is_warn()).count();
       let failures = checks.iter().filter(|c| c.is_fail()).count();
 
-      let result = if failures > 0 {
+      if failures > 0 {
         StepResult {
           name: "Health check",
           status: StepStatus::Warn(format!(
@@ -190,20 +183,13 @@ fn step_health_check(
           duration: start.elapsed(),
           detail: None,
         }
-      };
-
-      result.finish_spinner(&spinner);
-      result
+      }
     },
-    Err(e) => {
-      let result = StepResult {
-        name: "Health check",
-        status: StepStatus::Warn(format!("Could not run health checks: {e}")),
-        duration: start.elapsed(),
-        detail: None,
-      };
-      result.finish_spinner(&spinner);
-      result
+    Err(e) => StepResult {
+      name: "Health check",
+      status: StepStatus::Warn(format!("Could not run health checks: {e}")),
+      duration: start.elapsed(),
+      detail: None,
     },
   }
 }
@@ -211,27 +197,20 @@ fn step_health_check(
 /// Step: run eval-time tests (runTests backend) if detected.
 #[allow(clippy::option_if_let_else)]
 fn step_eval_tests(flake_ref: &str, test_attr: &str) -> StepResult {
-  let spinner =
-    progress::spinner(format!("    {} ...", Paint::new("Eval tests").bold()));
-
   let start = Instant::now();
 
   match test::run_ci_eval_tests(flake_ref, test_attr) {
-    None => {
-      let result = StepResult {
-        name: "Eval tests",
-        status: StepStatus::Skipped,
-        duration: start.elapsed(),
-        detail: Some("no runTests attribute detected".to_string()),
-      };
-      result.finish_spinner(&spinner);
-      result
+    None => StepResult {
+      name: "Eval tests",
+      status: StepStatus::Skipped,
+      duration: start.elapsed(),
+      detail: Some("no runTests attribute detected".to_string()),
     },
     Some(ci_result) => {
       let total = ci_result.passed + ci_result.failed + ci_result.errors;
 
       if ci_result.failed > 0 || ci_result.errors > 0 {
-        let result = StepResult {
+        StepResult {
           name: "Eval tests",
           status: StepStatus::Fail(format!(
             "{} passed, {} failed, {} errors ({total} total)",
@@ -241,24 +220,14 @@ fn step_eval_tests(flake_ref: &str, test_attr: &str) -> StepResult {
           detail: Some(
             "Run `xi test --backend run-tests` for details".to_string(),
           ),
-        };
-        result.finish_spinner(&spinner);
-        if let Some(ref d) = result.detail {
-          println!("      {}", Paint::new(d).dim());
         }
-        result
       } else {
-        let result = StepResult {
+        StepResult {
           name: "Eval tests",
           status: StepStatus::Ok,
           duration: start.elapsed(),
           detail: Some(format!("{total} test(s) passed")),
-        };
-        result.finish_spinner(&spinner);
-        if let Some(ref d) = result.detail {
-          println!("      {}", Paint::new(d).dim());
         }
-        result
       }
     },
   }
@@ -278,9 +247,6 @@ fn step_eval_all_systems(
   } else {
     "Eval current system"
   };
-
-  let spinner =
-    progress::spinner(format!("    {} ...", Paint::new(label).bold()));
 
   let start = Instant::now();
 
@@ -306,20 +272,23 @@ fn step_eval_all_systems(
   let output = match cmd.output() {
     Ok(o) => o,
     Err(e) => {
-      let result = StepResult {
-        name: label,
-        status: StepStatus::Fail(format!("Failed to run nix flake show: {e}")),
-        duration: start.elapsed(),
-        detail: None,
-      };
-      result.finish_spinner(&spinner);
-      return (result, None, vec![]);
+      return (
+        StepResult {
+          name: label,
+          status: StepStatus::Fail(format!(
+            "Failed to run nix flake show: {e}"
+          )),
+          duration: start.elapsed(),
+          detail: None,
+        },
+        None,
+        vec![],
+      );
     },
   };
 
   if !output.status.success() {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Only show the last meaningful error line, not nix fetching noise
     let error_msg = stderr
       .lines()
       .rfind(|l| {
@@ -331,33 +300,36 @@ fn step_eval_all_systems(
       .unwrap_or("evaluation failed")
       .to_string();
 
-    let result = StepResult {
-      name: label,
-      status: StepStatus::Fail(error_msg),
-      duration: start.elapsed(),
-      detail: None,
-    };
-    result.finish_spinner(&spinner);
-    return (result, None, vec![]);
+    return (
+      StepResult {
+        name: label,
+        status: StepStatus::Fail(error_msg),
+        duration: start.elapsed(),
+        detail: None,
+      },
+      None,
+      vec![],
+    );
   }
 
   let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
     Ok(v) => v,
     Err(e) => {
-      let result = StepResult {
-        name: label,
-        status: StepStatus::Fail(format!(
-          "Failed to parse flake show output: {e}"
-        )),
-        duration: start.elapsed(),
-        detail: None,
-      };
-      result.finish_spinner(&spinner);
-      return (result, None, vec![]);
+      return (
+        StepResult {
+          name: label,
+          status: StepStatus::Fail(format!(
+            "Failed to parse flake show output: {e}"
+          )),
+          duration: start.elapsed(),
+          detail: None,
+        },
+        None,
+        vec![],
+      );
     },
   };
 
-  // Discover extra derivation outputs from the JSON tree
   let extra_paths = discover_extra_derivation_paths(&json, extra_output_names);
 
   let detail = if extra_paths.is_empty() {
@@ -370,19 +342,16 @@ fn step_eval_all_systems(
     ))
   };
 
-  let result = StepResult {
-    name: label,
-    status: StepStatus::Ok,
-    duration: start.elapsed(),
-    detail,
-  };
-  result.finish_spinner(&spinner);
-
-  if let Some(ref d) = result.detail {
-    println!("      {}", Paint::new(d).dim());
-  }
-
-  (result, Some(json), extra_paths)
+  (
+    StepResult {
+      name: label,
+      status: StepStatus::Ok,
+      duration: start.elapsed(),
+      detail,
+    },
+    Some(json),
+    extra_paths,
+  )
 }
 
 /// Step: check materialization freshness (if check-in-ci is enabled).
@@ -405,63 +374,25 @@ fn step_materialize_check(flake_dir: Option<&Path>) -> StepResult {
       duration: start.elapsed(),
       detail: None,
     },
-    Ok(Some((0, total))) => {
-      let result = StepResult {
-        name: "Materialize",
-        status: StepStatus::Ok,
-        duration: start.elapsed(),
-        detail: Some(format!("{total} target(s) fresh")),
-      };
-      println!(
-        "    {} {} {}",
-        Paint::new("Materialize").bold(),
-        Paint::new("ok").fg(Color::Green).bold(),
-        Paint::new(format!("({:.1}s)", result.duration.as_secs_f64())).dim(),
-      );
-      if let Some(ref d) = result.detail {
-        println!("      {}", Paint::new(d).dim());
-      }
-      result
+    Ok(Some((0, total))) => StepResult {
+      name: "Materialize",
+      status: StepStatus::Ok,
+      duration: start.elapsed(),
+      detail: Some(format!("{total} target(s) fresh")),
     },
-    Ok(Some((stale, total))) => {
-      let result = StepResult {
-        name: "Materialize",
-        status: StepStatus::Fail(format!(
-          "{stale} of {total} target(s) are stale. Run `xi materialize`."
-        )),
-        duration: start.elapsed(),
-        detail: None,
-      };
-      println!(
-        "    {} {} {}",
-        Paint::new("Materialize").bold(),
-        Paint::new("FAIL").fg(Color::Red).bold(),
-        Paint::new(format!("({:.1}s)", result.duration.as_secs_f64())).dim(),
-      );
-      if let StepStatus::Fail(ref msg) = result.status {
-        println!("      {}", Paint::new(msg).fg(Color::Red));
-      }
-      result
+    Ok(Some((stale, total))) => StepResult {
+      name: "Materialize",
+      status: StepStatus::Fail(format!(
+        "{stale} of {total} target(s) are stale. Run `xi materialize`."
+      )),
+      duration: start.elapsed(),
+      detail: None,
     },
-    Err(e) => {
-      let result = StepResult {
-        name: "Materialize",
-        status: StepStatus::Warn(format!(
-          "Could not check materialization: {e}"
-        )),
-        duration: start.elapsed(),
-        detail: None,
-      };
-      println!(
-        "    {} {} {}",
-        Paint::new("Materialize").bold(),
-        Paint::new("warn").fg(Color::Yellow).bold(),
-        Paint::new(format!("({:.1}s)", result.duration.as_secs_f64())).dim(),
-      );
-      if let StepStatus::Warn(ref msg) = result.status {
-        println!("      {}", Paint::new(msg).fg(Color::Yellow));
-      }
-      result
+    Err(e) => StepResult {
+      name: "Materialize",
+      status: StepStatus::Warn(format!("Could not check materialization: {e}")),
+      duration: start.elapsed(),
+      detail: None,
     },
   }
 }
@@ -537,45 +468,30 @@ fn collect_derivation_paths(
 
 /// Step: deeply evaluate `lib` outputs with `builtins.deepSeq`.
 fn step_eval_lib(flake_ref: &str) -> StepResult {
-  let spinner = progress::spinner(format!(
-    "    {} ...",
-    Paint::new("Eval lib (deepSeq)").bold()
-  ));
-
   let start = Instant::now();
 
   // Quick check: does this flake even have a lib output?
   if !crate::flake_lib::has_lib_output(flake_ref) {
-    let result = StepResult {
+    return StepResult {
       name: "Eval lib",
       status: StepStatus::Skipped,
       duration: start.elapsed(),
       detail: None,
     };
-    result.finish_spinner(&spinner);
-    return result;
   }
 
   match crate::flake_lib::eval_lib(flake_ref, false) {
-    Ok(duration) => {
-      let result = StepResult {
-        name: "Eval lib",
-        status: StepStatus::Ok,
-        duration,
-        detail: None,
-      };
-      result.finish_spinner(&spinner);
-      result
+    Ok(duration) => StepResult {
+      name: "Eval lib",
+      status: StepStatus::Ok,
+      duration,
+      detail: None,
     },
-    Err(e) => {
-      let result = StepResult {
-        name: "Eval lib",
-        status: StepStatus::Fail(format!("{e}")),
-        duration: start.elapsed(),
-        detail: None,
-      };
-      result.finish_spinner(&spinner);
-      result
+    Err(e) => StepResult {
+      name: "Eval lib",
+      status: StepStatus::Fail(format!("{e}")),
+      duration: start.elapsed(),
+      detail: None,
     },
   }
 }
@@ -680,6 +596,11 @@ impl CiArgs {
       let doctor_config = project_config.doctor;
       let test_attr = project_config.test.run_tests_attr.clone();
 
+      let validate_spinner = progress::spinner(format!(
+        "    {} ...",
+        Paint::new("Running checks").bold()
+      ));
+
       std::thread::scope(|s| {
         // Lock check
         let lock_handle = if no_lock {
@@ -695,7 +616,12 @@ impl CiArgs {
         } else {
           let ref_clone = flake_ref_owned.clone();
           Some(s.spawn(move || {
-            step_eval_all_systems(&ref_clone, all_systems, no_ifd, &extra_names)
+            step_eval_all_systems(
+              &ref_clone,
+              all_systems,
+              no_ifd,
+              &extra_names,
+            )
           }))
         };
 
@@ -734,7 +660,9 @@ impl CiArgs {
         // Materialize freshness check (if check-in-ci = true)
         let mat_handle = {
           let local_clone = local_dir.clone();
-          Some(s.spawn(move || step_materialize_check(local_clone.as_deref())))
+          Some(s.spawn(move || {
+            step_materialize_check(local_clone.as_deref())
+          }))
         };
 
         // Collect results
@@ -825,25 +753,33 @@ impl CiArgs {
       mat_result,
     ) = phase1_results;
 
-    // Collect results (spinners already printed output)
+    // Clear the spinner and print results sequentially
+    validate_spinner.finish_and_clear();
+
     let mut all_results: Vec<StepResult> = Vec::new();
 
     if let Some(r) = lock_result {
+      print_step_result(&r);
       all_results.push(r);
     }
     if let Some(r) = eval_result {
+      print_step_result(&r);
       all_results.push(r);
     }
     if let Some(r) = health_result {
+      print_step_result(&r);
       all_results.push(r);
     }
     if let Some(r) = test_result {
+      print_step_result(&r);
       all_results.push(r);
     }
     if let Some(r) = lib_result {
+      print_step_result(&r);
       all_results.push(r);
     }
     if let Some(r) = mat_result {
+      print_step_result(&r);
       all_results.push(r);
     }
 
