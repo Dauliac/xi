@@ -9,32 +9,39 @@ rust-version = "1.95.0"
 version      = "4.4.0"
 
 [workspace.dependencies]
-nh             = { path = "crates/nh", version = "4.4.0" }
-nh-clean       = { path = "crates/nh-clean", version = "4.4.0" }
-nh-config      = { path = "crates/nh-config", version = "4.4.0" }
-nh-core        = { path = "crates/nh-core", version = "4.4.0" }
-nh-darwin      = { path = "crates/nh-darwin", version = "4.4.0" }
-nh-diff        = { path = "crates/nh-diff", version = "4.4.0" }
-nh-home        = { path = "crates/nh-home", version = "4.4.0" }
-nh-installable = { path = "crates/nh-installable", version = "4.4.0" }
-nh-nixos       = { path = "crates/nh-nixos", version = "4.4.0" }
-nh-remote      = { path = "crates/nh-remote", version = "4.4.0" }
-nh-search      = { path = "crates/nh-search", version = "4.4.0" }
-nix-command    = { path = "crates/nix-command", version = "0.2.3" }
+xi = { path = "crates/xi", version = "4.4.0" }
+xi-core     = { path = "crates/xi-core", version = "4.4.0" }
+xi-darwin   = { path = "crates/xi-darwin", version = "4.4.0" }
+xi-develop  = { path = "crates/xi-develop", version = "4.4.0" }
+xi-diff     = { path = "crates/xi-diff", version = "4.4.0" }
+xi-flake    = { path = "crates/xi-flake", version = "4.4.0" }
+xi-home     = { path = "crates/xi-home", version = "4.4.0" }
+xi-nixos    = { path = "crates/xi-nixos", version = "4.4.0" }
+xi-remote   = { path = "crates/xi-remote", version = "4.4.0" }
+xi-search   = { path = "crates/xi-search", version = "4.4.0" }
+nix-command = { path = "crates/nix-command", version = "0.2.3" }
 
-anstyle               = "1.0.13"
-chrono                = "0.4.42"
-clap                  = { features = [ "cargo", "color", "derive", "env", "unstable-styles" ], version = "4.5.51" }
-clap-verbosity-flag   = { default-features = false, features = [ "tracing" ], version = "3.0.4" }
-clap_complete         = "4.5.61"
+anstyle = "1.0.13"
+chrono = "0.4.42"
+clap = { features = [
+  "cargo",
+  "color",
+  "derive",
+  "env",
+  "unstable-ext",
+  "unstable-styles",
+], version = "4.5.51" }
+clap-verbosity-flag = { default-features = false, features = [ "tracing" ], version = "3.0.4" }
+clap_complete = { features = [ "unstable-dynamic" ], version = "4.5.61" }
 clap_complete_nushell = "4.5.10"
-clap_mangen           = { features = [ "env" ], version = "0.3.0" }
-color-eyre            = { default-features = false, features = [ "track-caller" ], version = "0.6.5" }
-dix                   = "2.1.0"
-elasticsearch-dsl     = "0.4.24"
-humantime             = "2.3.0"
-indicatif             = "0.18.4"
-inquire               = { default-features = false, features = [ "crossterm" ], version = "0.9.1" }
+clap_mangen = { features = [ "env" ], version = "0.3.0" }
+color-eyre = { default-features = false, features = [ "track-caller" ], version = "0.6.5" }
+dix = "2.1.0"
+elasticsearch-dsl = "0.4.24"
+glob = "0.3"
+humantime = "2.3.0"
+indicatif = "0.18.4"
+inquire = { default-features = false, features = [ "crossterm" ], version = "0.9.1" }
 
 nix = { default-features = false, features = [ "fs", "user", "hostname" ], version = "0.31.1" }
 proptest = "1.9.0"
@@ -50,9 +57,11 @@ semver = "1.0.27"
 serde = { features = [ "derive" ], version = "1.0.228" }
 serde_json = "1.0.145"
 serial_test = "3.2.0"
+sha2 = "0.10"
 shlex = "2.0.1"
 signal-hook = "0.4.1"
 spam-db = "0.2.4"
+strsim = "0.11.1"
 subprocess = "1.0.3"
 supports-hyperlinks = "3.1.0"
 system-configuration = "0.7.0"

@@ -7,19 +7,19 @@ labels: ["bug (requires confirmation)"]
 body:
   - type: checkboxes
     attributes:
-      label: I have confirmed that this is a bug related to nh
+      label: I have confirmed that this is a bug related to xi
       description: >-
         If you are unsure whether this is a bug, a packaging issue, or user error that is *not*
-        stemming from NH, please consider creating a [discussion](https://github.com/nix-community/nh/discussions)
+        stemming from XI, please consider creating a [discussion](https://github.com/Dauliac/xi/discussions)
         post instead. Invalid bug reports will be closed without an explanation.
       options:
         - required: true
           label: >-
             This is a bug, and not an user error or a support request. I understand that my issue
-            will be closed if it is not a bug in NH.
+            will be closed if it is not a bug in XI.
         - required: true
           label: >-
-            I have checked the [issues tab](https://github.com/nix-community/nh/issues?q=is%3Aissue)
+            I have checked the [issues tab](https://github.com/Dauliac/xi/issues?q=is%3Aissue)
             and confirmed that my issue has not yet been reported. I understand that my issue will
             be closed if it is a duplicate.
 
@@ -37,9 +37,9 @@ body:
   - type: dropdown
     attributes:
       label: Installation Method
-      description: How was NH installed?
+      description: How was XI installed?
       options:
-        - Stable Release (nixpkgs, `pkgs.nh` from nixos-unstable or nixos-yy-mm)
+        - Stable Release (nixpkgs, `pkgs.xi` from nixos-unstable or nixos-yy-mm)
         - Flakes (`nix profile add`) / Channels (`nix-env` from master branch or from a release)
         - Other (Please specify)
 
@@ -51,15 +51,15 @@ body:
       label: Installation Method (Other)
       description: "If you have selected 'Other' in the previous section, please describe your installation method"
       placeholder: >-
-        I installed nh from...
+        I installed xi from...
 
     validations:
       required: false
 
   - type: textarea
     attributes:
-      label: NH Version
-      description: "Which version of NH is currently in use? (`nh --version`)"
+      label: XI Version
+      description: "Which version of XI is currently in use? (`xi --version`)"
       placeholder: >-
         For example, v4.1.0.
 

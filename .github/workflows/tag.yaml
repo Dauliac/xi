@@ -85,13 +85,13 @@ jobs:
 
       - name: Prepare binary
         run: |
-          cp "target/${{ matrix.target }}/release/nh" "nh-${{ matrix.platform }}"
+          cp "target/${{ matrix.target }}/release/xi" "xi-${{ matrix.platform }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}
-          path: nh-${{ matrix.platform }}
+          path: xi-${{ matrix.platform }}
           retention-days: 1
 
   release:

@@ -1,11 +1,17 @@
+pub mod schema;
+
 use std::{
   ffi::{OsStr, OsString},
   io::{self, Read, Write},
+  path::PathBuf,
   process::{Command, ExitStatus, Output, Stdio},
-  sync::mpsc,
+  sync::{OnceLock, mpsc},
   thread,
   time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use subprocess::Exec;
 use thiserror::Error;
@@ -17,10 +23,7 @@ pub enum Error {
   #[error("command '{command}' failed")]
   CommandFailed { command: String },
   #[error("nix {command} timed out after {} seconds", duration.as_secs())]
-  Timeout {
-    command:  String,
-    duration: Duration,
-  },
+  Timeout { command: String, duration: Duration },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -33,7 +36,9 @@ pub enum CommandKind {
   Develop,
   Eval,
   Flake,
+  Fmt,
   PathInfo,
+  PrintDevEnv,
   Repl,
   Run,
   Shell,
@@ -42,66 +47,76 @@ pub enum CommandKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandSpec {
-  pub name:             &'static str,
+  pub name: &'static str,
   pub print_build_logs: bool,
-  pub interactive:      bool,
+  pub interactive: bool,
 }
 
 pub const COMMAND_SPECS: &[CommandSpec] = &[
   CommandSpec {
-    name:             "build",
+    name: "build",
     print_build_logs: true,
-    interactive:      false,
+    interactive: false,
   },
   CommandSpec {
-    name:             "config",
+    name: "config",
     print_build_logs: false,
-    interactive:      false,
+    interactive: false,
   },
   CommandSpec {
-    name:             "copy",
+    name: "copy",
     print_build_logs: false,
-    interactive:      false,
+    interactive: false,
   },
   CommandSpec {
-    name:             "develop",
+    name: "develop",
     print_build_logs: true,
-    interactive:      true,
+    interactive: true,
   },
   CommandSpec {
-    name:             "eval",
+    name: "eval",
     print_build_logs: false,
-    interactive:      false,
+    interactive: false,
   },
   CommandSpec {
-    name:             "flake",
+    name: "flake",
     print_build_logs: false,
-    interactive:      false,
+    interactive: false,
   },
   CommandSpec {
-    name:             "path-info",
-    print_build_logs: false,
-    interactive:      false,
-  },
-  CommandSpec {
-    name:             "repl",
-    print_build_logs: false,
-    interactive:      true,
-  },
-  CommandSpec {
-    name:             "run",
+    name: "fmt",
     print_build_logs: true,
-    interactive:      true,
+    interactive: false,
   },
   CommandSpec {
-    name:             "shell",
-    print_build_logs: true,
-    interactive:      true,
-  },
-  CommandSpec {
-    name:             "store",
+    name: "path-info",
     print_build_logs: false,
-    interactive:      false,
+    interactive: false,
+  },
+  CommandSpec {
+    name: "print-dev-env",
+    print_build_logs: false,
+    interactive: false,
+  },
+  CommandSpec {
+    name: "repl",
+    print_build_logs: false,
+    interactive: true,
+  },
+  CommandSpec {
+    name: "run",
+    print_build_logs: true,
+    interactive: true,
+  },
+  CommandSpec {
+    name: "shell",
+    print_build_logs: true,
+    interactive: true,
+  },
+  CommandSpec {
+    name: "store",
+    print_build_logs: false,
+    interactive: false,
   },
 ];
 
@@ -120,11 +135,13 @@ impl CommandKind {
       Self::Develop => COMMAND_SPECS[3],
       Self::Eval => COMMAND_SPECS[4],
       Self::Flake => COMMAND_SPECS[5],
-      Self::PathInfo => COMMAND_SPECS[6],
-      Self::Repl => COMMAND_SPECS[7],
-      Self::Run => COMMAND_SPECS[8],
-      Self::Shell => COMMAND_SPECS[9],
-      Self::Store => COMMAND_SPECS[10],
+      Self::Fmt => COMMAND_SPECS[6],
+      Self::PathInfo => COMMAND_SPECS[7],
+      Self::PrintDevEnv => COMMAND_SPECS[8],
+      Self::Repl => COMMAND_SPECS[9],
+      Self::Run => COMMAND_SPECS[10],
+      Self::Shell => COMMAND_SPECS[11],
+      Self::Store => COMMAND_SPECS[12],
     }
   }
 }
@@ -140,16 +157,16 @@ impl TryFrom<&str> for CommandKind {
       "develop" => Ok(Self::Develop),
       "eval" => Ok(Self::Eval),
       "flake" => Ok(Self::Flake),
+      "fmt" => Ok(Self::Fmt),
       "path-info" => Ok(Self::PathInfo),
+      "print-dev-env" => Ok(Self::PrintDevEnv),
       "repl" => Ok(Self::Repl),
       "run" => Ok(Self::Run),
       "shell" => Ok(Self::Shell),
       "store" => Ok(Self::Store),
-      command => {
-        Err(UnknownCommand {
-          command: command.to_string(),
-        })
-      },
+      command => Err(UnknownCommand {
+        command: command.to_string(),
+      }),
     }
   }
 }
@@ -194,19 +211,82 @@ fn read_pipe<R: Read>(
   }
 }
 
+/// Cached result of the real nix binary lookup.
+static REAL_NIX_BIN: OnceLock<OsString> = OnceLock::new();
+
+/// Find the real `nix` binary by walking `$PATH` and skipping shell-script
+/// wrappers (like the xi nix-alias wrapper).
+///
+/// The real nix is an ELF/Mach-O binary — not a `#!` script. This prevents
+/// infinite recursion when xi's nix wrapper (which calls `xi nix`) is
+/// prepended to `$PATH`.
+///
+/// Users can set `XI_NIX_BIN` to explicitly point at the real binary.
+/// The result is cached for the lifetime of the process.
+#[must_use]
+pub fn find_real_nix_binary() -> OsString {
+  REAL_NIX_BIN
+    .get_or_init(|| {
+      find_real_nix_binary_uncached().unwrap_or_else(|| OsString::from("nix"))
+    })
+    .clone()
+}
+
+fn find_real_nix_binary_uncached() -> Option<OsString> {
+  // Explicit override
+  if let Ok(explicit) = std::env::var("XI_NIX_BIN") {
+    let p = PathBuf::from(&explicit);
+    if p.is_file() {
+      return Some(OsString::from(explicit));
+    }
+  }
+
+  let path_var = std::env::var("PATH").ok()?;
+
+  for dir in std::env::split_paths(&path_var) {
+    let candidate = dir.join("nix");
+    if !candidate.is_file() {
+      continue;
+    }
+
+    // Check executable permission (unix only)
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::metadata(&candidate)
+      && meta.permissions().mode() & 0o111 == 0
+    {
+      continue;
+    }
+
+    // Read the first 2 bytes to distinguish ELF/binary from shell-script wrapper
+    if let Ok(file) = std::fs::File::open(&candidate) {
+      let mut buf = [0u8; 2];
+      if io::Read::read_exact(&mut io::BufReader::new(file), &mut buf).is_ok()
+        && buf == *b"#!"
+      {
+        // Shell script wrapper — skip it
+        continue;
+      }
+    }
+
+    return Some(OsString::from(candidate));
+  }
+
+  None
+}
+
 pub struct NixCommand {
-  kind:                    Option<CommandKind>,
-  binary:                  OsString,
-  global_args:             Vec<OsString>,
-  args:                    Vec<OsString>,
-  env:                     Vec<(OsString, OsString)>,
-  impure:                  bool,
-  print_build_logs:        bool,
-  interactive:             bool,
-  timeout:                 Option<Duration>,
-  eval_profiler_mode:      Option<String>,
+  kind: Option<CommandKind>,
+  binary: OsString,
+  global_args: Vec<OsString>,
+  args: Vec<OsString>,
+  env: Vec<(OsString, OsString)>,
+  impure: bool,
+  print_build_logs: bool,
+  interactive: bool,
+  timeout: Option<Duration>,
+  eval_profiler_mode: Option<String>,
   eval_profiler_frequency: Option<u32>,
-  eval_profile_file:       Option<String>,
+  eval_profile_file: Option<String>,
 }
 
 impl NixCommand {
@@ -214,36 +294,36 @@ impl NixCommand {
   pub fn new(kind: CommandKind) -> Self {
     let spec = kind.spec();
     Self {
-      kind:                    Some(kind),
-      binary:                  OsString::from("nix"),
-      global_args:             Vec::new(),
-      args:                    Vec::new(),
-      env:                     Vec::new(),
-      impure:                  false,
-      print_build_logs:        spec.print_build_logs,
-      interactive:             spec.interactive,
-      timeout:                 None,
-      eval_profiler_mode:      None,
+      kind: Some(kind),
+      binary: find_real_nix_binary(),
+      global_args: Vec::new(),
+      args: Vec::new(),
+      env: Vec::new(),
+      impure: false,
+      print_build_logs: spec.print_build_logs,
+      interactive: spec.interactive,
+      timeout: None,
+      eval_profiler_mode: None,
       eval_profiler_frequency: None,
-      eval_profile_file:       None,
+      eval_profile_file: None,
     }
   }
 
   #[must_use]
   pub fn raw() -> Self {
     Self {
-      kind:                    None,
-      binary:                  OsString::from("nix"),
-      global_args:             Vec::new(),
-      args:                    Vec::new(),
-      env:                     Vec::new(),
-      impure:                  false,
-      print_build_logs:        false,
-      interactive:             false,
-      timeout:                 None,
-      eval_profiler_mode:      None,
+      kind: None,
+      binary: find_real_nix_binary(),
+      global_args: Vec::new(),
+      args: Vec::new(),
+      env: Vec::new(),
+      impure: false,
+      print_build_logs: false,
+      interactive: false,
+      timeout: None,
+      eval_profiler_mode: None,
       eval_profiler_frequency: None,
-      eval_profile_file:       None,
+      eval_profile_file: None,
     }
   }
 
@@ -390,7 +470,7 @@ impl NixCommand {
     }
 
     for (key, value) in std::env::vars() {
-      if key.starts_with("NH_") {
+      if key.starts_with("XI_") {
         self = self.env(key, value);
       }
     }
@@ -595,6 +675,24 @@ fn kill_wait_join(
 mod tests {
   use super::*;
 
+  /// Extract just the args (without the binary path) from argv for easier
+  /// assertions. The binary is a resolved path that varies per environment.
+  fn argv_args(cmd: &NixCommand) -> Vec<OsString> {
+    let argv = cmd.argv();
+    argv[1..].to_vec()
+  }
+
+  /// Assert the binary in argv[0] is a nix binary (either "nix" or ends with
+  /// "/nix").
+  fn assert_nix_binary(cmd: &NixCommand) {
+    let argv = cmd.argv();
+    let bin = argv[0].to_string_lossy();
+    assert!(
+      bin == "nix" || bin.ends_with("/nix"),
+      "Expected nix binary, got: {bin}"
+    );
+  }
+
   #[test]
   fn schema_parses_supported_commands() {
     for spec in COMMAND_SPECS {
@@ -615,30 +713,28 @@ mod tests {
 
   #[test]
   fn argv_is_deterministic_and_schema_driven() {
-    let argv = NixCommand::new(CommandKind::Build)
+    let cmd = NixCommand::new(CommandKind::Build)
       .arg("nixpkgs#hello")
-      .impure(true)
-      .argv();
-    assert_eq!(argv, [
-      "nix",
-      "build",
-      "--print-build-logs",
-      "--impure",
-      "nixpkgs#hello"
-    ]);
+      .impure(true);
+    assert_nix_binary(&cmd);
+    assert_eq!(
+      argv_args(&cmd),
+      ["build", "--print-build-logs", "--impure", "nixpkgs#hello"]
+    );
   }
 
   #[test]
   fn no_build_output_suppresses_print_build_logs() {
-    let argv = NixCommand::new(CommandKind::Build)
-      .arg("--no-build-output")
-      .argv();
-    assert_eq!(argv, ["nix", "build", "--no-build-output"]);
+    let cmd = NixCommand::new(CommandKind::Build).arg("--no-build-output");
+    assert_nix_binary(&cmd);
+    assert_eq!(argv_args(&cmd), ["build", "--no-build-output"]);
   }
 
   #[test]
   fn eval_defaults_to_quiet_schema() {
-    assert_eq!(NixCommand::new(CommandKind::Eval).argv(), ["nix", "eval"]);
+    let cmd = NixCommand::new(CommandKind::Eval);
+    assert_nix_binary(&cmd);
+    assert_eq!(argv_args(&cmd), ["eval"]);
   }
 
   #[test]
@@ -667,48 +763,53 @@ mod tests {
 
   #[test]
   fn eval_profiler_flags_are_added_to_argv() {
-    let argv = NixCommand::new(CommandKind::Eval)
+    let cmd = NixCommand::new(CommandKind::Eval)
       .arg("nixpkgs#hello")
       .impure(true)
       .eval_profiler("flamegraph")
       .eval_profiler_frequency(9999)
-      .eval_profile_file("/tmp/nix.profile")
-      .argv();
-    assert_eq!(argv, [
-      "nix",
-      "eval",
-      "--impure",
-      "--eval-profiler",
-      "flamegraph",
-      "--eval-profiler-frequency",
-      "9999",
-      "--eval-profile-file",
-      "/tmp/nix.profile",
-      "nixpkgs#hello"
-    ]);
+      .eval_profile_file("/tmp/nix.profile");
+    assert_nix_binary(&cmd);
+    assert_eq!(
+      argv_args(&cmd),
+      [
+        "eval",
+        "--impure",
+        "--eval-profiler",
+        "flamegraph",
+        "--eval-profiler-frequency",
+        "9999",
+        "--eval-profile-file",
+        "/tmp/nix.profile",
+        "nixpkgs#hello"
+      ]
+    );
   }
 
   #[test]
   fn global_args_are_inserted_before_subcommand() {
-    let argv = NixCommand::new(CommandKind::Eval)
+    let cmd = NixCommand::new(CommandKind::Eval)
       .global_args(["--extra-experimental-features", "nix-command flakes"])
       .arg("--raw")
-      .arg("nixpkgs#hello")
-      .argv();
-    assert_eq!(argv, [
-      "nix",
-      "--extra-experimental-features",
-      "nix-command flakes",
-      "eval",
-      "--raw",
-      "nixpkgs#hello"
-    ]);
+      .arg("nixpkgs#hello");
+    assert_nix_binary(&cmd);
+    assert_eq!(
+      argv_args(&cmd),
+      [
+        "--extra-experimental-features",
+        "nix-command flakes",
+        "eval",
+        "--raw",
+        "nixpkgs#hello"
+      ]
+    );
   }
 
   #[test]
   fn raw_command_omits_subcommand() {
-    let argv = NixCommand::raw().arg("--version").argv();
-    assert_eq!(argv, ["nix", "--version"]);
+    let cmd = NixCommand::raw().arg("--version");
+    assert_nix_binary(&cmd);
+    assert_eq!(argv_args(&cmd), ["--version"]);
   }
 
   #[test]

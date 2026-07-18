@@ -21,8 +21,8 @@ If your pull request includes any change or unexpected behaviour not covered bel
 please do make sure to include it above in your description.
 -->
 
-[contribution guidelines]: https://github.com/nix-community/nh/blob/master/CONTRIBUTING.md
-[changelog]: https://github.com/nix-community/nh/tree/master/CHANGELOG.md
+[contribution guidelines]: https://github.com/Dauliac/xi/blob/master/CONTRIBUTING.md
+[changelog]: https://github.com/Dauliac/xi/tree/master/CHANGELOG.md
 
 - [ ] I have read and understood the [contribution guidelines]
 - [ ] I have updated the [changelog] as per my changes
@@ -49,4 +49,4 @@ please do make sure to include it above in your description.
 Add a :+1: [reaction] to [pull requests you find important].
 
 [reaction]: https://github.blog/2016-03-10-add-reactions-to-pull-requests-issues-and-comments/
-[pull requests you find important]: https://github.com/nix-community/nh/pulls?q=is%3Aopen+sort%3Areactions-%2B1-desc
+[pull requests you find important]: https://github.com/Dauliac/xi/pulls?q=is%3Aopen+sort%3Areactions-%2B1-desc

@@ -13,3 +13,6 @@ mutants*
 # Misc
 report*
 
+
+# nh managed state
+/.nh/

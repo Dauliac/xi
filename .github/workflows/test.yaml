@@ -1,4 +1,4 @@
-name: "Test NH"
+name: "Test XI"
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ on:
 
 jobs:
   test-linux:
-    name: "Test NH on Linux"
+    name: "Test XI on Linux"
     runs-on: ubuntu-latest
     steps:
       - uses: cachix/install-nix-action@master
@@ -50,10 +50,10 @@ jobs:
 
       - name: Test Switching to NixOS Configuration
         run: |
-          nix run .#nh -- os switch --diff never --dry --no-nom --verbose --file ./test/nixos.nix
+          nix run .#xi -- os switch --diff never --dry --no-nom --verbose --file ./test/nixos.nix
 
   build-darwin:
-    name: "Test NH on Darwin"
+    name: "Test XI on Darwin"
     runs-on: macos-latest
 
     steps:
@@ -77,4 +77,4 @@ jobs:
           nix flake init -t nix-darwin
           git add flake.nix
           cd ..
-          nix run .#nh -- darwin switch --diff never --hostname simple --dry --no-nom --verbose ./flake
+          nix run .#xi -- darwin switch --diff never --hostname simple --dry --no-nom --verbose ./flake

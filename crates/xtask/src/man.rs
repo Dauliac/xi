@@ -11,12 +11,12 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
     })?;
   }
 
-  let man_path = gen_dir.join("nh.1");
+  let man_path = gen_dir.join("xi.1");
   let mut buffer: Vec<u8> = Vec::new();
 
-  let mut cmd = nh::interface::Main::command();
+  let mut cmd = xi::interface::Main::command();
   let mut man = clap_mangen::Man::new(cmd.clone());
-  man = man.manual("nh manual".to_string());
+  man = man.manual("xi manual".to_string());
   man
     .render_title(&mut buffer)
     .map_err(|e| format!("Failed to render title: {e}"))?;
@@ -49,80 +49,126 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
   // ENVIRONMENT section
   let env_vars = [
     (
-      "NH_NO_CHECKS",
+      "XI_NO_CHECKS",
       "When set (any non-empty value), skips startup checks such as Nix \
        version and experimental feature validation. Useful for generating \
        completions or running in constrained build environments.",
     ),
     (
-      "NH_FLAKE",
+      "XI_FLAKE",
       "Preferred path/reference to a directory containing your flake.nix used \
-       by NH when running flake-based commands. Historically FLAKE was used; \
-       NH will migrate FLAKE into NH_FLAKE if present.",
+       by XIwhen running flake-based commands. Historically FLAKE was used; \
+       XIwill migrate FLAKE into XI_FLAKE if present.",
     ),
     (
-      "NH_OS_FLAKE",
-      "Command-specific flake reference for nh os commands. Takes precedence \
-       over NH_FLAKE.",
+      "XI_OS_FLAKE",
+      "Command-specific flake reference for xi os commands. Takes precedence \
+       over XI_FLAKE.",
     ),
     (
-      "NH_HOME_FLAKE",
-      "Command-specific flake reference for nh home commands. Takes \
-       precedence over NH_FLAKE.",
+      "XI_HOME_FLAKE",
+      "Command-specific flake reference for xi home commands. Takes \
+       precedence over XI_FLAKE.",
     ),
     (
-      "NH_DARWIN_FLAKE",
-      "Command-specific flake reference for nh darwin commands. Takes \
-       precedence over NH_FLAKE.",
+      "XI_DARWIN_FLAKE",
+      "Command-specific flake reference for xi darwin commands. Takes \
+       precedence over XI_FLAKE.",
     ),
     (
-      "NH_FILE",
+      "XI_FILE",
       "Preferred path to a directory/file containing a Nix expression. Chosen \
-       after os/home/darwin-specific env vars, but before NH_FLAKE.",
+       after os/home/darwin-specific env vars, but before XI_FLAKE.",
     ),
     (
-      "NH_ATTRP",
-      "Nix attribute path for an expression specified with NH_FILE. For \
+      "XI_ATTRP",
+      "Nix attribute path for an expression specified with XI_FILE. For \
        example, nixosConfigurations.<hostname>.",
     ),
     (
-      "NH_SUDO_ASKPASS",
-      "Path to a program used as SUDO_ASKPASS when NH self-elevates with sudo.",
+      "XI_SUDO_ASKPASS",
+      "Path to a program used as SUDO_ASKPASS when XIself-elevates with sudo.",
     ),
     (
-      "NH_PRESERVE_ENV",
+      "XI_PRESERVE_ENV",
       "Controls whether environment variables marked for preservation are \
        passed to elevated commands. Set to \"0\" to disable, \"1\" to force. \
        If unset, defaults to enabled.",
     ),
     (
-      "NH_SHOW_ACTIVATION_LOGS",
+      "XI_SHOW_ACTIVATION_LOGS",
       "Controls whether activation output is displayed. By default, \
        activation output is hidden. Setting to \"1\" shows full logs.",
     ),
     (
-      "NH_LOG",
-      "Sets the tracing/log filter for NH. Uses tracing_subscriber format \
-       (e.g., nh=trace).",
+      "XI_LOG",
+      "Sets the tracing/log filter for XI. Uses tracing_subscriber format \
+       (e.g., xi=trace).",
     ),
     (
-      "NH_NOM",
-      "Control whether nix-output-monitor (nom) is enabled for build \
-       processes. Equivalent of --no-nom.",
+      "XI_NO_NOM",
+      "Disable nix-output-monitor (nom) for build processes. Set to \
+       \"1\" or \"true\" to disable nom. Equivalent of --no-nom. \
+       Can also be set via config.toml [build] nom = false.",
     ),
     (
-      "NH_REMOTE_CLEANUP",
+      "XI_MAX_JOBS",
+      "Number of concurrent jobs Nix should run. Equivalent of \
+       --max-jobs / -j. Can also be set via config.toml [build] max_jobs.",
+    ),
+    (
+      "XI_KEEP_GOING",
+      "Continue building despite encountering errors. Set to \"1\" or \
+       \"true\". Equivalent of --keep-going / -k. Can also be set via \
+       config.toml [build] keep_going = true.",
+    ),
+    (
+      "XI_SHOW_TRACE",
+      "Display tracebacks on errors. Set to \"1\" or \"true\". Equivalent \
+       of --show-trace / -t. Can also be set via config.toml [build] \
+       show_trace = true.",
+    ),
+    (
+      "XI_IMPURE",
+      "Allow impure builds. Set to \"1\" or \"true\". Equivalent of \
+       --impure. Can also be set via config.toml [build] impure = true.",
+    ),
+    (
+      "XI_ACCEPT_FLAKE_CONFIG",
+      "Accept configuration from flakes. Set to \"1\" or \"true\". \
+       Equivalent of --accept-flake-config. Can also be set via \
+       config.toml [build] accept_flake_config = true.",
+    ),
+    (
+      "XI_OFFLINE",
+      "Build without internet access. Set to \"1\" or \"true\". Equivalent \
+       of --offline. Can also be set via config.toml [build] offline = true.",
+    ),
+    (
+      "XI_CONNECT_TIMEOUT",
+      "Substituter connection timeout in seconds. Prevents long hangs when \
+       binary caches are unreachable. Default: 5. Set to 0 to disable \
+       (use nix's default of no timeout). Can also be set via \
+       config.toml [build] connect_timeout = 5.",
+    ),
+    (
+      "XI_DIFF",
+      "Control package diff display: \"auto\", \"always\", or \"never\". \
+       Equivalent of --diff.",
+    ),
+    (
+      "XI_REMOTE_CLEANUP",
       "Whether to clean up remote processes on interrupt via pkill. Opt-in \
        due to fragile behavior.",
     ),
     (
-      "NH_SSHOPTS",
+      "XI_SSHOPTS",
       "SSH options for remote operations. Takes precedence over NIX_SSHOPTS. \
        Accepts the same format as NIX_SSHOPTS.",
     ),
     (
-      "NH_SUDOOPTS",
-      "Extra arguments inserted into the sudo invocation when NH elevates \
+      "XI_SUDOOPTS",
+      "Extra arguments inserted into the sudo invocation when XIelevates \
        privileges. Takes precedence over NIX_SUDOOPTS.",
     ),
     (
@@ -137,13 +183,13 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
     ),
     (
       "NIX_SSHOPTS",
-      "SSH options passed to Nix commands for remote builds. NH_SSHOPTS takes \
+      "SSH options passed to Nix commands for remote builds. XI_SSHOPTS takes \
        precedence when both are set.",
     ),
     (
       "NIX_SUDOOPTS",
       "Extra arguments inserted into the sudo invocation. Supported for \
-       nixos-rebuild compatibility; NH_SUDOOPTS takes precedence.",
+       nixos-rebuild compatibility; XI_SUDOOPTS takes precedence.",
     ),
     (
       "NIX_CONFIG",
@@ -197,33 +243,33 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
   let examples = [
     (
       "Switch to a new NixOS configuration",
-      "nh os switch --hostname myhost --specialisation dev",
+      "xi os switch --hostname myhost --specialisation dev",
     ),
     (
       "Rollback to a previous NixOS generation",
-      "nh os rollback --to 42",
+      "xi os rollback --to 42",
     ),
     (
       "Switch to a home-manager configuration",
-      "nh home switch --configuration alice@work",
+      "xi home switch --configuration alice@work",
     ),
     (
       "Build a home-manager configuration with backup",
-      "nh home build --backup-extension .bak",
+      "xi home build --backup-extension .bak",
     ),
     (
       "Switch to a darwin configuration",
-      "nh darwin switch --hostname mymac",
+      "xi darwin switch --hostname mymac",
     ),
-    ("Search for ripgrep", "nh search ripgrep"),
+    ("Search for ripgrep", "xi search ripgrep"),
     (
       "Show supported platforms for a package",
-      "nh search --platforms ripgrep",
+      "xi search --platforms ripgrep",
     ),
-    ("Clean all but keep 5 generations", "nh clean all --keep 5"),
+    ("Clean all but keep 5 generations", "xi clean all --keep 5"),
     (
       "Clean a specific profile",
-      "nh clean profile /nix/var/nix/profiles/system",
+      "xi clean profile /nix/var/nix/profiles/system",
     ),
   ];
   let mut sect = Roff::new();

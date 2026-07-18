@@ -1,8 +1,8 @@
-# Contributing to NH
+# Contributing to XI
 
 <!--toc:start-->
 
-- [Contributing to NH](#contributing-to-nh)
+- [Contributing to XI](#contributing-to-xi)
   - [Code of Conduct](#code-of-conduct)
   - [Making Changes](#making-changes)
     - [Writing Code](#writing-code)
@@ -156,7 +156,7 @@ something like `Fixes #XXX` to the long description.
 #### Common Scopes
 
 It is _usually_ safe to use the crate or module name for the scope. For example
-if you are editing `crates/nh-core/args.rs` you may use `nh-core:` as the scope.
+if you are editing `crates/xi-core/args.rs` you may use `xi-core:` as the scope.
 If you are editing multiple modules or crates, `various` or `treewide` may be
 more suitable. We use `docs:`, `chore:` and `meta:` for changes around
 documentation, basic maintenance (such as dependency updates) and permanent
@@ -323,8 +323,8 @@ project.
 
 ## Getting Help
 
-[GitHub Discussions]: https://github.com/nix-community/nh/discussions
-[GitHub Issues]: https://github.com/nix-community/nh/issues
+[GitHub Discussions]: https://github.com/Dauliac/xi/discussions
+[GitHub Issues]: https://github.com/Dauliac/xi/issues
 
 - **Discussions**: For questions and ideas, use [GitHub Discussions].
 - **Issues**: For bug reports and feature requests, use [GitHub Issues].

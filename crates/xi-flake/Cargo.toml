@@ -1,0 +1,35 @@
+[package]
+name                   = "xi-flake"
+description            = "This is an internal component crate of xi"
+version.workspace      = true
+publish                = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+clap.workspace          = true
+clap_complete.workspace = true
+color-eyre.workspace    = true
+glob.workspace          = true
+indicatif.workspace     = true
+xi-core.workspace       = true
+nix-command.workspace   = true
+serde.workspace         = true
+serde_json.workspace    = true
+sha2.workspace          = true
+subprocess.workspace    = true
+toml_edit.workspace     = true
+tracing.workspace       = true
+walkdir.workspace       = true
+which.workspace         = true
+yansi.workspace         = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
