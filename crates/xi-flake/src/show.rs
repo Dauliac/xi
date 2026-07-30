@@ -89,7 +89,7 @@ fn detect_output_kind(
     Some("unknown") | None => {
       // Infer from category name via centralized logic
       FlakeOutputKind::infer_from_category(cat_name)
-        .map(|k| k.as_str())
+        .map(FlakeOutputKind::as_str)
         .or(Some("function"))
     },
     Some(_) => None,

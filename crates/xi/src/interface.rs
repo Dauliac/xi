@@ -286,6 +286,19 @@ impl NHCommand {
     }
   }
 
+  /// Apply locate defaults from config.toml to the run command.
+  /// Config values are lowest priority (CLI > env > config).
+  pub const fn apply_locate_config(
+    &mut self,
+    locate_config: &crate::config::LocateConfig,
+  ) {
+    if let Self::Run(args) = self
+      && args.cache_level.is_none()
+    {
+      args.cache_level = Some(locate_config.cache_level);
+    }
+  }
+
   /// Run the selected subcommand.
   ///
   /// # Errors
@@ -330,7 +343,7 @@ impl NHCommand {
 impl CompletionsArgs {
   pub fn run(&self) {
     let mut cmd = Main::command();
-    if let CompletionShell::Nushell = self.shell {
+    if matches!(self.shell, CompletionShell::Nushell) {
       clap_complete::generate(
         clap_complete_nushell::Nushell,
         &mut cmd,

@@ -100,6 +100,7 @@ pub fn main() -> Result<()> {
         tracing::debug!("Loaded config from {}", store.path().display());
         args.command.apply_cache_config(&config.cache);
         args.command.apply_build_config(&config.build);
+        args.command.apply_locate_config(&config.locate);
       },
       Err(e) => {
         tracing::warn!("Failed to parse config: {e}");

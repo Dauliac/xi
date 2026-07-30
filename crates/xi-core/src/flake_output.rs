@@ -176,7 +176,7 @@ impl FlakeOutput {
   /// Works for both known and unknown categories (unknown → `false`).
   #[must_use]
   pub fn is_name_per_system(name: &str) -> bool {
-    Self::from_nix_name(name).is_some_and(|o| o.is_per_system())
+    Self::from_nix_name(name).is_some_and(Self::is_per_system)
   }
 }
 
@@ -247,7 +247,6 @@ impl FlakeOutputKind {
       "derivation" => Self::Derivation,
       "nixos-configuration" => Self::NixosConfiguration,
       "nixpkgs-overlay" => Self::Overlay,
-      "unknown" => Self::Unknown,
       _ => Self::Unknown,
     }
   }

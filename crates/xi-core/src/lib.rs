@@ -4,6 +4,7 @@ pub mod cache_queue;
 pub mod checks;
 pub mod command;
 pub mod complete;
+pub mod dirs;
 pub mod flake_output;
 pub mod installable;
 pub mod progress;

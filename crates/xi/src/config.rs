@@ -26,6 +26,7 @@ pub struct Config {
   pub cache: CacheConfig,
   pub develop: DevelopConfig,
   pub build: BuildConfig,
+  pub locate: LocateConfig,
 }
 
 /// Development shell settings from the `[develop]` section.
@@ -90,6 +91,24 @@ impl Default for BuildConfig {
       max_jobs: None,
       connect_timeout: Some(5),
     }
+  }
+}
+
+/// Locate mode settings from the `[locate]` section.
+///
+/// ```toml
+/// [locate]
+/// cache_level = 2
+/// ```
+#[derive(Debug, Clone)]
+pub struct LocateConfig {
+  /// Cache level: 0=disabled, 1=choice only, 2=full (default).
+  pub cache_level: u8,
+}
+
+impl Default for LocateConfig {
+  fn default() -> Self {
+    Self { cache_level: 2 }
   }
 }
 
@@ -168,16 +187,18 @@ impl ConfigStore {
     let cache = self.read_cache_config();
     let develop = self.read_develop_config();
     let build = self.read_build_config();
+    let locate = self.read_locate_config();
     Ok(Config {
       cache,
       develop,
       build,
+      locate,
     })
   }
 
   /// Reject unknown keys at every level of the configuration.
   fn validate_unknown_keys(&self) -> Result<()> {
-    const TOP_LEVEL: &[&str] = &["cache", "develop", "build"];
+    const TOP_LEVEL: &[&str] = &["cache", "develop", "build", "locate"];
     const CACHE_SCALAR: &[&str] = &[
       "async_push",
       "queue_max_size",
@@ -242,6 +263,15 @@ impl ConfigStore {
       .and_then(toml_edit::Item::as_table)
     {
       reject_unknown("build", table, BUILD)?;
+    }
+
+    if let Some(table) = self
+      .document
+      .get("locate")
+      .and_then(toml_edit::Item::as_table)
+    {
+      const LOCATE: &[&str] = &["cache_level"];
+      reject_unknown("locate", table, LOCATE)?;
     }
 
     Ok(())
@@ -345,6 +375,20 @@ impl ConfigStore {
       max_jobs,
       connect_timeout,
     }
+  }
+
+  fn read_locate_config(&self) -> LocateConfig {
+    let Some(table) = self.document.get("locate") else {
+      return LocateConfig::default();
+    };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let cache_level = table
+      .get("cache_level")
+      .and_then(toml_edit::Item::as_integer)
+      .map_or(2, |v| v.clamp(0, 2) as u8);
+
+    LocateConfig { cache_level }
   }
 
   fn read_cache_config(&self) -> CacheConfig {

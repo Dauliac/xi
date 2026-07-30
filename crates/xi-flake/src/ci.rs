@@ -370,7 +370,7 @@ fn discover_extra_derivation_paths(
   let mut paths = Vec::new();
 
   for name in extra_output_names {
-    if FlakeOutput::from_nix_name(name).is_some_and(|o| o.is_devour_handled())
+    if FlakeOutput::from_nix_name(name).is_some_and(FlakeOutput::is_devour_handled)
     {
       continue;
     }

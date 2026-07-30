@@ -2,6 +2,7 @@ pub mod args;
 pub mod ci;
 pub(crate) mod doctor;
 pub mod flake_lib;
+pub(crate) mod locate;
 pub(crate) mod materialize;
 pub(crate) mod project_config;
 pub(crate) mod show;
@@ -446,13 +447,17 @@ fn is_flake_ref(s: &str) -> bool {
 impl RunArgs {
   /// Run the run command.
   ///
-  /// Phase 1: build the derivation with nom for pretty progress.
-  /// Phase 2: run it interactively (instant since it's cached).
+  /// In normal mode: build the derivation with nom, then run interactively.
+  /// In locate mode (`--locate`): search nixpkgs via nix-index, build, exec.
   ///
   /// # Errors
   ///
   /// Returns an error if the command fails.
   pub fn run(self) -> Result<()> {
+    if self.locate {
+      return self.run_locate();
+    }
+
     ensure_flake_locked(resolve_local_flake_dir_from_installable(
       &self.installable,
     ))?;
@@ -489,8 +494,64 @@ impl RunArgs {
       && let Some(ref attr) = suggest_attr
     {
       xi_core::suggest::print_suggestions_on_failure(&suggest_ref, attr, None);
+
+      // Hint: suggest locate mode for bare names
+      if !is_flake_ref(attr) {
+        eprintln!(
+          "\n{}",
+          xi_core::style::dim(&format!(
+            "hint: use `xi run -l {attr}` to search nixpkgs for a \
+             package providing '{attr}'"
+          ))
+        );
+      }
     }
     result
+  }
+
+  /// Run in locate mode: search nixpkgs via nix-index, build, exec.
+  fn run_locate(self) -> Result<()> {
+    // In locate mode, the installable positional arg is the command name.
+    let command = match &self.installable {
+      xi_core::installable::InstallableArgs::Specified(inst) => {
+        match inst {
+          xi_core::installable::Installable::Flake {
+            reference,
+            attribute,
+          } => {
+            if attribute.is_empty() {
+              reference.clone()
+            } else {
+              // User passed something like "nixpkgs#cowsay" — use the
+              // attribute as the command name
+              attribute.last().cloned().unwrap_or_else(|| reference.clone())
+            }
+          },
+          _ => {
+            bail!(
+              "locate mode expects a bare command name, not a file/expr/store \
+               path"
+            );
+          },
+        }
+      },
+      xi_core::installable::InstallableArgs::Unspecified => {
+        bail!("locate mode requires a command name: xi run -l <command>");
+      },
+    };
+
+    let cache_level = locate::CacheLevel::from_u8(self.cache_level.unwrap_or(2));
+    let passthrough_args = self.passthrough.to_nix_args();
+
+    locate::locate_and_run(
+      &command,
+      &self.extra_args,
+      &passthrough_args,
+      self.no_nom,
+      cache_level,
+      self.shell,
+      self.install,
+    )
   }
 }
 

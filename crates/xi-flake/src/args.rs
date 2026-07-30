@@ -236,6 +236,9 @@ pub struct CheckArgs {
 
 #[derive(Debug, Args)]
 /// Run a flake app (defaults to current directory)
+///
+/// With `--locate` / `-l`, searches nixpkgs for a package providing the
+/// given command (comma-style), builds it, then executes it directly.
 pub struct RunArgs {
   #[command(flatten)]
   pub installable: InstallableArgs,
@@ -243,6 +246,29 @@ pub struct RunArgs {
   /// Don't use nix-output-monitor for the build process
   #[arg(long, env = "XI_NO_NOM", value_parser = clap::builder::BoolishValueParser::new())]
   pub no_nom: bool,
+
+  /// Locate mode: search nixpkgs for a package providing the command
+  /// via nix-index, build it, then run the binary directly.
+  /// The installable argument becomes the command name.
+  #[arg(long, short = 'l', env = "XI_RUN_LOCATE", value_parser = clap::builder::BoolishValueParser::new())]
+  pub locate: bool,
+
+  /// (locate mode) Open a nix shell with the package instead of running
+  #[arg(long, requires = "locate")]
+  pub shell: bool,
+
+  /// (locate mode) Install the package into your nix profile
+  #[arg(long, requires = "locate")]
+  pub install: bool,
+
+  /// (locate mode) Cache level: 0=disabled, 1=choice only, 2=full (default)
+  #[arg(
+    long,
+    env = "XI_LOCATE_CACHE",
+    value_name = "LEVEL",
+    requires = "locate"
+  )]
+  pub cache_level: Option<u8>,
 
   #[command(flatten)]
   pub passthrough: NixPassthroughArgs,

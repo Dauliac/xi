@@ -358,6 +358,8 @@ fn ensure_gitattributes_merge_driver(
   project_dir: &Path,
   config: &ProjectMaterializeConfig,
 ) -> Result<()> {
+  use std::fmt::Write;
+
   let gitattributes = project_dir.join(".gitattributes");
   let pattern = format!("{}/** merge=ours", config.commit_path);
 
@@ -366,7 +368,6 @@ fn ensure_gitattributes_merge_driver(
     if content.contains(&pattern) {
       return Ok(());
     }
-    use std::fmt::Write;
     let mut new_content = content;
     if !new_content.ends_with('\n') {
       new_content.push('\n');
