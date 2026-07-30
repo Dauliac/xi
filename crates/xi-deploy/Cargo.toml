@@ -1,0 +1,22 @@
+[package]
+name                   = "xi-deploy"
+description            = "Deployment backends for xi (deploy-rs, colmena, builtin)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish                = true
+
+[dependencies]
+clap.workspace        = true
+color-eyre.workspace  = true
+nix-command.workspace = true
+serde.workspace       = true
+serde_json.workspace  = true
+tracing.workspace     = true
+which.workspace       = true
+xi-core.workspace     = true
+yansi.workspace       = true
+
+[lints]
+workspace = true

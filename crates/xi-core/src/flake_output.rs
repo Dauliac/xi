@@ -37,6 +37,13 @@ pub enum FlakeOutput {
   SystemConfigs,
   Templates,
   Lib,
+  // -- Deployment tool outputs --
+  /// deploy-rs: `deploy.nodes.<n>.profiles.<p>`
+  Deploy,
+  /// Colmena: `colmenaHive` (via `colmena.lib.makeHive`)
+  ColmenaHive,
+  /// disko: `diskoConfigurations` (declarative disk partitioning)
+  DiskoConfigurations,
 }
 
 impl FlakeOutput {
@@ -58,6 +65,9 @@ impl FlakeOutput {
     Self::Templates,
     Self::Lib,
     Self::LegacyPackages,
+    Self::Deploy,
+    Self::ColmenaHive,
+    Self::DiskoConfigurations,
   ];
 
   /// The Nix attribute name for this output category.
@@ -80,6 +90,9 @@ impl FlakeOutput {
       Self::SystemConfigs => "systemConfigs",
       Self::Templates => "templates",
       Self::Lib => "lib",
+      Self::Deploy => "deploy",
+      Self::ColmenaHive => "colmenaHive",
+      Self::DiskoConfigurations => "diskoConfigurations",
     }
   }
 
@@ -134,6 +147,8 @@ impl FlakeOutput {
       | Self::SystemConfigs => Some(FlakeOutputKind::Configuration),
       Self::Templates => Some(FlakeOutputKind::Template),
       Self::Lib => Some(FlakeOutputKind::Lib),
+      Self::Deploy | Self::ColmenaHive => Some(FlakeOutputKind::Configuration),
+      Self::DiskoConfigurations => Some(FlakeOutputKind::Configuration),
     }
   }
 
@@ -159,6 +174,9 @@ impl FlakeOutput {
       "systemConfigs" => Some(Self::SystemConfigs),
       "templates" => Some(Self::Templates),
       "lib" => Some(Self::Lib),
+      "deploy" => Some(Self::Deploy),
+      "colmenaHive" => Some(Self::ColmenaHive),
+      "diskoConfigurations" => Some(Self::DiskoConfigurations),
       _ => None,
     }
   }

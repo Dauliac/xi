@@ -71,6 +71,7 @@ pub struct Main {
   after_help = "\x1b[1mCommand groups:\x1b[0m
   Config mgmt:  os, home, darwin, system
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, doctor, materialize
+  Deployment:   deploy
   Development:  develop, search
   Maintenance:  cache, clean, nix, completions"
 )]
@@ -95,6 +96,9 @@ pub enum NHCommand {
   Test(xi_flake::args::TestArgs),
   Doctor(xi_flake::args::DoctorArgs),
   Materialize(xi_flake::args::MaterializeArgs),
+
+  // -- Deployment --
+  Deploy(xi_deploy::args::DeployArgs),
 
   // -- Development --
   Develop(xi_develop::args::DevelopArgs),
@@ -146,7 +150,8 @@ impl NHCommand {
       | Self::Lib(..)
       | Self::Test(..)
       | Self::Doctor(..)
-      | Self::Materialize(..) => Box::new(xi_core::checks::FlakeFeatures),
+      | Self::Materialize(..)
+      | Self::Deploy(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Search(..)
       | Self::Cache(..)
       | Self::Clean(..)
@@ -328,6 +333,7 @@ impl NHCommand {
       Self::Test(args) => args.run(),
       Self::Doctor(args) => args.run(),
       Self::Materialize(args) => args.run(),
+      Self::Deploy(args) => xi_deploy::detect_and_deploy(args),
       Self::Search(args) => args.run(),
       Self::Cache(proxy) => proxy.run(),
       Self::Clean(proxy) => proxy.command.run(elevation),

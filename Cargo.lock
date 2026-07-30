@@ -3077,6 +3077,7 @@ dependencies = [
  "walkdir",
  "xi-core",
  "xi-darwin",
+ "xi-deploy",
  "xi-develop",
  "xi-diff",
  "xi-flake",
@@ -3129,6 +3130,21 @@ dependencies = [
  "xi-core",
  "xi-diff",
  "xi-remote",
+]
+
+[[package]]
+name = "xi-deploy"
+version = "4.4.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "nix-command",
+ "serde",
+ "serde_json",
+ "tracing",
+ "which",
+ "xi-core",
+ "yansi",
 ]
 
 [[package]]

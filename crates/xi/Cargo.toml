@@ -29,6 +29,7 @@ tracing-subscriber.workspace    = true
 walkdir.workspace               = true
 xi-core.workspace               = true
 xi-darwin.workspace             = true
+xi-deploy.workspace             = true
 xi-develop.workspace            = true
 xi-diff.workspace               = true
 xi-flake.workspace              = true

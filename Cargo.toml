@@ -13,6 +13,7 @@ nix-command = { path = "crates/nix-command", version = "0.2.3" }
 xi          = { path = "crates/xi", version = "4.4.0" }
 xi-core     = { path = "crates/xi-core", version = "4.4.0" }
 xi-darwin   = { path = "crates/xi-darwin", version = "4.4.0" }
+xi-deploy   = { path = "crates/xi-deploy", version = "4.4.0" }
 xi-develop  = { path = "crates/xi-develop", version = "4.4.0" }
 xi-diff     = { path = "crates/xi-diff", version = "4.4.0" }
 xi-flake    = { path = "crates/xi-flake", version = "4.4.0" }
