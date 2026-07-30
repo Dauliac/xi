@@ -354,16 +354,7 @@ fn step_materialize_check(flake_dir: Option<&Path>) -> StepResult {
 // Extra output discovery
 // ---------------------------------------------------------------------------
 
-/// Known standard outputs that devour-flake already handles.
-const DEVOUR_HANDLED: &[&str] = &[
-  "packages",
-  "checks",
-  "devShells",
-  "apps",
-  "nixosConfigurations",
-  "darwinConfigurations",
-  "legacyPackages",
-];
+use xi_core::flake_output::FlakeOutput;
 
 /// Walk the flake show JSON and find derivation outputs matching the
 /// requested extra output names that aren't already handled by
@@ -379,7 +370,8 @@ fn discover_extra_derivation_paths(
   let mut paths = Vec::new();
 
   for name in extra_output_names {
-    if DEVOUR_HANDLED.contains(&name.as_str()) {
+    if FlakeOutput::from_nix_name(name).is_some_and(|o| o.is_devour_handled())
+    {
       continue;
     }
 

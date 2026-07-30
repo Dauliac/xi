@@ -12,14 +12,11 @@ use std::process::Command;
 
 use clap_complete::engine::CompletionCandidate;
 
+use crate::flake_output::FlakeOutput;
+
 /// Return the current nix system string (e.g. `x86_64-linux`).
 fn current_system() -> String {
-  let arch = std::env::consts::ARCH;
-  let os = match std::env::consts::OS {
-    "macos" => "darwin",
-    other => other,
-  };
-  format!("{arch}-{os}")
+  crate::flake_output::current_nix_system()
 }
 
 /// Query nix's built-in completion for a given installable prefix.
@@ -99,7 +96,7 @@ fn complete_flat(
 #[must_use]
 pub fn complete_packages(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_per_system("packages", prefix)
+  complete_per_system(FlakeOutput::Packages.as_str(), prefix)
 }
 
 /// Complete app names for `xi run`.
@@ -109,14 +106,17 @@ pub fn complete_packages(current: &OsStr) -> Vec<CompletionCandidate> {
 #[must_use]
 pub fn complete_apps(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  let mut results = complete_per_system("apps", prefix);
+  let mut results =
+    complete_per_system(FlakeOutput::Apps.as_str(), prefix);
   let existing: Vec<String> = results
     .iter()
     .filter_map(|c| {
       c.get_value().to_str().map(std::string::ToString::to_string)
     })
     .collect();
-  for candidate in complete_per_system("packages", prefix) {
+  for candidate in
+    complete_per_system(FlakeOutput::Packages.as_str(), prefix)
+  {
     if let Some(val) = candidate.get_value().to_str()
       && !existing.contains(&val.to_string())
     {
@@ -130,42 +130,42 @@ pub fn complete_apps(current: &OsStr) -> Vec<CompletionCandidate> {
 #[must_use]
 pub fn complete_checks(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_per_system("checks", prefix)
+  complete_per_system(FlakeOutput::Checks.as_str(), prefix)
 }
 
 /// Complete devShell names for `xi develop`.
 #[must_use]
 pub fn complete_devshells(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_per_system("devShells", prefix)
+  complete_per_system(FlakeOutput::DevShells.as_str(), prefix)
 }
 
 /// Complete NixOS configuration names for `xi os --hostname`.
 #[must_use]
 pub fn complete_nixos_configs(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_flat("nixosConfigurations", prefix)
+  complete_flat(FlakeOutput::NixosConfigurations.as_str(), prefix)
 }
 
 /// Complete home-manager configuration names.
 #[must_use]
 pub fn complete_home_configs(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_flat("homeConfigurations", prefix)
+  complete_flat(FlakeOutput::HomeConfigurations.as_str(), prefix)
 }
 
 /// Complete darwin configuration names.
 #[must_use]
 pub fn complete_darwin_configs(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_flat("darwinConfigurations", prefix)
+  complete_flat(FlakeOutput::DarwinConfigurations.as_str(), prefix)
 }
 
 /// Complete system-manager configuration names.
 #[must_use]
 pub fn complete_system_configs(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  complete_flat("systemConfigs", prefix)
+  complete_flat(FlakeOutput::SystemConfigs.as_str(), prefix)
 }
 
 /// Complete flake input names for `xi update`.

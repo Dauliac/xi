@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use tracing::debug;
+use xi_core::flake_output::{self, FlakeOutput, FlakeOutputKind};
 use yansi::{Color, Paint};
 
 /// A single flake output entry parsed from JSON.
@@ -57,38 +58,9 @@ impl OutputEntry {
   }
 }
 
-/// Known per-system categories (contain system as first key level).
-const PER_SYSTEM: &[&str] = &[
-  "packages",
-  "devShells",
-  "checks",
-  "apps",
-  "formatter",
-  "legacyPackages",
-];
-
-/// Category display order.
-const CATEGORY_ORDER: &[&str] = &[
-  "packages",
-  "devShells",
-  "checks",
-  "apps",
-  "formatter",
-  "overlays",
-  "nixosModules",
-  "nixosConfigurations",
-  "homeConfigurations",
-  "homeModules",
-  "darwinModules",
-  "darwinConfigurations",
-  "templates",
-  "lib",
-  "legacyPackages",
-];
-
-/// Outputs that are always hidden unless `--all` is passed.
-/// These are flake-parts internals or debug outputs.
-const HIDDEN_BY_DEFAULT: &[&str] = &["debug", "allSystems"];
+// Per-system classification, display order, and hidden categories are
+// all derived from the centralised `FlakeOutput` enum and
+// `flake_output::HIDDEN_CATEGORIES`.  No local constants needed.
 
 /// Detect the kind of a top-level flake output from its JSON value.
 ///
@@ -102,7 +74,7 @@ fn detect_output_kind(
   value: &serde_json::Value,
 ) -> Option<&'static str> {
   // Per-system categories are handled by render_per_system_category
-  if PER_SYSTEM.contains(&cat_name) {
+  if FlakeOutput::is_name_per_system(cat_name) {
     return None;
   }
 
@@ -115,40 +87,13 @@ fn detect_output_kind(
     Some("nixpkgs-overlay") => Some("overlay"),
     Some("nixos-configuration") => Some("nixos-configuration"),
     Some("unknown") | None => {
-      // Heuristic: infer from category name
-      infer_kind_from_category(cat_name).or(Some("function"))
+      // Infer from category name via centralized logic
+      FlakeOutputKind::infer_from_category(cat_name)
+        .map(|k| k.as_str())
+        .or(Some("function"))
     },
     Some(_) => None,
   }
-}
-
-/// Infer the kind label from a category name using naming conventions.
-fn infer_kind_from_category(cat_name: &str) -> Option<&'static str> {
-  if cat_name.ends_with("Modules")
-    || cat_name.ends_with("modules")
-    || cat_name == "modules"
-  {
-    Some("module")
-  } else if cat_name.ends_with("Configurations")
-    || cat_name.ends_with("configurations")
-    || cat_name.ends_with("Configs")
-    || cat_name.ends_with("configs")
-  {
-    Some("configuration")
-  } else if cat_name == "lib"
-    || cat_name.ends_with("Lib")
-    || cat_name.ends_with("libs")
-    || cat_name.ends_with("Libs")
-  {
-    Some("lib")
-  } else {
-    None
-  }
-}
-
-/// Returns true if the category name matches a known flake output pattern.
-fn is_known_output_pattern(name: &str) -> bool {
-  infer_kind_from_category(name).is_some()
 }
 
 /// Returns true if a JSON object is a leaf nix flake show entry
@@ -187,17 +132,17 @@ fn is_hidden_category(
   }
 
   // Explicit hide list
-  if HIDDEN_BY_DEFAULT.contains(&cat_name) {
+  if flake_output::is_hidden_by_default(cat_name) {
     return true;
   }
 
   // Never hide categories in the known display order
-  if CATEGORY_ORDER.contains(&cat_name) {
+  if FlakeOutput::is_in_display_order(cat_name) {
     return false;
   }
 
   // Never hide categories matching known naming patterns
-  if is_known_output_pattern(cat_name) {
+  if FlakeOutputKind::is_known_pattern(cat_name) {
     return false;
   }
 
@@ -231,7 +176,8 @@ pub fn render_flake_outputs(json: &serde_json::Value, show_all: bool) {
   let mut hidden_count = 0usize;
 
   // Print known categories in order
-  for &cat_name in CATEGORY_ORDER {
+  for &output in FlakeOutput::DISPLAY_ORDER {
+    let cat_name = output.as_str();
     let Some(cat_value) = root.get(cat_name) else {
       continue;
     };
@@ -246,7 +192,7 @@ pub fn render_flake_outputs(json: &serde_json::Value, show_all: bool) {
 
   // Print remaining categories not in the known order
   for (cat_name, cat_value) in root {
-    if CATEGORY_ORDER.contains(&cat_name.as_str()) {
+    if FlakeOutput::is_in_display_order(cat_name.as_str()) {
       continue;
     }
 
@@ -316,13 +262,15 @@ fn render_category(
   }
   *printed_any = true;
 
-  if cat_name == "formatter" {
+  if FlakeOutput::from_nix_name(cat_name) == Some(FlakeOutput::Formatter) {
     render_formatter_inline(cat_obj);
     return;
   }
 
   // lib-like outputs: show type + count, point to `xi lib` for details
-  if infer_kind_from_category(cat_name) == Some("lib") {
+  if FlakeOutputKind::infer_from_category(cat_name)
+    == Some(FlakeOutputKind::Lib)
+  {
     let count = crate::flake_lib::count_lib_attrs(&serde_json::Value::Object(
       cat_obj.clone(),
     ));
@@ -335,7 +283,7 @@ fn render_category(
     return;
   }
 
-  if PER_SYSTEM.contains(&cat_name) {
+  if FlakeOutput::is_name_per_system(cat_name) {
     // Skip per-system categories where no system has any attributes
     let has_any_attr = cat_obj.values().any(|system_value| {
       system_value
@@ -409,10 +357,10 @@ fn render_discovered_tree(
     let prefix = "  ".repeat(indent);
     if value.is_null() {
       // Leaf node — show with kind label inferred from category
-      let kind = infer_kind_from_category(cat_name);
+      let kind = FlakeOutputKind::infer_from_category(cat_name);
       print!("{prefix}{}", Paint::new(name).fg(Color::Blue));
       if let Some(k) = kind {
-        print!(" :: {}", Paint::new(k).fg(Color::Green).dim());
+        print!(" :: {}", Paint::new(k.as_str()).fg(Color::Green).dim());
       }
       if name == "default" {
         print!(" {}", Paint::new("[default]").fg(Color::Yellow));
@@ -446,8 +394,8 @@ fn print_opaque_category(cat_name: &str, value: &serde_json::Value) {
 
   let label = match kind {
     "unknown" => {
-      // Infer from name
-      infer_kind_from_category(cat_name).unwrap_or("opaque")
+      FlakeOutputKind::infer_from_category(cat_name)
+        .map_or("opaque", |k| k.as_str())
     },
     other => other,
   };
@@ -491,7 +439,7 @@ fn render_per_system_category(
   let mut attrs: BTreeMap<String, OutputEntry> = BTreeMap::new();
 
   for (_system, system_value) in cat_obj {
-    if cat_name == "formatter" {
+    if FlakeOutput::from_nix_name(cat_name) == Some(FlakeOutput::Formatter) {
       let entry = parse_entry(system_value);
       if entry.name.is_some()
         && attrs.get("default").is_none_or(|e| e.name.is_none())
@@ -694,7 +642,7 @@ pub fn leaf_categories_to_discover(json: &serde_json::Value) -> Vec<String> {
     .iter()
     .filter_map(|(name, value)| {
       // Skip hidden-by-default categories
-      if HIDDEN_BY_DEFAULT.contains(&name.as_str()) {
+      if flake_output::is_hidden_by_default(name.as_str()) {
         return None;
       }
 
@@ -1009,34 +957,54 @@ mod tests {
 
   #[test]
   fn infer_module_kind() {
-    assert_eq!(infer_kind_from_category("modules"), Some("module"));
-    assert_eq!(infer_kind_from_category("nixosModules"), Some("module"));
-    assert_eq!(infer_kind_from_category("homeModules"), Some("module"));
+    assert_eq!(
+      FlakeOutputKind::infer_from_category("modules"),
+      Some(FlakeOutputKind::Module)
+    );
+    assert_eq!(
+      FlakeOutputKind::infer_from_category("nixosModules"),
+      Some(FlakeOutputKind::Module)
+    );
+    assert_eq!(
+      FlakeOutputKind::infer_from_category("homeModules"),
+      Some(FlakeOutputKind::Module)
+    );
   }
 
   #[test]
   fn infer_config_kind() {
     assert_eq!(
-      infer_kind_from_category("homeConfigurations"),
-      Some("configuration")
+      FlakeOutputKind::infer_from_category("homeConfigurations"),
+      Some(FlakeOutputKind::Configuration)
     );
     assert_eq!(
-      infer_kind_from_category("systemConfigs"),
-      Some("configuration")
+      FlakeOutputKind::infer_from_category("systemConfigs"),
+      Some(FlakeOutputKind::Configuration)
     );
   }
 
   #[test]
   fn infer_lib_kind() {
-    assert_eq!(infer_kind_from_category("lib"), Some("lib"));
-    assert_eq!(infer_kind_from_category("evalLib"), Some("lib"));
-    assert_eq!(infer_kind_from_category("myLibs"), Some("lib"));
+    assert_eq!(
+      FlakeOutputKind::infer_from_category("lib"),
+      Some(FlakeOutputKind::Lib)
+    );
+    assert_eq!(
+      FlakeOutputKind::infer_from_category("evalLib"),
+      Some(FlakeOutputKind::Lib)
+    );
+    assert_eq!(
+      FlakeOutputKind::infer_from_category("myLibs"),
+      Some(FlakeOutputKind::Lib)
+    );
   }
 
   #[test]
-  fn infer_no_kind() {
-    assert_eq!(infer_kind_from_category("templates"), None);
-    assert_eq!(infer_kind_from_category("packages"), None);
+  fn infer_no_kind_for_unknown() {
+    // "templates" and "packages" are known FlakeOutput variants,
+    // so they DO have inferred kinds now. Test truly unknown names instead.
+    assert_eq!(FlakeOutputKind::infer_from_category("randomThing"), None);
+    assert_eq!(FlakeOutputKind::infer_from_category("myStuff"), None);
   }
 
   #[test]

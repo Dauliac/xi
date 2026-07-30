@@ -29,6 +29,17 @@ impl CommandContext {
       Self::System => "XI_SYSTEM_FLAKE",
     }
   }
+
+  /// The flake output category that this command context targets.
+  #[must_use]
+  pub const fn config_output(self) -> crate::flake_output::FlakeOutput {
+    match self {
+      Self::Os => crate::flake_output::FlakeOutput::NixosConfigurations,
+      Self::Home => crate::flake_output::FlakeOutput::HomeConfigurations,
+      Self::Darwin => crate::flake_output::FlakeOutput::DarwinConfigurations,
+      Self::System => crate::flake_output::FlakeOutput::SystemConfigs,
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -599,9 +610,10 @@ impl Installable {
 pub fn resolve_toplevel(
   hostname: &str,
   mut installable: Installable,
-  config_key: &str,
+  output: crate::flake_output::FlakeOutput,
   build_path: &[&str],
 ) -> Result<Installable> {
+  let config_key = output.as_str();
   let toplevel = build_path.iter().map(|&s| String::from(s));
 
   match installable {

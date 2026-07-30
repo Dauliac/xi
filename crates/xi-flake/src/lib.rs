@@ -23,6 +23,8 @@ use crate::args::{
   ShowArgs, UpdateArgs,
 };
 
+use xi_core::flake_output::FlakeOutput;
+
 // ---------------------------------------------------------------------------
 // Suggestion helpers
 // ---------------------------------------------------------------------------
@@ -81,12 +83,7 @@ pub(crate) const DEVOUR_FLAKE_REV: &str =
 
 /// Return the current nix system string (e.g. `x86_64-linux`, `aarch64-darwin`).
 pub(crate) fn current_nix_system() -> String {
-  let arch = std::env::consts::ARCH;
-  let os = match std::env::consts::OS {
-    "macos" => "darwin",
-    other => other,
-  };
-  format!("{arch}-{os}")
+  xi_core::flake_output::current_nix_system()
 }
 
 /// Resolve installable args to a nix argument list.
@@ -384,7 +381,11 @@ impl CheckArgs {
       let suggest_ref = flake_ref.clone();
       let check_installable = Installable::Flake {
         reference: flake_ref,
-        attribute: vec!["checks".to_string(), system, attr_name.clone()],
+        attribute: vec![
+          FlakeOutput::Checks.to_string(),
+          system,
+          attr_name.clone(),
+        ],
       };
 
       let check_display = check_installable
@@ -405,7 +406,7 @@ impl CheckArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           attr_name,
-          Some("checks"),
+          Some(FlakeOutput::Checks.as_str()),
         );
       }
       result
@@ -560,7 +561,7 @@ impl FmtArgs {
 
     let formatter_installable = Installable::Flake {
       reference: flake_ref.to_string(),
-      attribute: vec!["formatter".to_string(), system],
+      attribute: vec![FlakeOutput::Formatter.to_string(), system],
     };
 
     let build_cmd = NixCommand::new(CommandKind::Build)

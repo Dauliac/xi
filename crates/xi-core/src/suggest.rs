@@ -3,15 +3,7 @@ use strsim::jaro_winkler;
 use tracing::debug;
 use yansi::{Color, Paint};
 
-/// Per-system categories in `nix flake show --json` output.
-const PER_SYSTEM: &[&str] = &[
-  "packages",
-  "devShells",
-  "checks",
-  "apps",
-  "formatter",
-  "legacyPackages",
-];
+use crate::flake_output::FlakeOutput;
 
 /// Minimum Jaro-Winkler similarity to consider a match "close".
 /// 0.0 = completely different, 1.0 = identical.
@@ -19,12 +11,7 @@ const SIMILARITY_THRESHOLD: f64 = 0.7;
 
 /// Return the current nix system string (e.g. `x86_64-linux`).
 fn current_system() -> String {
-  let arch = std::env::consts::ARCH;
-  let os = match std::env::consts::OS {
-    "macos" => "darwin",
-    other => other,
-  };
-  format!("{arch}-{os}")
+  crate::flake_output::current_nix_system()
 }
 
 /// Fetch and parse `nix flake show --json` for a flake reference.
@@ -83,10 +70,12 @@ fn collect_available_attrs(
       continue;
     };
 
-    if PER_SYSTEM.contains(&cat_name) {
+    if FlakeOutput::is_name_per_system(cat_name) {
       // Look inside the current system
       if let Some(system_value) = cat_obj.get(system) {
-        if cat_name == "formatter" {
+        if FlakeOutput::from_nix_name(cat_name)
+          == Some(FlakeOutput::Formatter)
+        {
           suggestions.push(Suggestion {
             full_path: format!("{cat_name}.{system}"),
             leaf: "formatter".to_string(),

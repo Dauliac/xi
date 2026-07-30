@@ -144,7 +144,7 @@ impl DarwinRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_hostname,
-          Some("darwinConfigurations"),
+          Some(xi_core::flake_output::FlakeOutput::DarwinConfigurations.as_str()),
         );
       }
       result?;
@@ -165,7 +165,7 @@ impl DarwinRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_hostname,
-          Some("darwinConfigurations"),
+          Some(xi_core::flake_output::FlakeOutput::DarwinConfigurations.as_str()),
         );
       }
       result?;
@@ -262,7 +262,7 @@ impl DarwinReplArgs {
     } = target_installable
       && attribute.is_empty()
     {
-      attribute.push(String::from("darwinConfigurations"));
+      attribute.push(xi_core::flake_output::FlakeOutput::DarwinConfigurations.to_string());
       attribute.push(hostname);
     }
 
@@ -296,7 +296,7 @@ pub fn toplevel_for<S: AsRef<str>>(
   resolve_toplevel(
     hostname.as_ref(),
     installable,
-    "darwinConfigurations",
+    xi_core::flake_output::FlakeOutput::DarwinConfigurations,
     &["config", "system", "build", final_attr],
   )
 }

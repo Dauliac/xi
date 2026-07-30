@@ -609,7 +609,7 @@ impl OsRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_hostname,
-          Some("nixosConfigurations"),
+          Some(xi_core::flake_output::FlakeOutput::NixosConfigurations.as_str()),
         );
       }
 
@@ -634,7 +634,7 @@ impl OsRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_hostname,
-          Some("nixosConfigurations"),
+          Some(xi_core::flake_output::FlakeOutput::NixosConfigurations.as_str()),
         );
       }
 
@@ -1297,7 +1297,7 @@ pub fn toplevel_for<S: AsRef<str>>(
   resolve_toplevel(
     hostname.as_ref(),
     installable,
-    "nixosConfigurations",
+    xi_core::flake_output::FlakeOutput::NixosConfigurations,
     &build_path,
   )
 }
@@ -1318,7 +1318,7 @@ impl OsReplArgs {
     } = target_installable
       && attribute.is_empty()
     {
-      attribute.push(String::from("nixosConfigurations"));
+      attribute.push(xi_core::flake_output::FlakeOutput::NixosConfigurations.to_string());
       attribute.push(hostname);
     }
 

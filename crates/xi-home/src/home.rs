@@ -149,7 +149,7 @@ impl HomeRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_config,
-          Some("homeConfigurations"),
+          Some(xi_core::flake_output::FlakeOutput::HomeConfigurations.as_str()),
         );
       }
       result?;
@@ -170,7 +170,7 @@ impl HomeRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_config,
-          Some("homeConfigurations"),
+          Some(xi_core::flake_output::FlakeOutput::HomeConfigurations.as_str()),
         );
       }
       result?;
@@ -287,6 +287,7 @@ where
   I: IntoIterator<Item = S>,
   S: AsRef<std::ffi::OsStr>,
 {
+  let config_key = xi_core::flake_output::FlakeOutput::HomeConfigurations.as_str();
   let mut res = installable;
   let extra_args: Vec<OsString> = {
     let mut vec = Vec::new();
@@ -307,7 +308,7 @@ where
     } => {
       if !attribute.is_empty() {
         // Check if the path is too specific
-        if attribute[0] == "homeConfigurations" {
+        if attribute[0] == config_key {
           if attribute.len() > 2 {
             bail!(
               "Attribute path is too specific: {}. Home Manager only allows \
@@ -320,7 +321,7 @@ where
           }
         } else if attribute.len() > 1 {
           // User provided ".#myconfig" or similar - prepend homeConfigurations
-          attribute.insert(0, String::from("homeConfigurations"));
+          attribute.insert(0, String::from(config_key));
           // Re-validate after prepending
           if attribute.len() > 2 {
             bail!(
@@ -341,7 +342,7 @@ where
         return Ok(res);
       }
 
-      attribute.push(String::from("homeConfigurations"));
+      attribute.push(String::from(config_key));
 
       let flake_reference = reference.clone();
       let mut found_config = false;

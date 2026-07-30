@@ -88,7 +88,7 @@ impl SystemRebuildArgs {
     }
 
     let toplevel =
-      resolve_toplevel(&hostname, installable, "systemConfigs", &[])?;
+      resolve_toplevel(&hostname, installable, xi_core::flake_output::FlakeOutput::SystemConfigs, &[])?;
 
     xi_core::command::Build::new(toplevel)
       .extra_arg("--out-link")
