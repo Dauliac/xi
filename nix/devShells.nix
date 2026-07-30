@@ -45,6 +45,7 @@
           pkgs.lldb
           pkgs.yaml-language-server
           pkgs.cargo-nextest
+          pkgs.cargo-insta
           pkgs.just
           pkgs.deno
         ];

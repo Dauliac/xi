@@ -336,6 +336,15 @@ fn render_category(
   }
 
   if PER_SYSTEM.contains(&cat_name) {
+    // Skip per-system categories where no system has any attributes
+    let has_any_attr = cat_obj.values().any(|system_value| {
+      system_value
+        .as_object()
+        .is_some_and(|attrs| !attrs.is_empty())
+    });
+    if !has_any_attr {
+      return;
+    }
     println!("{}", Paint::new(cat_name).bold());
     render_per_system_category(cat_obj, cat_name);
   } else if is_discovered_tree(cat_obj) {

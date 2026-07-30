@@ -537,7 +537,7 @@ pub struct TestArgs {
 ///   name = "cargo-hash"
 ///   command = "nix eval .#cargoHash --json"
 ///   output = "cargo-hash.json"
-///   sources = [`Cargo.lock`]
+///   sources = \[`Cargo.lock`\]
 pub struct MaterializeArgs {
   /// Flake reference (defaults to current directory)
   pub flake_ref: Option<String>,

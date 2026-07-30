@@ -368,9 +368,7 @@ impl NixBuildPassthroughArgs {
       .option
       .chunks(2)
       .any(|pair| pair[0] == "connect-timeout");
-    if !user_sets_timeout
-      && let Some(timeout) = self.connect_timeout
-    {
+    if !user_sets_timeout && let Some(timeout) = self.connect_timeout {
       args.push("--option".into());
       args.push("connect-timeout".into());
       args.push(timeout.to_string());

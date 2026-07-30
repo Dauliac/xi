@@ -366,12 +366,15 @@ fn ensure_gitattributes_merge_driver(
     if content.contains(&pattern) {
       return Ok(());
     }
+    use std::fmt::Write;
     let mut new_content = content;
     if !new_content.ends_with('\n') {
       new_content.push('\n');
     }
-    use std::fmt::Write;
-    let _ = write!(new_content, "\n# xi materialized files — avoid merge conflicts\n{pattern}\n");
+    let _ = write!(
+      new_content,
+      "\n# xi materialized files — avoid merge conflicts\n{pattern}\n"
+    );
     std::fs::write(&gitattributes, new_content)?;
   } else {
     std::fs::write(

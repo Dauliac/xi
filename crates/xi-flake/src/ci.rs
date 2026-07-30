@@ -569,12 +569,7 @@ impl CiArgs {
         } else {
           let ref_clone = flake_ref_owned.clone();
           Some(s.spawn(move || {
-            step_eval_all_systems(
-              &ref_clone,
-              all_systems,
-              no_ifd,
-              &extra_names,
-            )
+            step_eval_all_systems(&ref_clone, all_systems, no_ifd, &extra_names)
           }))
         };
 
@@ -613,9 +608,7 @@ impl CiArgs {
         // Materialize freshness check (if check-in-ci = true)
         let mat_handle = {
           let local_clone = local_dir.clone();
-          Some(s.spawn(move || {
-            step_materialize_check(local_clone.as_deref())
-          }))
+          Some(s.spawn(move || step_materialize_check(local_clone.as_deref())))
         };
 
         // Collect results

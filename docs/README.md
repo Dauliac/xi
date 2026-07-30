@@ -23,9 +23,9 @@
 
 ---
 
-**xi** (/ksaɪ/) — the Greek letter, nix reversed without the n, and a two-character
-CLI. A modern, unified tool for the Nix ecosystem. It reimplements and extends
-the interfaces of `nixos-rebuild`, `home-manager`, `darwin-rebuild`,
+**xi** (/ksaɪ/) — the Greek letter, nix reversed without the n, and a
+two-character CLI. A modern, unified tool for the Nix ecosystem. It reimplements
+and extends the interfaces of `nixos-rebuild`, `home-manager`, `darwin-rebuild`,
 `nix search`, and `nix-collect-garbage` into a single, cohesive tool with pretty
 output, fast diffing, and daemon-driven development shells.
 
