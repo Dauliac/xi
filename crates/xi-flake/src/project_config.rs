@@ -16,7 +16,7 @@ pub struct ProjectConfig {
 /// Formatter configuration.
 #[derive(Debug, Default)]
 pub struct ProjectFmtConfig {
-  /// Formatter backend (auto, flake, nixfmt, alejandra, treefmt).
+  /// Formatter backend: "auto", "flake", or any command on PATH.
   pub backend: crate::args::FmtBackend,
 }
 
@@ -231,13 +231,7 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
   if let Some(fmt) = doc.get("fmt").and_then(|v| v.as_table())
     && let Some(backend) = fmt.get("backend").and_then(|v| v.as_str())
   {
-    config.fmt.backend = match backend {
-      "flake" => crate::args::FmtBackend::Flake,
-      "nixfmt" => crate::args::FmtBackend::Nixfmt,
-      "alejandra" => crate::args::FmtBackend::Alejandra,
-      "treefmt" => crate::args::FmtBackend::Treefmt,
-      _ => crate::args::FmtBackend::Auto,
-    };
+    config.fmt.backend = crate::args::FmtBackend(backend.to_string());
   }
 
   // [test] section

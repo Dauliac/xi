@@ -144,10 +144,47 @@ impl LocateCache {
 // nix-locate
 // ---------------------------------------------------------------------------
 
+/// Output specifiers that `nix-locate` appends to attribute paths.
+/// These need to be stripped to get a clean derivation name.
+const NIX_OUTPUT_SUFFIXES: &[&str] =
+  &[".out", ".bin", ".dev", ".lib", ".man", ".doc", ".info", ".debug"];
+
+/// Strip a trailing nix output suffix (`.out`, `.bin`, ...) from an
+/// attribute path. Returns the unchanged path if no known suffix is found.
+fn strip_output_suffix(attr: &str) -> &str {
+  for suffix in NIX_OUTPUT_SUFFIXES {
+    if let Some(stripped) = attr.strip_suffix(suffix) {
+      return stripped;
+    }
+  }
+  attr
+}
+
+/// Rank a candidate for command `cmd`: lower rank = better match.
+/// - 0: exact match (e.g. `hello` for command `hello`)
+/// - 1: last attribute segment matches (e.g. `haskellPackages.hello`)
+/// - 2: attribute contains the command name
+/// - 3: everything else (unrelated packages that happen to ship `/bin/<cmd>`)
+fn rank_candidate(attr: &str, cmd: &str) -> u8 {
+  if attr == cmd {
+    return 0;
+  }
+  if let Some(last) = attr.rsplit('.').next()
+    && last == cmd
+  {
+    return 1;
+  }
+  if attr.contains(cmd) {
+    return 2;
+  }
+  3
+}
+
 /// Query `nix-locate` for packages providing `/bin/<command>`.
 ///
-/// Returns a list of derivation attribute names (e.g. `cowsay`,
-/// `neo-cowsay`).
+/// Returns a ranked list of derivation attribute names (e.g. `cowsay`,
+/// `neo-cowsay`). Output suffixes (`.out`, `.bin`) are stripped, entries
+/// under `tests.*` are filtered out, and exact matches are surfaced first.
 pub fn nix_locate(command: &str) -> Result<Vec<String>> {
   let bin_pattern = format!("/bin/{command}");
 
@@ -179,22 +216,29 @@ pub fn nix_locate(command: &str) -> Result<Vec<String>> {
 
   let stdout = String::from_utf8_lossy(&output.stdout);
 
-  // Deduplicate: nix-locate can return the same attr multiple times
-  // for different outputs of the same derivation.
+  // Normalize each candidate (strip `nixpkgs.` prefix + output suffix)
+  // and drop `tests.*` derivations which are internal nixpkgs test
+  // fixtures, not user-installable packages.
   let mut seen = std::collections::HashSet::new();
-  let results: Vec<String> = stdout
+  let mut results: Vec<String> = stdout
     .lines()
     .filter(|line| !line.is_empty())
     .map(|line| {
-      // nix-locate output: "nixpkgs.cowsay" or "cowsay" — strip
-      // leading "nixpkgs." if present
-      line
-        .strip_prefix("nixpkgs.")
-        .unwrap_or(line)
-        .to_string()
+      let without_prefix = line.strip_prefix("nixpkgs.").unwrap_or(line);
+      strip_output_suffix(without_prefix).to_string()
     })
-    .filter(|r| seen.insert(r.clone()))
+    .filter(|attr| !attr.starts_with("tests."))
+    .filter(|attr| seen.insert(attr.clone()))
     .collect();
+
+  // Rank: exact match > last-segment match > substring > everything else.
+  // Within the same rank, shorter attribute paths are preferred.
+  results.sort_by(|a, b| {
+    rank_candidate(a, command)
+      .cmp(&rank_candidate(b, command))
+      .then_with(|| a.len().cmp(&b.len()))
+      .then_with(|| a.cmp(b))
+  });
 
   Ok(results)
 }
@@ -602,6 +646,32 @@ mod tests {
 
     cache.save_choice("cowsay", "cowsay");
     assert!(cache.get_choice("cowsay").is_none());
+  }
+
+  #[test]
+  fn strip_output_suffix_strips_known_outputs() {
+    assert_eq!(strip_output_suffix("hello.out"), "hello");
+    assert_eq!(strip_output_suffix("foo.bin"), "foo");
+    assert_eq!(strip_output_suffix("pkg.dev"), "pkg");
+    assert_eq!(
+      strip_output_suffix("haskellPackages.hello.out"),
+      "haskellPackages.hello"
+    );
+  }
+
+  #[test]
+  fn strip_output_suffix_leaves_unknown_suffix_intact() {
+    // `.hello` is not an output specifier — leave alone
+    assert_eq!(strip_output_suffix("pkg.hello"), "pkg.hello");
+    assert_eq!(strip_output_suffix("cowsay"), "cowsay");
+  }
+
+  #[test]
+  fn rank_prefers_exact_then_last_segment_then_substring() {
+    assert_eq!(rank_candidate("hello", "hello"), 0);
+    assert_eq!(rank_candidate("haskellPackages.hello", "hello"), 1);
+    assert_eq!(rank_candidate("helloFromCabalSdist", "hello"), 2);
+    assert_eq!(rank_candidate("mbedtls", "hello"), 3);
   }
 
   #[test]

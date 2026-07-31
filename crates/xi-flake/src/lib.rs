@@ -568,7 +568,6 @@ impl FmtArgs {
   /// # Errors
   ///
   /// Returns an error if formatting fails.
-  #[allow(clippy::unreachable)]
   pub fn run(self) -> Result<()> {
     let local_dir = resolve_local_flake_dir(self.flake_ref.as_deref());
     ensure_flake_locked(local_dir.clone())?;
@@ -587,25 +586,11 @@ impl FmtArgs {
       flake_ref_str,
     );
 
-    match backend {
-      FmtBackend::Flake => {
-        self.run_with_flake_formatter(flake_ref_str, &passthrough_args)
-      },
-      FmtBackend::Nixfmt => {
-        info!("Using nixfmt");
-        self.run_external_formatter("nixfmt", flake_ref_str)
-      },
-      FmtBackend::Alejandra => {
-        info!("Using alejandra");
-        self.run_external_formatter("alejandra", flake_ref_str)
-      },
-      FmtBackend::Treefmt => {
-        info!("Using treefmt");
-        self.run_treefmt(flake_ref_str)
-      },
-      FmtBackend::Auto => {
-        unreachable!("resolve_fmt_backend always resolves Auto")
-      },
+    if backend.is_flake() {
+      self.run_with_flake_formatter(flake_ref_str, &passthrough_args)
+    } else {
+      info!("Using {backend}");
+      self.run_external_formatter(&backend.0, flake_ref_str)
     }
   }
 
@@ -649,7 +634,7 @@ impl FmtArgs {
     run_interactive(&cmd)
   }
 
-  /// Run an external formatter (nixfmt, alejandra) on discovered .nix files.
+  /// Run an external formatter on discovered .nix files.
   fn run_external_formatter(
     self,
     command: &str,
@@ -695,35 +680,6 @@ impl FmtArgs {
     Ok(())
   }
 
-  /// Run treefmt (reads treefmt.toml for formatter config).
-  fn run_treefmt(self, flake_ref: &str) -> Result<()> {
-    let local_dir = resolve_local_flake_dir(Some(flake_ref));
-    let dir = local_dir.as_deref().unwrap_or_else(|| Path::new("."));
-
-    info!("Formatting with treefmt");
-
-    let mut cmd = std::process::Command::new("treefmt");
-    cmd.current_dir(dir);
-
-    for arg in &self.extra_args {
-      cmd.arg(arg);
-    }
-
-    let status = cmd
-      .stdin(std::process::Stdio::inherit())
-      .stdout(std::process::Stdio::inherit())
-      .stderr(std::process::Stdio::inherit())
-      .status()
-      .map_err(|e| {
-        color_eyre::eyre::eyre!("Failed to run treefmt (is it installed?): {e}")
-      })?;
-
-    if !status.success() {
-      bail!("treefmt exited with status {status}");
-    }
-
-    Ok(())
-  }
 }
 
 /// Discover .nix files in a directory, skipping common build/cache dirs.
@@ -771,19 +727,17 @@ fn resolve_fmt_backend(
   config: &FmtBackend,
   flake_ref: &str,
 ) -> FmtBackend {
-  match cli {
-    FmtBackend::Auto => match config {
-      FmtBackend::Auto => {
-        // Auto-detect: flake formatter if present, else nixfmt
-        if has_flake_formatter(flake_ref) {
-          FmtBackend::Flake
-        } else {
-          FmtBackend::Nixfmt
-        }
-      },
-      other => other.clone(),
-    },
-    other => other.clone(),
+  if !cli.is_auto() {
+    return cli.clone();
+  }
+  if !config.is_auto() {
+    return config.clone();
+  }
+  // Auto-detect: flake formatter if present, else nixfmt
+  if has_flake_formatter(flake_ref) {
+    FmtBackend(FmtBackend::FLAKE.to_string())
+  } else {
+    FmtBackend("nixfmt".to_string())
   }
 }
 

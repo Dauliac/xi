@@ -279,19 +279,83 @@ pub struct RunArgs {
 }
 
 /// Formatter backend for `xi fmt`.
-#[derive(Debug, Clone, Default, clap::ValueEnum)]
-pub enum FmtBackend {
-  /// Auto-detect: use flake formatter if declared, else nixfmt
-  #[default]
-  Auto,
-  /// Use the flake's declared formatter output
-  Flake,
-  /// Run nixfmt directly on .nix files
-  Nixfmt,
-  /// Run alejandra directly on .nix files
-  Alejandra,
-  /// Run treefmt (expects treefmt.toml)
-  Treefmt,
+///
+/// Well-known values: `auto`, `flake`, `nixfmt`, `alejandra`, `pedantix`.
+/// Any other value is treated as an external command that receives `.nix`
+/// file paths as arguments (Cargo-style extensibility).
+#[derive(Debug, Clone)]
+pub struct FmtBackend(pub String);
+
+impl FmtBackend {
+  pub const AUTO: &str = "auto";
+  pub const FLAKE: &str = "flake";
+
+  pub fn is_auto(&self) -> bool {
+    self.0 == Self::AUTO
+  }
+
+  pub fn is_flake(&self) -> bool {
+    self.0 == Self::FLAKE
+  }
+
+  /// Well-known backends suggested in completions.
+  const WELL_KNOWN: &[&str] =
+    &["auto", "flake", "nixfmt", "alejandra", "pedantix"];
+}
+
+impl Default for FmtBackend {
+  fn default() -> Self {
+    Self(Self::AUTO.to_string())
+  }
+}
+
+impl std::fmt::Display for FmtBackend {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.0)
+  }
+}
+
+impl From<String> for FmtBackend {
+  fn from(s: String) -> Self {
+    Self(s)
+  }
+}
+
+impl clap::builder::ValueParserFactory for FmtBackend {
+  type Parser = FmtBackendParser;
+
+  fn value_parser() -> Self::Parser {
+    FmtBackendParser
+  }
+}
+
+#[derive(Clone, Debug)]
+pub struct FmtBackendParser;
+
+impl clap::builder::TypedValueParser for FmtBackendParser {
+  type Value = FmtBackend;
+
+  fn parse_ref(
+    &self,
+    _cmd: &clap::Command,
+    _arg: Option<&clap::Arg>,
+    value: &std::ffi::OsStr,
+  ) -> Result<Self::Value, clap::Error> {
+    let s = value
+      .to_str()
+      .ok_or_else(|| clap::Error::new(clap::error::ErrorKind::InvalidUtf8))?;
+    Ok(FmtBackend(s.to_string()))
+  }
+
+  fn possible_values(
+    &self,
+  ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+    Some(Box::new(
+      FmtBackend::WELL_KNOWN
+        .iter()
+        .map(|v| clap::builder::PossibleValue::new(*v)),
+    ))
+  }
 }
 
 #[derive(Debug, Args)]
@@ -299,12 +363,13 @@ pub enum FmtBackend {
 ///
 /// Auto-detects the formatter: uses the flake's formatter output if declared,
 /// otherwise falls back to nixfmt. Override with --backend or .xi.toml \[fmt\].
+/// Any command on PATH can be used as a backend (e.g. pedantix, nixfmt, alejandra).
 pub struct FmtArgs {
   /// Flake reference (defaults to current directory)
   pub flake_ref: Option<String>,
 
-  /// Formatter backend to use
-  #[arg(long, value_enum, default_value_t, env = "XI_FMT_BACKEND")]
+  /// Formatter backend to use (any command on PATH, or "auto"/"flake")
+  #[arg(long, default_value_t, env = "XI_FMT_BACKEND")]
   pub backend: FmtBackend,
 
   /// Don't use nix-output-monitor for the build process
