@@ -356,16 +356,32 @@ impl CompletionsArgs {
         "xi",
         &mut io::stdout(),
       );
-    } else {
-      let shell = match self.shell {
-        CompletionShell::Bash => clap_complete::Shell::Bash,
-        CompletionShell::Elvish => clap_complete::Shell::Elvish,
-        CompletionShell::Fish => clap_complete::Shell::Fish,
-        CompletionShell::PowerShell => clap_complete::Shell::PowerShell,
-        CompletionShell::Zsh => clap_complete::Shell::Zsh,
-        CompletionShell::Nushell => return, // Already handled above
-      };
-      clap_complete::generate(shell, &mut cmd, "xi", &mut io::stdout());
+      return;
     }
+
+    // Emit a *dynamic* registration script so completions call back into xi
+    // at completion time. This is required for `ArgValueCompleter`-based
+    // completers (e.g. package/devShell/config name completion) to work —
+    // the static AOT generator falls back to `_default` (file completion)
+    // for those args.
+    let shell_name = match self.shell {
+      CompletionShell::Bash => "bash",
+      CompletionShell::Elvish => "elvish",
+      CompletionShell::Fish => "fish",
+      CompletionShell::PowerShell => "powershell",
+      CompletionShell::Zsh => "zsh",
+      CompletionShell::Nushell => unreachable!("handled above"),
+    };
+    let shells = clap_complete::env::Shells::builtins();
+    let completer = shells
+      .completer(shell_name)
+      .expect("built-in shell completer");
+    let _ = completer.write_registration(
+      "COMPLETE",
+      "xi",
+      "xi",
+      "xi",
+      &mut io::stdout(),
+    );
   }
 }
