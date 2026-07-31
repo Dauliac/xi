@@ -51,16 +51,22 @@
     type = lib.types.raw;
     fn =
       cfg:
-      builtins.filter (p: p != null) [
-        (if (cfg.nom.enable or false) then (cfg.nom.package or null) else null)
-        (if (cfg.nixFastBuild.enable or false) then (cfg.nixFastBuild.package or null) else null)
-        (if (cfg.test.nixUnit.enable or false) then (cfg.test.nixUnit.package or null) else null)
-        (if (cfg.test.nixt.enable or false) then (cfg.test.nixt.package or null) else null)
-        (if (cfg.test.namaka.enable or false) then (cfg.test.namaka.package or null) else null)
-        (if (cfg.fmt.alejandra.enable or false) then (cfg.fmt.alejandra.package or null) else null)
-        (if (cfg.fmt.treefmt.enable or false) then (cfg.fmt.treefmt.package or null) else null)
-      ];
-    description = "Collect enabled tool packages (nom, nix-fast-build) from cfg.";
+      let
+        fixedTools = builtins.filter (p: p != null) [
+          (if (cfg.nom.enable or false) then (cfg.nom.package or null) else null)
+          (if (cfg.nixFastBuild.enable or false) then (cfg.nixFastBuild.package or null) else null)
+          (if (cfg.test.nixUnit.enable or false) then (cfg.test.nixUnit.package or null) else null)
+          (if (cfg.test.nixt.enable or false) then (cfg.test.nixt.package or null) else null)
+          (if (cfg.test.namaka.enable or false) then (cfg.test.namaka.package or null) else null)
+        ];
+        fmtTools = lib.pipe (cfg.fmt.tools or { }) [
+          builtins.attrValues
+          (builtins.filter (t: (t.enable or false) && (t.package or null) != null))
+          (map (t: t.package))
+        ];
+      in
+      fixedTools ++ fmtTools;
+    description = "Collect enabled tool packages (nom, nix-fast-build, fmt tools) from cfg.";
   };
 
   nix-lib.lib.mkFinalPackage = {

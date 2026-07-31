@@ -1,7 +1,6 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 let
@@ -9,38 +8,31 @@ let
 in
 {
   options.programs.xi.fmt = {
-    alejandra = lib.mkOption {
-      type = config._xi.types.tool;
-      default = {
-        enable = false;
-        package = pkgs.alejandra;
-      };
+    backend = lib.mkOption {
+      type = lib.types.str;
+      default = "auto";
       description = ''
-        alejandra — opinionated Nix formatter. When enabled and set as
-        the fmt backend, xi fmt uses alejandra instead of nixfmt.
+        Formatter backend command for `xi fmt`.
+
+        Well-known values: "auto" (detect flake formatter, else nixfmt),
+        "flake" (use `nix fmt`), or any command on PATH (e.g. "nixfmt",
+        "alejandra", "pedantix").
       '';
     };
 
-    treefmt = lib.mkOption {
-      type = config._xi.types.tool;
-      default = {
-        enable = false;
-        package = pkgs.treefmt;
-      };
+    tools = lib.mkOption {
+      type = lib.types.attrsOf config._xi.types.tool;
+      default = { };
       description = ''
-        treefmt — multi-language formatter using treefmt.toml. When
-        enabled and set as the fmt backend, xi fmt uses treefmt.
+        Formatter tools to make available on PATH for `xi fmt`.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
-      (lib.mkIf cfg.fmt.alejandra.enable {
-        programs.xi.settings.fmt.backend = "alejandra";
-      })
-      (lib.mkIf cfg.fmt.treefmt.enable {
-        programs.xi.settings.fmt.backend = "treefmt";
+      (lib.mkIf (cfg.fmt.backend != "auto") {
+        programs.xi.settings.fmt.backend = cfg.fmt.backend;
       })
     ]
   );
