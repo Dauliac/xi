@@ -69,7 +69,7 @@ pub fn main() -> Result<()> {
   }
 
   // Completions need no logging, nix, or config — short-circuit early
-  if let crate::interface::NHCommand::Completions(ref comp_args) = args.command
+  if let crate::interface::XiCommand::Completions(ref comp_args) = args.command
   {
     comp_args.run();
     return Ok(());
@@ -88,7 +88,7 @@ pub fn main() -> Result<()> {
   // Check Nix version upfront
   xi_core::checks::verify_nix_environment()?;
 
-  // Once we assert required Nix features, validate NH environment checks
+  // Once we assert required Nix features, validate xi environment checks
   // For now, this is just XI_* variables being set. More checks may be
   // added to setup_environment in the future.
   xi_core::checks::verify_variables()?;

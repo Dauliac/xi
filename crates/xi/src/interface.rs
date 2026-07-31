@@ -61,7 +61,7 @@ pub struct Main {
   pub elevation_strategy: Option<xi_core::command::ElevationStrategyArg>,
 
   #[command(subcommand)]
-  pub command: NHCommand,
+  pub command: XiCommand,
 }
 
 #[derive(Subcommand, Debug)]
@@ -75,7 +75,7 @@ pub struct Main {
   Development:  develop, search
   Maintenance:  cache, clean, nix, completions"
 )]
-pub enum NHCommand {
+pub enum XiCommand {
   // -- Configuration Management --
   Os(xi_nixos::args::OsArgs),
   Home(xi_home::args::HomeArgs),
@@ -130,7 +130,7 @@ pub enum CompletionShell {
   Nushell,
 }
 
-impl NHCommand {
+impl XiCommand {
   #[must_use]
   pub fn get_feature_requirements(&self) -> Box<dyn FeatureRequirements> {
     match self {
