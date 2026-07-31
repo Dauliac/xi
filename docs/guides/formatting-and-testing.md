@@ -1,44 +1,42 @@
-# How to Format, Test, and Inspect Flakes
+# How to format, test, and inspect flakes
 
-## Formatting
-
-### Format with the flake formatter
+## Format the tree
 
 If your flake declares a `formatter` output:
 
 ```sh
-xi flake fmt
+xi fmt
 ```
 
-Xi builds the formatter with nom and runs it.
+Xi builds the formatter and runs it against the tree with pretty output.
 
-### Choose a formatter backend
+### Pick a different formatter
 
 ```sh
-xi flake fmt --backend alejandra
-xi flake fmt --backend nixfmt
-xi flake fmt --backend treefmt
-xi flake fmt --backend flake      # use flake's formatter output
-xi flake fmt --backend auto       # flake if declared, else nixfmt
+xi fmt --backend alejandra
+xi fmt --backend nixfmt
+xi fmt --backend treefmt
+xi fmt --backend flake      # use the flake's formatter output
+xi fmt --backend auto       # flake if declared, else nixfmt
 ```
 
-### Configure the default backend
+### Persist your choice
 
-In `.xi.toml` (project-level):
+Project-wide in `.xi.toml`:
 
 ```toml
 [fmt]
 backend = "alejandra"
 ```
 
-Or in `config.toml` (user-level):
+Or user-wide in `config.toml`:
 
 ```toml
 [fmt]
 backend = "alejandra"
 ```
 
-Or via modules:
+Or through the xi module system:
 
 ```nix
 {
@@ -48,42 +46,41 @@ Or via modules:
 }
 ```
 
-Enabling a formatter tool auto-sets the backend and adds the package to PATH.
+Enabling a formatter through the module auto-sets the backend and adds the tool
+to `PATH`.
 
-## Testing
-
-### Run tests
+## Run tests
 
 ```sh
-xi flake test
+xi test
 ```
 
-Xi auto-detects available test backends and runs them all.
+Xi auto-detects available test backends and runs them all in one pass.
 
-### Test backends
+### Available backends
 
 | Backend    | What it runs                                                                             |
 | ---------- | ---------------------------------------------------------------------------------------- |
-| `runTests` | Eval-time tests via `lib.runTests` (assertion failures)                                  |
-| `checks`   | Build check derivations from `nix flake check`                                           |
+| `runTests` | Eval-time tests via `lib.runTests`                                                       |
+| `checks`   | Check derivations produced by `nix flake check`                                          |
 | `nix-unit` | [nix-unit](https://github.com/nix-community/nix-unit) — unit testing for Nix expressions |
-| `nixt`     | [nixt](https://github.com/nix-community/nixt) — Nix integration testing                  |
+| `nixt`     | [nixt](https://github.com/nix-community/nixt) — integration testing                      |
 | `namaka`   | [namaka](https://github.com/nix-community/namaka) — snapshot testing                     |
 
-### Run specific backends
+### Restrict to specific backends
 
 ```sh
-xi flake test --backend checks
-xi flake test --backend nix-unit --backend namaka
+xi test --backend checks
+xi test --backend nix-unit --backend namaka
 ```
 
-### Filter tests by name
+### Filter by test name
 
 ```sh
-xi flake test --filter "auth*"
+xi test --filter "auth*"
 ```
 
-### Enable test backends via modules
+### Enable backends via modules
 
 ```nix
 {
@@ -93,10 +90,10 @@ xi flake test --filter "auth*"
 }
 ```
 
-Enabled backends are added to PATH and auto-configured in
+Enabled backends are added to `PATH` and auto-configured in
 `settings.test.backends`.
 
-### Configure test backends in `.xi.toml`
+### Configure in `.xi.toml`
 
 ```toml
 [test]
@@ -112,7 +109,7 @@ checks.filter = "test-*"
 nix-unit.test-dir = "tests/"
 nixt.test-dir = "tests/"
 
-# Custom test backends
+# Custom backend
 [[test.custom]]
 name = "my-tests"
 command = "nix-unit"
@@ -122,15 +119,15 @@ args = ["--flake", ".#tests"]
 ### List detected tests
 
 ```sh
-xi flake test --list
+xi test --list
 ```
 
 Shows test names per backend without running them.
 
-### JSON output for CI
+### Emit JSON for CI
 
 ```sh
-xi flake test --format json
+xi test --format json
 ```
 
 ```json
@@ -143,37 +140,32 @@ xi flake test --format json
 }
 ```
 
-### Interactive snapshot review (namaka)
+### Review snapshot changes (namaka)
 
 ```sh
-xi flake test --review
+xi test --review
 ```
 
-Runs namaka in review mode for interactive acceptance/rejection of snapshot
-changes.
+Runs namaka in review mode for interactive accept/reject of snapshot changes.
 
 ### Watch mode
 
-Re-run tests when `.nix`, `.lock`, or `.toml` files change:
-
 ```sh
-xi flake test --watch
+xi test --watch
 ```
 
-Polls every 2 seconds, clears the screen, and re-runs all detected backends.
+Re-runs the detected backends when `.nix`, `.lock`, or `.toml` files change.
+Clears the screen between runs.
 
-## Flake doctor
-
-Diagnose issues with your flake:
+## Diagnose the flake
 
 ```sh
-xi flake doctor
+xi doctor
 ```
 
-Checks:
+Reports:
 
-- Flake validity and structure
-- Input freshness (warns if inputs are older than threshold)
+- Flake input freshness (warns when any input is older than the configured age)
 - Nixpkgs source verification (warns on unofficial forks)
 - Branch validation against allowed branches
 - Missing or misconfigured outputs
@@ -187,69 +179,55 @@ require-official-nixpkgs = true
 supported-branches = ["nixos-unstable", "master"]
 ```
 
-## Flake show — output standardization
+## Inspect flake outputs
 
 ```sh
-xi flake show
+xi show
 ```
 
-Xi does not just list raw Nix output. It recognizes implicit output types and
-renders them with standardised annotations:
+Xi renders outputs by category with type annotations, hiding empty per-system
+categories (`legacyPackages`, empty `checks`, etc.) unless you ask for them.
 
-### Recognised output types
+### Recognised categories
 
-| Pattern                                                             | Recognised as         | Rendering                                                 |
-| ------------------------------------------------------------------- | --------------------- | --------------------------------------------------------- |
-| `packages`, `devShells`, `checks`, `apps`                           | Per-system outputs    | Name, version, `[default]` flag                           |
-| `formatter`                                                         | Per-system            | Inline: `formatter :: <tool>`                             |
-| `lib`, `*Lib`, `*libs`                                              | Library outputs       | Compact: `lib :: lib (N attrs)` with hint to use `xi lib` |
-| `*Module`, `*Modules`, `*modules`                                   | Module outputs        | `:: module` type annotation                               |
-| `*Configuration`, `*Configurations`, `*Config`                      | Configuration outputs | `:: configuration` type annotation                        |
-| `nixosConfigurations`, `homeConfigurations`, `darwinConfigurations` | System configs        | Discovered tree rendering                                 |
-| `overlays`, `templates`                                             | Standard outputs      | Flat listing                                              |
-| `debug`, `allSystems`                                               | Internal outputs      | Hidden by default                                         |
+| Pattern                                                             | Rendered as          |
+| ------------------------------------------------------------------- | -------------------- |
+| `packages`, `devShells`, `checks`, `apps`                           | Per-system tables    |
+| `formatter`                                                         | Inline: `formatter :: <tool>` |
+| `lib`, `*Lib`, `*libs`                                              | Compact `lib (N attrs)` with a hint to use `xi lib` |
+| `*Module`, `*Modules`                                               | `:: module`          |
+| `*Configuration`, `*Configurations`, `*Config`                      | `:: configuration`   |
+| `nixosConfigurations`, `homeConfigurations`, `darwinConfigurations` | Discovered tree      |
+| `overlays`, `templates`                                             | Flat listing         |
+| `debug`, `allSystems`                                               | Hidden by default    |
 
-### The `[default]` flag
-
-Any output named `default` is flagged with `[default]` in all render paths
-(per-system, flat, and discovered trees).
-
-### Test-only categories
-
-When a discovered tree contains only test results (`{expected, expr}` nodes), it
-collapses to a summary line: `tests (20 tests)` instead of listing every test
-name.
+Any output named `default` is tagged `[default]` in every render path.
 
 ### Show hidden outputs
 
 ```sh
-xi flake show --all
+xi show --all
 ```
 
 ### Raw nix output
 
 ```sh
-xi flake show --raw
+xi show --raw
 ```
 
 ### JSON output
 
 ```sh
-xi flake show --json
+xi show --json
 ```
 
-## Lib outputs
-
-Xi treats `lib` as a first-class output type.
-
-### List lib attributes
+## Inspect lib outputs
 
 ```sh
 xi lib
 ```
 
-Recursively lists all attributes in the flake's `lib` output as an indented
-tree.
+Recursively lists the flake's `lib` output as an indented tree.
 
 ### Deep-evaluate lib
 
@@ -257,7 +235,7 @@ tree.
 xi lib --eval
 ```
 
-Runs `builtins.deepSeq` on the entire lib output, catching type errors, missing
+Runs `builtins.deepSeq` on the entire `lib`, catching type errors, missing
 attributes, and infinite recursion that would otherwise only surface at use
 time.
 
@@ -265,5 +243,9 @@ time.
 xi lib --eval --show-trace    # detailed error output
 ```
 
-In CI, lib evaluation runs automatically as a Phase 1 step in `xi flake ci`
-(skipped if no lib output exists, disabled with `--no-lib-eval`).
+In CI, `xi ci` runs this automatically. Disable with `--no-lib-eval`.
+
+## See also
+
+- [CLI Reference: `xi fmt`, `xi test`, `xi show`, `xi lib`, `xi doctor`](../reference/cli.md)
+- [Configuration Reference: `[fmt]`, `[test]`, `[doctor]`](../reference/configuration.md)

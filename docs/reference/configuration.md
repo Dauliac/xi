@@ -80,6 +80,12 @@ push_command = ["cachix", "push", "mycache"]
 | `eval_interval` | int             | `5`     | Seconds between re-evaluations                                 |
 | `watch_extra`   | list of strings | `[]`    | Extra file patterns to watch (e.g. `["*.yaml", "Cargo.lock"]`) |
 
+### `[locate]` — `xi run --locate` cache
+
+| Key           | Type | Default | Description                                                            |
+| ------------- | ---- | ------- | ---------------------------------------------------------------------- |
+| `cache_level` | int  | `2`     | `0` disabled, `1` remembers your prior choice per command, `2` full    |
+
 ### `[fmt]` — formatting
 
 | Key       | Type   | Default  | Description                                                  |
@@ -198,7 +204,7 @@ args = ["--flake", ".#integrationTests"]
 | Key                   | Type            | Default              | Description                                   |
 | --------------------- | --------------- | -------------------- | --------------------------------------------- |
 | `commit-path`         | string          | `"nix/materialized"` | Directory for committed files                 |
-| `check-in-ci`         | bool            | `false`              | Verify freshness in `xi flake ci` Phase 1     |
+| `check-in-ci`         | bool            | `false`              | Verify freshness during `xi ci`               |
 | `pre-build`           | bool            | `false`              | Run stale targets before build/CI             |
 | `git-hide`            | bool            | `true`               | Apply git skip-worktree                       |
 | `auto-stage`          | bool            | `false`              | Run `git add` after commit                    |

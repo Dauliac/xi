@@ -81,9 +81,25 @@ The NixOS, Home Manager, and flake-parts modules share a common wrapper system
 that:
 
 1. Generates `config.toml` from your `settings` options
-2. Injects enabled tool packages (nom, formatters, test frameworks) into PATH
-3. Wraps the xi binary so configuration is baked in
-4. Preserves completions and man pages
+2. Creates a bash wrapper that exports `XI_CONFIG=/nix/store/...`
+3. Collects enabled tool packages (nom, formatters, test frameworks) into `PATH`
+4. Combines everything with `symlinkJoin`, preserving completions and man pages
+
+The wrapper is transparent: `xi --version` still works, completions are
+preserved, and the configuration is baked into the derivation. Turning
+`wrapper.enable` off falls back to the plain xi binary.
+
+## Nix proxy
+
+`xi nix` intercepts a small allow-list of subcommands (`build`, `develop`,
+`fmt`, `run`, `flake check/init/update/show`) and routes them into xi's own
+implementations. Everything else is passed through to the real `nix` binary,
+resolved from `XI_NIX_BIN` (set by the wrapper) or `$PATH`.
+
+The `XI_NIX_BIN` indirection matters because when xi is aliased to `nix` via
+the wrapper, calling `nix` recursively would loop. `XI_NIX_BIN` gives xi a
+stable pointer to the underlying binary. Setting `XI_UNWRAP=1` or passing
+`--unwrap` bypasses xi entirely for one call.
 
 ## Platform support
 

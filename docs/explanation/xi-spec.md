@@ -30,7 +30,7 @@ xi os switch
 xi home build
 xi search packages
 xi cache status
-xi flake ci
+xi ci
 xi develop trust
 ```
 
@@ -134,7 +134,7 @@ Trust is per-flake-path:
 
 ## 8. Flake output standardisation
 
-`xi flake show` recognises implicit output types by naming convention:
+`xi show` recognises implicit output types by naming convention:
 
 | Pattern                                                             | Recognised as                |
 | ------------------------------------------------------------------- | ---------------------------- |
@@ -161,8 +161,7 @@ Materialization caches expensive evaluations:
 - Runs shell commands, captures stdout, writes to cache
 - Uses SHA-256 hashes of source file contents for invalidation
 - Supports a git skip-worktree lifecycle for committed files
-- Integrates with `xi flake ci` (Phase 1 freshness check) and `xi flake build`
-  (pre-build hook)
+- Integrates with `xi ci` (freshness check) and `xi build` (pre-build hook)
 
 Configuration lives in `.xi.toml` under `[materialize]` and
 `[[materialize.target]]`.

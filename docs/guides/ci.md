@@ -1,57 +1,57 @@
-# How to Run CI with Xi
+# How to run CI
 
-`xi flake ci` runs a multi-phase validation and build pipeline for your flake.
-It is not just "build everything" — it validates, evaluates, tests, checks lib
-outputs, verifies materialized files, and then builds.
-
-## The pipeline
-
-### Phase 1 — Validation (parallel)
-
-These steps run concurrently with progress spinners:
-
-| Step              | What it does                                         | Skip flag                      |
-| ----------------- | ---------------------------------------------------- | ------------------------------ |
-| Lock check        | Verify `flake.lock` is in sync                       | `--no-lock-check`              |
-| Eval all systems  | `nix flake show --json` to discover outputs          | `--no-eval`                    |
-| Health check      | Run `xi flake doctor` diagnostics                    | `--no-health-check`            |
-| Eval tests        | Evaluate `lib.runTests` (catches assertion failures) | `--no-test`                    |
-| Lib eval          | Deep-evaluate `lib` with `builtins.deepSeq`          | `--no-lib-eval`                |
-| Materialize check | Verify materialized files are fresh                  | (via `.xi.toml` `check-in-ci`) |
-
-Each step reports: name, status (ok/warn/FAIL), duration, and detail.
-
-### Phase 2 — Build (sequential)
-
-Builds all flake outputs using the selected backend, plus any extra outputs
-discovered from the flake show JSON.
+`xi ci` validates and builds a flake in one command. It is more thorough than
+`nix flake check`: it verifies your `flake.lock` is in sync, evaluates every
+system, runs your eval-time tests, checks your `lib` deeply, verifies
+materialized artefacts are fresh, and only then builds everything.
 
 ## Run it
 
 ```sh
-xi flake ci
+xi ci
 ```
 
-## Choose a CI backend
+By default this runs against `.` in your current directory. Pass a flake ref to
+target something else: `xi ci github:you/repo`.
+
+If any step reports FAIL, `xi ci` exits non-zero.
+
+## What `xi ci` does for you
+
+`xi ci` groups a validation stage (fast, parallel) and a build stage (slower):
+
+| Step              | What it checks                                       | Skip flag                      |
+| ----------------- | ---------------------------------------------------- | ------------------------------ |
+| Lock check        | `flake.lock` is in sync with `flake.nix`             | `--no-lock-check`              |
+| Eval all systems  | Every declared system evaluates cleanly              | `--no-eval`                    |
+| Health check      | `xi doctor` diagnostics (input freshness, branch)    | `--no-health-check`            |
+| Eval tests        | `lib.runTests` evaluates (assertion failures caught) | `--no-test`                    |
+| Lib eval          | `lib` deep-evaluates                                 | `--no-lib-eval`                |
+| Materialize check | Committed materialized files are fresh               | Set `check-in-ci = false` in `.xi.toml` |
+| Build             | Every buildable output builds                        | `--no-build`                   |
+
+Each step reports name, status (ok / warn / FAIL), duration, and detail.
+
+## Choose a build backend
 
 | Backend          | Strategy                                       |
 | ---------------- | ---------------------------------------------- |
-| `auto` (default) | nix-fast-build if available, else devour-flake |
+| `auto` (default) | nix-fast-build if installed, else devour-flake |
 | `devour-flake`   | Single evaluation, builds everything           |
 | `nix-fast-build` | Parallel evaluation with pipelined builds      |
 
 ```sh
-xi flake ci --backend nix-fast-build
+xi ci --backend nix-fast-build
 ```
 
-Configure the default in `.xi.toml`:
+Persist the default in `.xi.toml`:
 
 ```toml
 [ci]
 backend = "nix-fast-build"
 ```
 
-Or in `config.toml`:
+Or user-wide in `config.toml`:
 
 ```toml
 [build]
@@ -60,91 +60,61 @@ ci_backend = "nix-fast-build"
 
 ## Discover extra outputs
 
-By default, devour-flake handles packages, checks, devShells, apps, and system
-configurations. If your flake has custom outputs (e.g. `containers`, `images`),
-add them to `.xi.toml`:
+`xi ci` builds packages, checks, devShells, apps, and system configurations
+automatically. For custom outputs (`containers`, `images`, etc.), list them in
+`.xi.toml`:
 
 ```toml
 [ci]
 extra-outputs = ["containers", "images"]
 ```
 
-Xi discovers derivation nodes in these paths from the flake show JSON and builds
-them separately.
-
-## Recursive subflakes
-
-Validate and build all subflakes in a monorepo:
+## Validate a monorepo
 
 ```sh
-xi flake ci --recursive
+xi ci --recursive
 ```
 
-Xi discovers all `flake.nix` files under the project root, runs CI on each, and
-reports a summary: "N of M subflake(s) failed CI".
+Walks every `flake.nix` under the project root, runs CI on each, and reports:
+"N of M subflake(s) failed CI".
 
-## Validation-only mode
-
-Skip the build phase entirely:
+## Fast pre-merge check (no build)
 
 ```sh
-xi flake ci --no-build
+xi ci --no-build
 ```
 
-This runs Phase 1 only — useful for fast pre-merge checks.
+Runs validation only. Useful in pull-request pipelines where a downstream job
+does the full build.
 
-## Continue on errors
-
-By default, the pipeline stops at the first failure. To collect all errors:
+## Collect every failure
 
 ```sh
-xi flake ci --continue-on-error
+xi ci --continue-on-error
 ```
 
-## Restrict to current system
+By default `xi ci` stops at the first FAIL. This flag runs every step and
+reports all failures at the end.
 
-Skip cross-system evaluation:
+## Restrict to the current system
 
 ```sh
-xi flake ci --current-system-only
+xi ci --current-system-only
 ```
+
+Skip cross-system evaluation. Right for local dev; wrong for release CI.
 
 ## Disallow import-from-derivation
 
 ```sh
-xi flake ci --no-ifd
-```
-
-## Materialization in CI
-
-If `.xi.toml` has `check-in-ci = true`, Phase 1 verifies that all materialized
-targets are fresh. If any are stale, the step fails with: "N of M target(s) are
-stale".
-
-If `pre-build = true`, stale targets are rebuilt before Phase 2 starts.
-
-See [Materialization](#materialization) below.
-
-## Run flake checks standalone
-
-```sh
-xi flake check
-```
-
-Runs `nix flake check` piped through nom for pretty output.
-
-## Build specific outputs
-
-```sh
-xi flake build .#hello                # single package
-xi flake build --all                  # all outputs via devour-flake
-xi flake build --recursive            # including subflakes
+xi ci --no-ifd
 ```
 
 ## Materialization
 
-Xi can pre-compute expensive evaluations, cache results based on source file
-hashes, and optionally commit them to git.
+Xi can pre-compute expensive evaluations (Cargo hashes, generated Nix files,
+prefetch outputs) and commit the results to git so CI doesn't have to redo
+them.
 
 ### Configure targets in `.xi.toml`
 
@@ -155,7 +125,7 @@ check-in-ci = true                 # fail CI if stale
 pre-build = true                   # rebuild stale before build
 git-hide = true                    # apply skip-worktree
 auto-stage = true                  # git add after commit
-auto-stage-branches = ["main"]     # restrict auto-stage to branches
+auto-stage-branches = ["main"]     # restrict auto-stage to specific branches
 
 [[materialize.target]]
 name = "cargo-hash"
@@ -164,43 +134,53 @@ output = "cargo-hash.json"
 sources = ["Cargo.lock", "Cargo.toml"]
 ```
 
-### Run materialization
+### Materialization commands
 
 ```sh
-xi flake materialize                 # run stale targets
-xi flake materialize --force         # ignore cache, re-run all
-xi flake materialize --commit        # also write to nix/materialized/
-xi flake materialize --check         # verify freshness (exit 1 if stale)
-xi flake materialize --list          # show targets and staleness
-xi flake materialize --setup         # apply git skip-worktree + merge driver
-xi flake materialize --clean         # remove cache directory
+xi materialize                # run stale targets
+xi materialize --force        # ignore cache, re-run every target
+xi materialize --commit       # also write to nix/materialized/
+xi materialize --check        # verify freshness (exit 1 if stale)
+xi materialize --list         # show targets and their staleness
+xi materialize --setup        # apply git skip-worktree + merge driver
+xi materialize --clean        # remove the cache directory
 ```
 
-### How freshness works
+Freshness is computed from a SHA-256 of every file matched by `sources`. If
+the hash matches, the target is skipped.
 
-Each target's sources are glob-matched, and their contents are SHA-256 hashed.
-The hash is stored in `.xi/materialized/<target>.hash`. On the next run, if the
-hash matches, the target is skipped.
+With `check-in-ci = true`, `xi ci` fails when any materialized target is
+stale. With `pre-build = true`, `xi ci` re-runs the stale ones before
+building.
 
-### Git lifecycle
+## Standalone checks
 
-With `--commit` and `git-hide = true`:
-
-1. Lift skip-worktree from existing files
-2. Run targets, write to cache and commit directories
-3. If `auto-stage`, run `git add` on committed files
-4. Re-apply skip-worktree to hide files from `git status`
-
-The `--setup` command also adds a `.gitattributes` merge driver (`merge=ours`)
-to prevent merge conflicts on materialized files.
-
-## Common CI flags
+If you only want `nix flake check`:
 
 ```sh
-xi flake ci --keep-going           # continue on build failures
-xi flake ci --show-trace           # detailed eval errors
-xi flake ci --no-nom               # plain output (for CI logs)
-xi flake ci --max-jobs 4           # limit parallelism
-xi flake ci --dry-run              # print actions without executing
-xi flake ci --offline              # no network access
+xi check
 ```
+
+## Build without CI validation
+
+```sh
+xi build .#hello                # single package
+xi build --all                  # all outputs via devour-flake
+xi build --recursive            # subflakes too
+```
+
+## Useful CI flags
+
+```sh
+xi ci --keep-going           # keep going on build failures
+xi ci --show-trace           # detailed eval errors
+xi ci --no-nom               # plain output (better for CI log capture)
+xi ci --max-jobs 4           # limit parallelism
+xi ci --dry-run              # print the plan without executing
+xi ci --offline              # no network access
+```
+
+## See also
+
+- [CLI Reference: `xi ci`](../reference/cli.md#xi-ci--ci-pipeline)
+- [Configuration Reference: `[ci]`, `[materialize]`](../reference/configuration.md)

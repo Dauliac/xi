@@ -49,7 +49,7 @@ before and after a switch.
 
 [devour-flake](https://github.com/srid/devour-flake) by **srid** evaluates all
 flake outputs in a single `nix build` invocation. Xi uses it as the default CI
-backend in `xi flake ci`.
+backend in `xi ci`.
 
 ### nix-fast-build
 

@@ -69,13 +69,8 @@ Or use the `--unwrap` flag:
 xi nix --unwrap build .#hello
 ```
 
-## How it works
+## See also
 
-The proxy:
-
-1. Parses the first positional argument to determine the nix subcommand
-2. If the subcommand is in the enhancement list, routes to xi's implementation
-3. Otherwise, execs the real nix binary (resolved from `XI_NIX_BIN` or `$PATH`)
-
-The real nix binary path is set by the wrapper system via `XI_NIX_BIN` to avoid
-circular resolution.
+- [Explanation: Nix proxy](../explanation/architecture.md#nix-proxy) — why
+  `XI_NIX_BIN` exists and how the routing works
+- [CLI Reference: `xi nix`](../reference/cli.md#xi-nix--transparent-nix-proxy)

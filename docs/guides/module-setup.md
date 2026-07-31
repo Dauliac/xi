@@ -5,7 +5,7 @@ configuration generation, shell hooks, and tool injection.
 
 ## NixOS module
 
-Add the xi flake input and import the module:
+Add xi as a flake input and import the module:
 
 ```nix
 # flake.nix
@@ -185,15 +185,9 @@ devShells.default = pkgs.mkShellNoCC {
 };
 ```
 
-## How the wrapper works
+## See also
 
-When `wrapper.enable` is true (the default when any configuration exists), the
-module:
-
-1. Generates `config.toml` from `settings`
-2. Creates a bash wrapper that exports `XI_CONFIG=/nix/store/...`
-3. Collects enabled tool packages into a PATH
-4. Combines everything with `symlinkJoin`, preserving completions and man pages
-
-The wrapper is transparent: `xi --version` still works, completions are
-preserved, and the config is baked in.
+- [Explanation: Module system](../explanation/architecture.md#module-system)
+  — how the wrapper is composed
+- [Reference: Module Options](../reference/module-options.md) — every option
+  the modules expose
