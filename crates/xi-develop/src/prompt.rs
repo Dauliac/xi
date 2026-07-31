@@ -145,9 +145,9 @@ fn handle_parent(args: &PromptArgs, shell: ShellType) -> Result<()> {
   }
 
   // Generate subshell spawn command — simple: set env vars + spawn shell
-  let nh_bin = resolve_nh_bin();
+  let xi_bin = resolve_xi_bin();
   let spawn_cmd =
-    subshell::generate_spawn_command(shell, flake_root, &cwd, &nh_bin);
+    subshell::generate_spawn_command(shell, flake_root, &cwd, &xi_bin);
 
   // Output spawn command to stdout (shell evals this)
   println!("{spawn_cmd}");
@@ -216,9 +216,9 @@ fn handle_subshell(args: &PromptArgs, shell: ShellType) -> Result<()> {
           );
         }
 
-        let nh_bin = resolve_nh_bin();
+        let xi_bin = resolve_xi_bin();
         let spawn_cmd =
-          subshell::generate_spawn_command(shell, nearest, &cwd, &nh_bin);
+          subshell::generate_spawn_command(shell, nearest, &cwd, &xi_bin);
         println!("{spawn_cmd}");
         return Ok(());
       }
@@ -434,7 +434,7 @@ fn flake_likely_has_devshell(flake_root: &std::path::Path) -> bool {
 }
 
 /// Resolve the xi binary path (from persisted state or current exe).
-fn resolve_nh_bin() -> String {
+fn resolve_xi_bin() -> String {
   let bin_path = dirs::state_base().join("xi-bin");
   std::fs::read_to_string(&bin_path).unwrap_or_else(|_| {
     std::env::current_exe()

@@ -8,7 +8,7 @@ Feature: Uniform shell support (bash, zsh, fish)
     Then it outputs a minimal shell stub containing:
       | Element                    | Purpose                          |
       | __XI_BIN resolution        | Persist xi binary path           |
-      | _nh_hook function          | Calls "xi develop prompt" on prompt |
+      | _xi_hook function          | Calls "xi develop prompt" on prompt |
       | Prompt hook installation   | PROMPT_COMMAND / precmd / fish_prompt |
     And the stub is less than 10 lines of shell code
     And the same structural pattern applies to zsh and fish

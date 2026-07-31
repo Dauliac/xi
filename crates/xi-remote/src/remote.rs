@@ -1862,14 +1862,14 @@ mod tests {
   use serial_test::serial;
 
   struct SshOptsEnvGuard {
-    nh_sshopts: Option<OsString>,
+    xi_sshopts: Option<OsString>,
     nix_sshopts: Option<OsString>,
   }
 
   impl SshOptsEnvGuard {
     fn new() -> Self {
       Self {
-        nh_sshopts: env::var_os("XI_SSHOPTS"),
+        xi_sshopts: env::var_os("XI_SSHOPTS"),
         nix_sshopts: env::var_os("NIX_SSHOPTS"),
       }
     }
@@ -1885,7 +1885,7 @@ mod tests {
   impl Drop for SshOptsEnvGuard {
     fn drop(&mut self) {
       unsafe {
-        match &self.nh_sshopts {
+        match &self.xi_sshopts {
           Some(value) => env::set_var("XI_SSHOPTS", value),
           None => env::remove_var("XI_SSHOPTS"),
         }
@@ -2299,7 +2299,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_get_ssh_opts_with_nh_sshopts() {
+  fn test_get_ssh_opts_with_xi_sshopts() {
     let env_guard = SshOptsEnvGuard::new();
     env_guard.clear();
 
@@ -2316,7 +2316,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_get_ssh_opts_nh_sshopts_takes_precedence() {
+  fn test_get_ssh_opts_xi_sshopts_takes_precedence() {
     let env_guard = SshOptsEnvGuard::new();
     env_guard.clear();
 
@@ -2465,7 +2465,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_get_nix_sshopts_env_nh_sshopts() {
+  fn test_get_nix_sshopts_env_xi_sshopts() {
     let env_guard = SshOptsEnvGuard::new();
     env_guard.clear();
 
@@ -2479,7 +2479,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_get_nix_sshopts_env_nh_sshopts_takes_precedence() {
+  fn test_get_nix_sshopts_env_xi_sshopts_takes_precedence() {
     let env_guard = SshOptsEnvGuard::new();
     env_guard.clear();
 

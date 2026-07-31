@@ -71,7 +71,7 @@ pub fn ensure(flake_root: &Path) -> Result<PathBuf> {
 /// # Errors
 /// Returns an error if the process cannot be spawned.
 fn start(flake_root: &Path, flake_id: &str) -> Result<()> {
-  let nh_bin = resolve_nh_bin();
+  let xi_bin = resolve_xi_bin();
   let runtime_dir = dirs::daemon_runtime_dir(flake_id);
   fs::create_dir_all(&runtime_dir)?;
 
@@ -94,7 +94,7 @@ fn start(flake_root: &Path, flake_id: &str) -> Result<()> {
     args.push(pattern.clone());
   }
 
-  let child = std::process::Command::new(&nh_bin)
+  let child = std::process::Command::new(&xi_bin)
     .args(&args)
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
@@ -237,7 +237,7 @@ fn read_develop_config() -> (u64, Vec<String>, String) {
   (eval_interval, watch_extra, eval_cache)
 }
 
-fn resolve_nh_bin() -> String {
+fn resolve_xi_bin() -> String {
   // Read from persisted xi-bin file
   let bin_path = dirs::state_base().join("xi-bin");
   fs::read_to_string(&bin_path).unwrap_or_else(|_| {

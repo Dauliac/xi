@@ -8,21 +8,21 @@ Feature: Debug logging across all async processes
     When "xi develop prompt" runs
     Then stderr includes tracing spans:
       | Component | Example log                                              |
-      | prompt    | DEBUG nh_develop::prompt: walk_up found flake at ~/projectA |
-      | prompt    | DEBUG nh_develop::prompt: daemon connect 0.3ms           |
-      | prompt    | DEBUG nh_develop::prompt: daemon response: should_source_env=true |
+      | prompt    | DEBUG xi_develop::prompt: walk_up found flake at ~/projectA |
+      | prompt    | DEBUG xi_develop::prompt: daemon connect 0.3ms           |
+      | prompt    | DEBUG xi_develop::prompt: daemon response: should_source_env=true |
 
   Scenario: Debug logging in daemon
     Given XI_LOG=debug is set for the daemon process
     When the daemon runs
     Then daemon logs include:
       | Component | Example log                                              |
-      | daemon    | DEBUG nh_develop::daemon: eval started for target=default |
-      | daemon    | DEBUG nh_develop::daemon: nix print-dev-env completed in 2.1s |
-      | daemon    | DEBUG nh_develop::daemon: env_hash changed, writing files |
-      | daemon    | DEBUG nh_develop::daemon: watcher: flake.nix modified    |
-      | daemon    | DEBUG nh_develop::daemon: consumer registered PID 1001   |
-      | daemon    | DEBUG nh_develop::daemon: consumer deregistered PID 1001 |
+      | daemon    | DEBUG xi_develop::daemon: eval started for target=default |
+      | daemon    | DEBUG xi_develop::daemon: nix print-dev-env completed in 2.1s |
+      | daemon    | DEBUG xi_develop::daemon: env_hash changed, writing files |
+      | daemon    | DEBUG xi_develop::daemon: watcher: flake.nix modified    |
+      | daemon    | DEBUG xi_develop::daemon: consumer registered PID 1001   |
+      | daemon    | DEBUG xi_develop::daemon: consumer deregistered PID 1001 |
     And daemon logs go to the daemon's stderr (journald or log file)
 
   Scenario: Debug logging in subshell prompt hook

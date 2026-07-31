@@ -268,7 +268,7 @@ fn test_resolve_or_default_ignores_registry_and_url_refs() {
 
 #[test]
 #[serial]
-fn test_resolve_rejects_empty_nh_flake() {
+fn test_resolve_rejects_empty_xi_flake() {
   let env_guard = EnvGuard::clear();
   env_guard.set("XI_FLAKE", "");
 
@@ -311,7 +311,7 @@ fn test_resolve_rejects_env_flake_without_reference_before_attribute() {
 
 #[test]
 #[serial]
-fn test_resolve_rejects_malformed_nh_attrp() {
+fn test_resolve_rejects_malformed_xi_attrp() {
   let env_guard = EnvGuard::clear();
   env_guard.set("XI_FILE", "/path/to/file.nix");
   env_guard.set("XI_ATTRP", r#"foo."bar"#);
@@ -430,7 +430,7 @@ fn test_uses_flakes_ignores_empty_env_values() {
 
 #[test]
 #[serial]
-fn test_resolve_os_context_uses_nh_os_flake() {
+fn test_resolve_os_context_uses_xi_os_flake() {
   let env_guard = EnvGuard::clear();
   env_guard.set("XI_OS_FLAKE", "/etc/nixos#myhost");
 
@@ -475,7 +475,7 @@ fn test_resolve_os_context_prefers_os_flake_over_generic() {
 
 #[test]
 #[serial]
-fn test_resolve_os_context_falls_back_to_nh_flake() {
+fn test_resolve_os_context_falls_back_to_xi_flake() {
   let env_guard = EnvGuard::clear();
   env_guard.set("XI_FLAKE", "/home/user/flake#fallback");
 
@@ -497,7 +497,7 @@ fn test_resolve_os_context_falls_back_to_nh_flake() {
 
 #[test]
 #[serial]
-fn test_resolve_home_context_uses_nh_home_flake() {
+fn test_resolve_home_context_uses_xi_home_flake() {
   let env_guard = EnvGuard::clear();
   env_guard.set("XI_HOME_FLAKE", "~/.config/home-manager#myuser");
 
@@ -542,7 +542,7 @@ fn test_resolve_home_context_prefers_home_flake_over_generic() {
 
 #[test]
 #[serial]
-fn test_resolve_darwin_context_uses_nh_darwin_flake() {
+fn test_resolve_darwin_context_uses_xi_darwin_flake() {
   let env_guard = EnvGuard::clear();
   env_guard.set("XI_DARWIN_FLAKE", "/etc/nix-darwin#macbook");
 

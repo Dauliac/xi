@@ -11,7 +11,7 @@ Feature: User exit propagation
     And the EXIT trap fires: "xi develop prompt --exit --pid 1001"
     And the daemon deregisters PID 1001
     And the parent shell receives the non-zero exit status
-    And the parent shell's eval'd code propagates: "[ $__nh_status -ne 0 ] && exit $__nh_status"
+    And the parent shell's eval'd code propagates: "[ $__xi_status -ne 0 ] && exit $__xi_status"
     And the parent shell exits
     And the terminal closes
 

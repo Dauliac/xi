@@ -228,7 +228,7 @@ pub fn get_nix_version() -> Result<String> {
 /// This func is a no-op when no SSH agent socket is configured (which is
 /// unlikely but possible), i.e., when no `SSH_AUTH_SOCK` is set. This behaviour
 /// is valid, and SSH can authenticate via the keys in `~/.ssh` or via
-/// `~/.ssh/config` without an agent. NH should be able to handle the
+/// `~/.ssh/config` without an agent. Xi should be able to handle the
 /// case without erroring.
 pub fn ensure_ssh_key_login() -> Result<()> {
   // No usable agent socket means ssh-add has nothing to talk to.

@@ -66,7 +66,7 @@ in
     binPath = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "./target/debug/nh";
+      example = "./target/debug/xi";
       description = ''
         Override the xi binary path. When set, the wrapper and shell hooks
         will try this path first and fall back to the store binary if it

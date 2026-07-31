@@ -133,7 +133,7 @@ source '/state/hook-default.current.sh'
 function _xi_hook --on-event fish_prompt
     eval ($__XI_BIN develop prompt --subshell -s fish --pid %self)
 end
-function _nh_exit --on-event fish_exit
+function __xi_exit --on-event fish_exit
     eval ($__XI_BIN develop prompt --exit --pid %self)
 end
 cd '/original/cwd'

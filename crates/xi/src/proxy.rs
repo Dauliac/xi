@@ -67,35 +67,35 @@ impl NixProxyArgs {
     match route {
       Route::Build { args } => {
         info!("nix build → xi build");
-        run_nh_command("build", &args)
+        run_xi_command("build", &args)
       },
       Route::Check { args } => {
         info!("nix flake check → xi check");
-        run_nh_command("check", &args)
+        run_xi_command("check", &args)
       },
       Route::Fmt { args } => {
         info!("nix fmt → xi fmt");
-        run_nh_command("fmt", &args)
+        run_xi_command("fmt", &args)
       },
       Route::Show { args } => {
         info!("nix flake show → xi show");
-        run_nh_command("show", &args)
+        run_xi_command("show", &args)
       },
       Route::Develop { args } => {
         info!("nix develop → xi develop");
-        run_nh_command("develop", &args)
+        run_xi_command("develop", &args)
       },
       Route::Run { args } => {
         info!("nix run → xi run");
-        run_nh_command("run", &args)
+        run_xi_command("run", &args)
       },
       Route::Init { args } => {
         info!("nix flake init → xi init");
-        run_nh_command("init", &args)
+        run_xi_command("init", &args)
       },
       Route::Update { args } => {
         info!("nix flake update → xi update");
-        run_nh_command("update", &args)
+        run_xi_command("update", &args)
       },
       Route::Passthrough { args } => {
         debug!("Passing through to nix: {:?}", args);
@@ -242,7 +242,7 @@ fn analyze_flake_subcommand(
 }
 
 /// Re-invoke `xi` with the enhanced command, passing remaining args.
-fn run_nh_command(subcommand: &str, args: &[String]) -> Result<()> {
+fn run_xi_command(subcommand: &str, args: &[String]) -> Result<()> {
   let current_exe = std::env::current_exe()
     .map_err(|e| color_eyre::eyre::eyre!("Failed to get current exe: {e}"))?;
 

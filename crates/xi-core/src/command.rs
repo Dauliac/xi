@@ -561,7 +561,7 @@ impl Command {
     self
   }
 
-  /// Configure environment for Nix and NH operations
+  /// Configure environment for Nix and xi operations
   #[must_use]
   pub fn with_required_env(mut self) -> Self {
     // Centralized list of environment variables to preserve
@@ -569,7 +569,7 @@ impl Command {
     // nixos-rebuild preserves it, so we do too.
     const PRESERVE_ENV: &[&str] = &[
       "LOCALE_ARCHIVE",
-      // PATH needs to be preserved so that NH can invoke CLI utilities.
+      // PATH needs to be preserved so that xi can invoke CLI utilities.
       "PATH",
       // Make sure NIX_SSHOPTS applies to nix commands that invoke ssh, such as
       // `nix copy`
@@ -1275,10 +1275,10 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_with_required_env_nh_vars() {
+  fn test_with_required_env_xi_vars() {
     let _guard1 = EnvGuard::new("XI_TEST_VAR", "test_value");
     let _guard2 = EnvGuard::new("XI_ANOTHER_VAR", "another_value");
-    let _guard3 = EnvGuard::new("NOT_NH_VAR", "should_not_be_included");
+    let _guard3 = EnvGuard::new("NOT_XI_VAR", "should_not_be_included");
 
     let cmd = Command::new("test").with_required_env();
 
@@ -1290,15 +1290,15 @@ mod tests {
       matches!(cmd.env_vars.get("XI_ANOTHER_VAR"), Some(EnvAction::Set(val)) if val == "another_value")
     );
 
-    // Should not include non-NH variables
-    assert!(!cmd.env_vars.contains_key("NOT_NH_VAR"));
+    // Should not include non-xi variables
+    assert!(!cmd.env_vars.contains_key("NOT_XI_VAR"));
   }
 
   #[test]
   #[serial]
   fn test_combined_env_methods() {
     let _home_guard = EnvGuard::new("HOME", "/test/home");
-    let _nh_guard = EnvGuard::new("XI_TEST", "nh_value");
+    let _xi_guard = EnvGuard::new("XI_TEST", "xi_value");
 
     let cmd = Command::new("test")
       .with_required_env()
@@ -1309,9 +1309,9 @@ mod tests {
       matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val == "/test/home")
     );
 
-    // Should have NH variables from with_nh_env
+    // Should have XI variables from with_required_env
     assert!(
-      matches!(cmd.env_vars.get("XI_TEST"), Some(EnvAction::Set(val)) if val == "nh_value")
+      matches!(cmd.env_vars.get("XI_TEST"), Some(EnvAction::Set(val)) if val == "xi_value")
     );
 
     // Should have Nix variables preserved

@@ -1,9 +1,9 @@
 <!-- markdownlint-disable no-duplicate-heading -->
 
-# NH Changelog
+# Xi Changelog
 
 <!--
-This is the NH changelog. It aims to describe changes that occurred within the
+This is the xi changelog. It aims to describe changes that occurred within the
 codebase, to the extent that concerns *both users and contributors*. If you are
 a contributor, please add your changes under the "Unreleased" section as tags
 will be created at the discretion of maintainers. If your changes fix an
@@ -33,10 +33,10 @@ functionality, under the "Removed" section.
   to all underlying `nix` commands.
 - `--override-input INPUT FLAKE_URL` passthrough flag (repeatable) for
   overriding specific flake inputs without editing `flake.lock`.
-- `XI_SSHOPTS` environment variable as the NH-native alias for `NIX_SSHOPTS`.
+- `XI_SSHOPTS` environment variable as the xi-native alias for `NIX_SSHOPTS`.
   `XI_SSHOPTS` takes precedence when both are set.
 - `XI_SUDOOPTS` environment variable for passing extra arguments to the `sudo`
-  invocation when NH elevates privileges. `NIX_SUDOOPTS` is also accepted for
+  invocation when xi elevates privileges. `NIX_SUDOOPTS` is also accepted for
   nixos-rebuild compatibility, with `XI_SUDOOPTS` taking precedence.
 - `NIXOS_NO_CHECK` is now forwarded to `switch-to-configuration` during
   activation, matching nixos-rebuild behaviour.
@@ -187,7 +187,7 @@ functionality, under the "Removed" section.
   [#497](https://github.com/Dauliac/xi/pull/497))
   - A new `--no-validate` flag skips pre-activation system validation checks.
     Can also be set via the `XI_NO_VALIDATE` environment variable.
-  - Added `XI_REMOTE_CLEANUP` environment variable. When set, NH will attempt to
+  - Added `XI_REMOTE_CLEANUP` environment variable. When set, xi will attempt to
     terminate remote Nix processes on interrupt (Ctrl+C). Opt-in due to
     fragility.
 - Shell argument splitting now uses `shlex` for proper quote handling in complex
@@ -229,28 +229,28 @@ functionality, under the "Removed" section.
 - `xi os info` now gracefully handles out-of-sync profiles. When a previous
   switch failed during activation (e.g., a Systemd service failed), the profile
   may be out of sync with `/run/current-system` while in "test mode" via
-  `switch-to-configuration test`. NH now warns about this condition and displays
+  `switch-to-configuration test`. Xi now warns about this condition and displays
   version info from the running system instead of failing with an error.
 - Fixed the whitespace splitting of self-elevated commands so spaces inside
   quotes don't get separated.
 - Missing or "invalid" installable references are now handled more gracefully.
-  - Previously the error emitted by NH was unhelpful and generic, which
-    negatively affected user experience. NH will now _instead_ fall back to
+  - Previously the error emitted by xi was unhelpful and generic, which
+    negatively affected user experience. Xi will now _instead_ fall back to
     common installable locations _and_ tell you what exactly is missing in the
     error with instructions.
-  - If the fallback directory is a symlink, NH will now resolve it to the
+  - If the fallback directory is a symlink, xi will now resolve it to the
     canonical path for correct flake handling. If the fallback directory is real
-    but `flake.nix` inside it is a symlink, NH will resolve the symlink and use
+    but `flake.nix` inside it is a symlink, xi will resolve the symlink and use
     its parent directory as the flake reference. This matches how
     `nixos-rebuild` handles symlinked flake files.
   - Permission errors and other I/O errors are now surfaced with clear,
     actionable messages.
   - All fallback errors now include a hint to check `man xi` or the GitHub repo
     for more details.
-  - NH also refused to handle references that contained hostname as a part of
+  - Xi also refused to handle references that contained hostname as a part of
     the installable such as (`./flake.nix#myHost`) in the past and lead to
     confusing behaviour for those unfamiliar. Such arguments are now normalized
-    with a warning if NH can parse them.
+    with a warning if xi can parse them.
 - Password caching now works across all remote operations.
 - Empty password validation prevents invalid credential caching.
 - Direnv caches in [alternative locations][direnv-alternative-caches] (e.g.,
@@ -267,7 +267,7 @@ functionality, under the "Removed" section.
 
 ### Removed
 
-- Shell completion generation has been moved OUT of the main NH CLI, and is now
+- Shell completion generation has been moved OUT of the main xi CLI, and is now
   done via `cargo-xtask` in the packaging step. The `xi completions` command is
   now fully deprecated and shell completion can be done with
   `cargo xtask completions` or `cargo xtask dist`.
@@ -276,7 +276,7 @@ functionality, under the "Removed" section.
 
 ### Changed
 
-- Nh checks are now more robust in the sense that unnecessary features will not
+- Xi checks are now more robust in the sense that unnecessary features will not
   be required when the underlying command does not depend on them.
 - The `--update-input` flag now supports being specified multiple times.
 - The `--update-input` flag no longer requires `--update` in order to take
@@ -287,7 +287,7 @@ functionality, under the "Removed" section.
   This allows you to see more details about the activation from `nix-darwin`, as
   well as `Home Manager`.
 - `nvd` is replaced by `dix`, resulting in saner and faster diffing.
-- Nh now supports a new `--diff` flag, which takes one of `auto` `always`
+- Xi now supports a new `--diff` flag, which takes one of `auto` `always`
   `never` and toggles displaying the package diff after a build.
 - Manpages have been added to xi, and will be available as `man 1 xi` if the
   package vendor provides them.
@@ -304,24 +304,24 @@ functionality, under the "Removed" section.
   - It's roughly %4 faster according to testing, but IO is still a limiting
     factor and results may differ.
 - Added more context to some minor debug messages across platform commands.
-- Nh now supports alternative privilege escalation methods. Namely `doas`,
+- Xi now supports alternative privilege escalation methods. Namely `doas`,
   `run0` and a fallback `pkexec` strategies will be attempted if the system does
   not use `sudo`.
-- Nh will correctly prompt you for your `sudo` password while deploying
+- Xi will correctly prompt you for your `sudo` password while deploying
   remotely. This helps mitigate the need to allow password-less `sudo` on the
   target host to deploy remotely.
 
 ### Fixed
 
-- Nh will now correctly detect non-semver version strings, such as `x.ygit`.
+- Xi will now correctly detect non-semver version strings, such as `x.ygit`.
   Instead of failing the check, we now try to normalize the string and simply
   skip the check with a warning.
-- In the case system switch is disabled (`system.switch enable = false;`) Nh
+- In the case system switch is disabled (`system.switch enable = false;`) xi
   will provide a more descriptive error message hinting at what might be the
   issue. ([#331](https://github.com/Dauliac/xi/issues/331))
   - We cannot accurately guess what the issue is, but this should be more
     graceful than simply throwing an error about a missing path (what path?)
-- Nh will now carefully pick environment variables passed to individual
+- Xi will now carefully pick environment variables passed to individual
   commands. This resolves the "`$HOME` is not owned by you!" error, but it's
   also a part of a larger refactor that involves only providing relevant
   variables to individual commands. This is an experimental change, please let
@@ -347,7 +347,7 @@ functionality, under the "Removed" section.
 
 ### Changed
 
-- Nh is now built on Cargo 2024 edition. This does not imply any changes for the
+- Xi is now built on Cargo 2024 edition. This does not imply any changes for the
   users, but contributors might need to adapt.
 
 - `xi os build` and `xi os build-vm` now default to placing the output at
@@ -366,19 +366,19 @@ functionality, under the "Removed" section.
   generation, or to a specific generation with the `--to` flag. See
   `xi os rollback --help` for more details on this subcommand.
 
-- Nh now supports the `--build-host` and `--target-host` cli arguments
+- Xi now supports the `--build-host` and `--target-host` cli arguments
 
-- Nh now checks if the current Nix implementation has necessary experimental
+- Xi now checks if the current Nix implementation has necessary experimental
   features enabled. In mainline Nix (CppNix, etc.) we check for `nix-command`
   and `flakes` being set. In Lix, we also use `repl-flake` as it is still
   provided as an experimental feature in versions below 2.93.0.
 
-- Nh will now check if you are using the latest stable, or "recommended,"
+- Xi will now check if you are using the latest stable, or "recommended,"
   version of Nix (or Lix.) This check has been placed to make it clear we do not
   support legacy/vulnerable versions of Nix, and encourage users to update if
   they have not yet done so.
 
-- NixOS: Nh now accepts the subcommand `xi os build-vm`, which builds a virtual
+- NixOS: Xi now accepts the subcommand `xi os build-vm`, which builds a virtual
   machine image activation script instead of a full system. This includes a new
   option `--with-bootloader/-B` that applies to just build-vm, to build a VM
   with a bootloader.
@@ -396,7 +396,7 @@ functionality, under the "Removed" section.
 
 ### Added
 
-- Nh now supports specifying `XI_SUDO_ASKPASS` to pass a custom value to
+- Xi now supports specifying `XI_SUDO_ASKPASS` to pass a custom value to
   `SUDO_ASKPASS` in self-elevation. If specified, `sudo` will be called with
   `-A` and the `XI_SUDO_ASKPASS` will be `SUDO_ASKPASS` locally.
 

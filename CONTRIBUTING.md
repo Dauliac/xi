@@ -1,8 +1,8 @@
-# Contributing to XI
+# Contributing to xi
 
 <!--toc:start-->
 
-- [Contributing to XI](#contributing-to-xi)
+- [Contributing to xi](#contributing-to-xi)
   - [Code of Conduct](#code-of-conduct)
   - [Making Changes](#making-changes)
     - [Writing Code](#writing-code)
@@ -27,7 +27,7 @@
 
 <!--toc:end-->
 
-Thank you for your interest in contributing to NH! It is maintained by
+Thank you for your interest in contributing to xi! It is maintained by
 volunteers at no cost to the users, and user contributions are the greatest form
 of support we can receive. This document will streamline the contributing
 process, provide information to help you contribute effectively, and establish
@@ -100,7 +100,7 @@ modifying anything. If you wish, you may run those commands manually as well.
 
 ## Testing
 
-NH features a _massive_ test suite to verify the accuracy for various bits and
+Xi features a _massive_ test suite to verify the accuracy for various bits and
 pieces. This helps ensure we do not regress existing features while moving fast.
 While contributing, you are expected to write appropriate tests and run the
 existing test suite.
@@ -124,9 +124,9 @@ $ just test
 ### Platform-Specific Testing
 
 If your changes affect platform-specific functionality, please try to build your
-project on the relevant platform(s). By design NH supports Linux and Darwin, but
+project on the relevant platform(s). By design xi supports Linux and Darwin, but
 various other Unixes might also work. The following are first-class targets in
-NH:
+xi:
 
 - `x86_64-linux`
 - `aarch64-linux`
@@ -167,7 +167,7 @@ If in doubt, feel free to ask the maintainers for guidance.
 ### Pull Request Process
 
 While creating a pull request, you will want to first update the CHANGELOG.md
-document that keeps track of changes made to NH. Most changes should target the
+document that keeps track of changes made to xi. Most changes should target the
 "Unreleased" section, and this section will be renamed to the next tag before a
 tagged release.
 
@@ -175,7 +175,7 @@ There exists a PR template that helps clarify what we are looking for in a PR.
 Please fill it out completely.
 
 After creating a PR, please ensure that all checks pass. At the very least you
-**must** ensure that NH builds on supported platforms, and that
+**must** ensure that xi builds on supported platforms, and that
 formatting/linting checks succeed. You will also want to make sure that there
 are no new test failures.
 
@@ -189,7 +189,7 @@ maintainers a gentle nudge by pinging them in the issue.
 
 [Cargo manifest]: ./Cargo.toml
 
-NH uses Rust 2024 edition, with most formatting rules codified in
+Xi uses Rust 2024 edition, with most formatting rules codified in
 `.rustfmt.toml`. Naming is standard Rust, where we use:
 
 - `snake_case` for functions and variables
@@ -244,7 +244,7 @@ let safe_arg = try_quote(user_input)?;
 
 ### Logging
 
-We use the `tracing` crate for logging throughout NH. Use the appropriate
+We use the `tracing` crate for logging throughout xi. Use the appropriate
 macros, and ensure hotpaths provide appropriate debugging information via
 `debug!`.
 
@@ -274,7 +274,7 @@ pub struct MyType {
 
 > [!IMPORTANT]
 > Pull requests created or submitted by autonomous or supervised AI agents are
-> explicitly prohibited, and will be immediately closed without a review. NH, as
+> explicitly prohibited, and will be immediately closed without a review. Xi, as
 > a codebase, does not welcome AI-generated contributions.
 
 This policy exists for the following reasons:
@@ -288,7 +288,7 @@ This policy exists for the following reasons:
    create ambiguity around copyright and licensing obligations. Not to mention
    the ethical concerns.
 
-3. **Security**: NH operates with elevated privileges and manages system
+3. **Security**: Xi operates with elevated privileges and manages system
    configurations. Changes to such software require human judgment, security
    awareness, and accountability.
 
@@ -335,10 +335,10 @@ project.
 
 [European Union Public License v. 1.2 (EUPL-1.2)]: ./LICENSE
 
-By contributing to NH, you agree that your contributions will be immediately
+By contributing to xi, you agree that your contributions will be immediately
 licensed under [European Union Public License v. 1.2 (EUPL-1.2)] upon a merge.
 
 ---
 
-Thank you for contributing to NH! Your efforts help make the Nix ecosystem
+Thank you for contributing to xi! Your efforts help make the Nix ecosystem
 better for everyone.

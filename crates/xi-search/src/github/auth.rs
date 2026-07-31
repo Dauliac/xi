@@ -42,10 +42,10 @@ pub fn token() -> Result<SecretString> {
   }
 
   eprintln!(
-    r"NH needs a GitHub token to access the GitHub API for searching pull requests and issues.
+    r"xi needs a GitHub token to access the GitHub API for searching pull requests and issues.
 Please create a GitHub token at {}
 if you do not already have one, or paste an existing token down below.
-You do not need to set any scopes for your token since NH only uses it to make authenticated requests to GitHub.
+You do not need to set any scopes for your token since xi only uses it to make authenticated requests to GitHub.
 The token will be saved to {} with user-only permissions.
      ",
     TOKEN_CREATION_URL.underline().blue(),

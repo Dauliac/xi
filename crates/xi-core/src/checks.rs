@@ -41,7 +41,7 @@ pub fn check_nix_version() -> Result<()> {
   // A: First of all to make sure we do not make baseless assumptions
   // about the user's system; we should only work around APIs that we
   // are fully aware of, and not try to work around every edge case.
-  // Also, NH should be responsible for nudging the user to use the
+  // Also, xi should be responsible for nudging the user to use the
   // relevant versions of the software it wraps, so that we do not have
   // to try and support too many versions. NixOS stable and unstable
   // will ALWAYS be supported, but outdated versions will not. If your
@@ -87,7 +87,7 @@ pub fn check_nix_version() -> Result<()> {
   }
 }
 
-/// Checks if core NH environment variables are set correctly. This was
+/// Checks if core xi environment variables are set correctly. This was
 /// previously `setup_environment()`, but the setup logic has been moved away.
 ///
 /// # Returns
@@ -490,7 +490,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_setup_environment_flake_to_nh_flake_migration() {
+  fn test_setup_environment_flake_to_xi_flake_migration() {
     unsafe {
       env::remove_var("FLAKE");
       env::remove_var("XI_FLAKE");
@@ -515,7 +515,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_setup_environment_no_migration_when_nh_flake_exists() {
+  fn test_setup_environment_no_migration_when_xi_flake_exists() {
     unsafe {
       env::remove_var("FLAKE");
       env::remove_var("XI_FLAKE");
@@ -567,7 +567,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_check_features_bypassed_with_nh_no_checks() {
+  fn test_check_features_bypassed_with_xi_no_checks() {
     let _guard = EnvGuard::new("XI_NO_CHECKS", "1");
 
     let features = FlakeFeatures;
@@ -581,7 +581,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_verify_nix_environment_bypassed_with_nh_no_checks() {
+  fn test_verify_nix_environment_bypassed_with_xi_no_checks() {
     let _guard = EnvGuard::new("XI_NO_CHECKS", "1");
 
     let result = verify_nix_environment();
@@ -594,7 +594,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn test_check_nix_version_bypassed_with_nh_no_checks() {
+  fn test_check_nix_version_bypassed_with_xi_no_checks() {
     let _guard = EnvGuard::new("XI_NO_CHECKS", "1");
 
     let result = check_nix_version();

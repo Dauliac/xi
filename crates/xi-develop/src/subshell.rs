@@ -37,7 +37,7 @@ pub fn generate_spawn_command(
   shell: ShellType,
   flake_root: &Path,
   original_cwd: &Path,
-  nh_bin: &str,
+  xi_bin: &str,
 ) -> String {
   let root = flake_root.display();
   let cwd = original_cwd.display();
@@ -50,7 +50,7 @@ pub fn generate_spawn_command(
         "\
 __xi_cwd_save=\"$PWD\"
 cd '{cwd}'
-__XI_IN_DEVSHELL=1 __XI_FLAKE_ROOT='{root}' __XI_BIN='{nh_bin}' \
+__XI_IN_DEVSHELL=1 __XI_FLAKE_ROOT='{root}' __XI_BIN='{xi_bin}' \
 __XI_DEPTH=$((${{__XI_DEPTH:-0}}+1)) {shell_name}
 __xi_status=$?
 cd \"$__xi_cwd_save\"
@@ -63,7 +63,7 @@ if [ $__xi_status -ne {sentinel} ]; then export __XI_SUPPRESS='{root}'; fi
         "\
 set -l __xi_cwd_save $PWD
 cd '{cwd}'
-__XI_IN_DEVSHELL=1 __XI_FLAKE_ROOT='{root}' __XI_BIN='{nh_bin}' \
+__XI_IN_DEVSHELL=1 __XI_FLAKE_ROOT='{root}' __XI_BIN='{xi_bin}' \
 __XI_DEPTH=(math (set -q __XI_DEPTH; and echo $__XI_DEPTH; or echo 0) + 1) fish
 set -l __xi_status $status
 cd $__xi_cwd_save

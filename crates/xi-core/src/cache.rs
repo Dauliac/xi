@@ -385,15 +385,15 @@ fn spawn_detached_push(target: &CacheTarget, out_path: &Path) -> Result<u32> {
 
   let script = format!(
     r#"mkdir -p {notif_dir}
-_nh_push_err=$({push_cmd} 2>&1)
-_nh_push_rc=$?
-if [ "$_nh_push_rc" -eq 0 ]; then
+_xi_push_err=$({push_cmd} 2>&1)
+_xi_push_rc=$?
+if [ "$_xi_push_rc" -eq 0 ]; then
   cat > {notif_path} <<'__XI_EOF__'
 {success_json}
 __XI_EOF__
 else
-  _nh_stderr=$(printf '%s' "$_nh_push_err" | head -c 1024 | sed 's/\\/\\\\/g;s/"/\\"/g' | tr '\n' ' ')
-  printf '%s,"stderr":"%s"}}' {failure_prefix} "$_nh_stderr" > {notif_path}
+  _xi_stderr=$(printf '%s' "$_xi_push_err" | head -c 1024 | sed 's/\\/\\\\/g;s/"/\\"/g' | tr '\n' ' ')
+  printf '%s,"stderr":"%s"}}' {failure_prefix} "$_xi_stderr" > {notif_path}
 fi"#,
     notif_dir = shell_escape(notif_dir.to_str().unwrap_or("/tmp")),
     push_cmd = push_cmd_str,

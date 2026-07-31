@@ -139,7 +139,7 @@ pub struct CacheConfig {
 }
 
 impl ConfigStore {
-  /// Load NH configuration from the default path.
+  /// Load xi configuration from the default path.
   ///
   /// # Errors
   ///
@@ -149,7 +149,7 @@ impl ConfigStore {
     Self::load_from(default_config_path()?)
   }
 
-  /// Load NH configuration from a specific path.
+  /// Load xi configuration from a specific path.
   ///
   /// Missing files are treated as an empty configuration and are only created
   /// when [`Self::save`] is called.
@@ -176,7 +176,7 @@ impl ConfigStore {
     &self.path
   }
 
-  /// Return the typed view of the known NH configuration fields.
+  /// Return the typed view of the known xi configuration fields.
   ///
   /// # Errors
   ///
@@ -489,7 +489,7 @@ impl ConfigStore {
   }
 }
 
-/// Resolve the path to NH configuration.
+/// Resolve the path to xi configuration.
 ///
 /// # Errors
 ///
@@ -517,7 +517,7 @@ pub fn default_config_path() -> Result<PathBuf> {
     );
   }
 
-  bail!("could not determine NH configuration path; set {CONFIG_ENV}")
+  bail!("could not determine xi configuration path; set {CONFIG_ENV}")
 }
 
 fn reject_unknown(
@@ -543,7 +543,7 @@ fn reject_unknown(
 
 fn parse_document(path: &Path, raw: &str) -> Result<DocumentMut> {
   raw.parse::<DocumentMut>().with_context(|| {
-    format!("failed to parse NH configuration at {}", path.display())
+    format!("failed to parse xi configuration at {}", path.display())
   })
 }
 
@@ -677,7 +677,7 @@ mod tests {
 
   #[test]
   #[serial]
-  fn nh_config_overrides_default_path() -> Result<()> {
+  fn xi_config_overrides_default_path() -> Result<()> {
     let dir = tempdir()?;
     let path = dir.path().join("custom.toml");
     let _config = EnvGuard::set("XI_CONFIG", &path);
