@@ -27,6 +27,7 @@ toml_edit.workspace             = true
 tracing.workspace               = true
 tracing-subscriber.workspace    = true
 walkdir.workspace               = true
+xi-agent.workspace              = true
 xi-auth.workspace               = true
 xi-core.workspace               = true
 xi-darwin.workspace             = true
