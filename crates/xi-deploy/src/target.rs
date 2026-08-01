@@ -129,18 +129,14 @@ impl DeployRsConfig {
       .nodes
       .into_iter()
       .map(|(name, node)| {
-        let ssh_user = node
-          .ssh_user
-          .or_else(|| global_ssh_user.clone());
+        let ssh_user = node.ssh_user.or_else(|| global_ssh_user.clone());
         let ssh_opts = if node.ssh_opts.is_empty() {
           global_ssh_opts.clone()
         } else {
           node.ssh_opts
         };
-        let magic_rollback =
-          node.magic_rollback && global_magic_rollback;
-        let confirm_timeout =
-          node.confirm_timeout.min(global_confirm_timeout);
+        let magic_rollback = node.magic_rollback && global_magic_rollback;
+        let confirm_timeout = node.confirm_timeout.min(global_confirm_timeout);
 
         // Order profiles: explicit order first, then remaining
         let mut ordered_profiles = Vec::new();
@@ -261,10 +257,7 @@ mod tests {
   fn infer_profile_kinds() {
     assert_eq!(infer_profile_kind("system"), ProfileKind::NixOS);
     assert_eq!(infer_profile_kind("home"), ProfileKind::HomeManager);
-    assert_eq!(
-      infer_profile_kind("home-manager"),
-      ProfileKind::HomeManager
-    );
+    assert_eq!(infer_profile_kind("home-manager"), ProfileKind::HomeManager);
     assert_eq!(infer_profile_kind("darwin"), ProfileKind::Darwin);
     assert_eq!(infer_profile_kind("my-app"), ProfileKind::NixOS);
   }

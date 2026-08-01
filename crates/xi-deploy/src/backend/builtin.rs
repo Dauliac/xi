@@ -58,10 +58,7 @@ impl DeployBackend for BuiltinBackend {
     println!();
 
     if args.dry {
-      println!(
-        "  {}",
-        Paint::new("Dry run — nothing deployed").dim()
-      );
+      println!("  {}", Paint::new("Dry run — nothing deployed").dim());
       return Ok(());
     }
 
@@ -78,10 +75,7 @@ impl DeployBackend for BuiltinBackend {
     if deploy_targets.is_empty() {
       let available: Vec<&str> =
         targets.iter().map(|t| t.name.as_str()).collect();
-      bail!(
-        "No matching targets. Available: {}",
-        available.join(", ")
-      );
+      bail!("No matching targets. Available: {}", available.join(", "));
     }
 
     for target in deploy_targets {
@@ -108,10 +102,9 @@ impl DeployBackend for BuiltinBackend {
         bail!("Build failed for {}:\n{stderr}", target.name);
       }
 
-      let store_path =
-        String::from_utf8_lossy(&build_output.stdout)
-          .trim()
-          .to_string();
+      let store_path = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
 
       // Copy closure to target
       let ssh_target = format!(
@@ -187,9 +180,7 @@ impl DeployBackend for BuiltinBackend {
 /// Each configuration becomes a deploy target.  Without a way to know the
 /// target hostname from pure Nix evaluation, we use the configuration
 /// attribute name as the hostname (users can override via the target list).
-fn discover_nixos_configurations(
-  flake_ref: &str,
-) -> Result<Vec<DeployTarget>> {
+fn discover_nixos_configurations(flake_ref: &str) -> Result<Vec<DeployTarget>> {
   let attr = format!("{flake_ref}#nixosConfigurations");
   debug!(attr, "Discovering nixosConfigurations");
 
@@ -199,16 +190,16 @@ fn discover_nixos_configurations(
     .arg("x: builtins.attrNames x")
     .arg("--json");
 
-  let output = cmd.output().map_err(|e| {
-    color_eyre::eyre::eyre!("Failed to evaluate {attr}: {e}")
-  })?;
+  let output = cmd
+    .output()
+    .map_err(|e| color_eyre::eyre::eyre!("Failed to evaluate {attr}: {e}"))?;
 
   if !output.status.success() {
     return Ok(Vec::new());
   }
 
-  let names: Vec<String> = serde_json::from_slice(&output.stdout)
-    .map_err(|e| {
+  let names: Vec<String> =
+    serde_json::from_slice(&output.stdout).map_err(|e| {
       color_eyre::eyre::eyre!("Failed to parse nixosConfigurations: {e}")
     })?;
 

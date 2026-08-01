@@ -93,9 +93,7 @@ impl DeployBackend for ColmenaBackend {
       .stdout(std::process::Stdio::inherit())
       .stderr(std::process::Stdio::inherit())
       .status()
-      .map_err(|e| {
-        color_eyre::eyre::eyre!("Failed to run colmena: {e}")
-      })?;
+      .map_err(|e| color_eyre::eyre::eyre!("Failed to run colmena: {e}"))?;
 
     if !status.success() {
       bail!("colmena apply failed with status {status}");

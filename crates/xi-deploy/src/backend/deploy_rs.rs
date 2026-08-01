@@ -36,10 +36,9 @@ impl DeployBackend for DeployRsBackend {
 
   fn discover_targets(&self, _flake_ref: &str) -> Result<Vec<DeployTarget>> {
     // Clone config to convert — in practice we'd cache this
-    let config_json =
-      serde_json::to_value(&self.config).map_err(|e| {
-        color_eyre::eyre::eyre!("Failed to re-serialize deploy config: {e}")
-      })?;
+    let config_json = serde_json::to_value(&self.config).map_err(|e| {
+      color_eyre::eyre::eyre!("Failed to re-serialize deploy config: {e}")
+    })?;
     let config: DeployRsConfig = serde_json::from_value(config_json)?;
     Ok(config.into_targets())
   }
@@ -64,12 +63,8 @@ impl DeployBackend for DeployRsBackend {
         .collect();
 
       if filtered.is_empty() {
-        let available: Vec<&str> = self
-          .config
-          .nodes
-          .keys()
-          .map(String::as_str)
-          .collect();
+        let available: Vec<&str> =
+          self.config.nodes.keys().map(String::as_str).collect();
         bail!(
           "No matching nodes found. Available: {}",
           available.join(", ")
@@ -101,10 +96,7 @@ impl DeployBackend for DeployRsBackend {
     println!();
 
     if args.dry {
-      println!(
-        "  {}",
-        Paint::new("Dry run — nothing deployed").dim()
-      );
+      println!("  {}", Paint::new("Dry run — nothing deployed").dim());
       return Ok(());
     }
 
@@ -130,13 +122,11 @@ fn eval_deploy_config(flake_ref: &str) -> Result<DeployRsConfig> {
   let attr = format!("{flake_ref}#deploy");
   debug!(attr, "Evaluating deploy-rs config");
 
-  let cmd = NixCommand::new(CommandKind::Eval)
-    .arg(&attr)
-    .arg("--json");
+  let cmd = NixCommand::new(CommandKind::Eval).arg(&attr).arg("--json");
 
-  let output = cmd.output().map_err(|e| {
-    color_eyre::eyre::eyre!("Failed to evaluate {attr}: {e}")
-  })?;
+  let output = cmd
+    .output()
+    .map_err(|e| color_eyre::eyre::eyre!("Failed to evaluate {attr}: {e}"))?;
 
   if !output.status.success() {
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -217,10 +207,7 @@ fn deploy_profile(
 
   if !target.ssh_opts.is_empty() {
     let ssh_opts_str = target.ssh_opts.join(" ");
-    copy_cmd = copy_cmd
-      .arg("--option")
-      .arg("ssh-opts")
-      .arg(&ssh_opts_str);
+    copy_cmd = copy_cmd.arg("--option").arg("ssh-opts").arg(&ssh_opts_str);
   }
 
   let copy_output = copy_cmd.output().map_err(|e| {
@@ -252,7 +239,9 @@ fn deploy_profile(
     .stderr(std::process::Stdio::inherit())
     .status()
     .map_err(|e| {
-      color_eyre::eyre::eyre!("SSH activation failed for {profile_display}: {e}")
+      color_eyre::eyre::eyre!(
+        "SSH activation failed for {profile_display}: {e}"
+      )
     })?;
 
   if !activate_status.success() {

@@ -132,9 +132,10 @@ impl FlakeOutput {
   #[must_use]
   pub const fn inferred_kind(self) -> Option<FlakeOutputKind> {
     match self {
-      Self::Packages | Self::DevShells | Self::Checks | Self::LegacyPackages => {
-        Some(FlakeOutputKind::Derivation)
-      },
+      Self::Packages
+      | Self::DevShells
+      | Self::Checks
+      | Self::LegacyPackages => Some(FlakeOutputKind::Derivation),
       Self::Apps => Some(FlakeOutputKind::App),
       Self::Formatter => Some(FlakeOutputKind::Derivation),
       Self::Overlays => Some(FlakeOutputKind::Overlay),
@@ -364,11 +365,7 @@ mod tests {
     for &output in FlakeOutput::DISPLAY_ORDER {
       let name = output.as_str();
       let parsed = FlakeOutput::from_nix_name(name);
-      assert_eq!(
-        parsed,
-        Some(output),
-        "round-trip failed for {name}"
-      );
+      assert_eq!(parsed, Some(output), "round-trip failed for {name}");
     }
   }
 
@@ -416,10 +413,7 @@ mod tests {
       FlakeOutput::Overlays.inferred_kind(),
       Some(FlakeOutputKind::Overlay)
     );
-    assert_eq!(
-      FlakeOutput::Lib.inferred_kind(),
-      Some(FlakeOutputKind::Lib)
-    );
+    assert_eq!(FlakeOutput::Lib.inferred_kind(), Some(FlakeOutputKind::Lib));
   }
 
   #[test]
@@ -436,10 +430,7 @@ mod tests {
       FlakeOutputKind::infer_from_category("evalLib"),
       Some(FlakeOutputKind::Lib)
     );
-    assert_eq!(
-      FlakeOutputKind::infer_from_category("randomThing"),
-      None
-    );
+    assert_eq!(FlakeOutputKind::infer_from_category("randomThing"), None);
   }
 
   #[test]

@@ -287,7 +287,8 @@ where
   I: IntoIterator<Item = S>,
   S: AsRef<std::ffi::OsStr>,
 {
-  let config_key = xi_core::flake_output::FlakeOutput::HomeConfigurations.as_str();
+  let config_key =
+    xi_core::flake_output::FlakeOutput::HomeConfigurations.as_str();
   let mut res = installable;
   let extra_args: Vec<OsString> = {
     let mut vec = Vec::new();

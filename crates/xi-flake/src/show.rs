@@ -393,10 +393,8 @@ fn print_opaque_category(cat_name: &str, value: &serde_json::Value) {
     .unwrap_or("unknown");
 
   let label = match kind {
-    "unknown" => {
-      FlakeOutputKind::infer_from_category(cat_name)
-        .map_or("opaque", |k| k.as_str())
-    },
+    "unknown" => FlakeOutputKind::infer_from_category(cat_name)
+      .map_or("opaque", |k| k.as_str()),
     other => other,
   };
 

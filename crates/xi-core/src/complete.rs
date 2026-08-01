@@ -106,17 +106,14 @@ pub fn complete_packages(current: &OsStr) -> Vec<CompletionCandidate> {
 #[must_use]
 pub fn complete_apps(current: &OsStr) -> Vec<CompletionCandidate> {
   let prefix = current.to_str().unwrap_or("");
-  let mut results =
-    complete_per_system(FlakeOutput::Apps.as_str(), prefix);
+  let mut results = complete_per_system(FlakeOutput::Apps.as_str(), prefix);
   let existing: Vec<String> = results
     .iter()
     .filter_map(|c| {
       c.get_value().to_str().map(std::string::ToString::to_string)
     })
     .collect();
-  for candidate in
-    complete_per_system(FlakeOutput::Packages.as_str(), prefix)
-  {
+  for candidate in complete_per_system(FlakeOutput::Packages.as_str(), prefix) {
     if let Some(val) = candidate.get_value().to_str()
       && !existing.contains(&val.to_string())
     {

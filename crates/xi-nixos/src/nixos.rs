@@ -609,7 +609,9 @@ impl OsRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_hostname,
-          Some(xi_core::flake_output::FlakeOutput::NixosConfigurations.as_str()),
+          Some(
+            xi_core::flake_output::FlakeOutput::NixosConfigurations.as_str(),
+          ),
         );
       }
 
@@ -634,7 +636,9 @@ impl OsRebuildArgs {
         xi_core::suggest::print_suggestions_on_failure(
           &suggest_ref,
           &suggest_hostname,
-          Some(xi_core::flake_output::FlakeOutput::NixosConfigurations.as_str()),
+          Some(
+            xi_core::flake_output::FlakeOutput::NixosConfigurations.as_str(),
+          ),
         );
       }
 
@@ -1318,7 +1322,9 @@ impl OsReplArgs {
     } = target_installable
       && attribute.is_empty()
     {
-      attribute.push(xi_core::flake_output::FlakeOutput::NixosConfigurations.to_string());
+      attribute.push(
+        xi_core::flake_output::FlakeOutput::NixosConfigurations.to_string(),
+      );
       attribute.push(hostname);
     }
 

@@ -73,8 +73,7 @@ fn collect_available_attrs(
     if FlakeOutput::is_name_per_system(cat_name) {
       // Look inside the current system
       if let Some(system_value) = cat_obj.get(system) {
-        if FlakeOutput::from_nix_name(cat_name)
-          == Some(FlakeOutput::Formatter)
+        if FlakeOutput::from_nix_name(cat_name) == Some(FlakeOutput::Formatter)
         {
           suggestions.push(Suggestion {
             full_path: format!("{cat_name}.{system}"),
