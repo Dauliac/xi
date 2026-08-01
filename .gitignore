@@ -19,3 +19,9 @@ report*
 
 # Claude Code
 .claude/
+
+# Gas City
+.gc/
+.beads/*
+!.beads/identity.toml
+hooks/
