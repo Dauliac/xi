@@ -16,6 +16,7 @@ xi-core     = { path = "crates/xi-core", version = "4.4.0" }
 xi-darwin   = { path = "crates/xi-darwin", version = "4.4.0" }
 xi-deploy   = { path = "crates/xi-deploy", version = "4.4.0" }
 xi-develop  = { path = "crates/xi-develop", version = "4.4.0" }
+xi-agent    = { path = "crates/xi-agent", version = "4.4.0" }
 xi-diff     = { path = "crates/xi-diff", version = "4.4.0" }
 xi-flake    = { path = "crates/xi-flake", version = "4.4.0" }
 xi-home     = { path = "crates/xi-home", version = "4.4.0" }

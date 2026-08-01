@@ -1,0 +1,32 @@
+[package]
+name                   = "xi-agent"
+description            = "Structured project context for AI coding agents (skills + JSON-first CLI)"
+version.workspace      = true
+publish                = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+chrono               = { workspace = true, features = [ "serde" ] }
+clap.workspace       = true
+color-eyre.workspace = true
+directories          = "5"
+include_dir          = "0.7"
+nix-command.workspace = true
+serde                = { workspace = true }
+serde_json.workspace = true
+sha2.workspace       = true
+tempfile.workspace   = true
+tracing.workspace    = true
+xi-core.workspace    = true
+xi-develop.workspace = true
+xi-flake.workspace   = true
+
+[dev-dependencies]
+insta.workspace       = true
+tempfile.workspace    = true
+serial_test.workspace = true
+
+[lints]
+workspace = true
