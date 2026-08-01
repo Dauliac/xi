@@ -235,10 +235,17 @@ pub struct CheckArgs {
 }
 
 #[derive(Debug, Args)]
-/// Run a flake app (defaults to current directory)
+/// Run a flake app, or a bare command from nixpkgs (comma-style)
 ///
-/// With `--locate` / `-l`, searches nixpkgs for a package providing the
-/// given command (comma-style), builds it, then executes it directly.
+/// Bare-name arguments walk a three-tier chain:
+///   1. `.#apps.<system>.<name>` / `.#packages.<system>.<name>` in the
+///      current flake (deterministic, project-local).
+///   2. The flake's locked `nixpkgs` input — same nixpkgs the project
+///      builds against; reproducible.
+///   3. System registry `nixpkgs` (comma-style fallback, rolling).
+///
+/// Pass `--locate` / `-l` to force tier 3 directly. Explicit flake refs
+/// (`nixpkgs#foo`, `github:...#foo`, `.#foo`) bypass the chain.
 pub struct RunArgs {
   #[command(flatten)]
   pub installable: InstallableArgs,
@@ -247,9 +254,8 @@ pub struct RunArgs {
   #[arg(long, env = "XI_NO_NOM", value_parser = clap::builder::BoolishValueParser::new())]
   pub no_nom: bool,
 
-  /// Locate mode: search nixpkgs for a package providing the command
-  /// via nix-index, build it, then run the binary directly.
-  /// The installable argument becomes the command name.
+  /// Force tier-3 locate mode: skip flake apps/packages + flake's nixpkgs,
+  /// go straight to the system nixpkgs registry via nix-index.
   #[arg(long, short = 'l', env = "XI_RUN_LOCATE", value_parser = clap::builder::BoolishValueParser::new())]
   pub locate: bool,
 

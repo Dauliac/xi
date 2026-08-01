@@ -447,22 +447,71 @@ fn is_flake_ref(s: &str) -> bool {
 impl RunArgs {
   /// Run the run command.
   ///
-  /// In normal mode: build the derivation with nom, then run interactively.
-  /// In locate mode (`--locate`): search nixpkgs via nix-index, build, exec.
+  /// Routing chain for a bare-name argument (e.g. `xi run hello`):
+  /// 1. `.#apps.<system>.<name>` or `.#packages.<system>.<name>` — the
+  ///    local flake, if present.
+  /// 2. The flake's locked `nixpkgs` input — reproducible, still project-scoped.
+  /// 3. System registry `nixpkgs` — rolling, comma-style fallback.
+  ///
+  /// An explicit `--locate` skips straight to tier 3. Explicit flake refs
+  /// (containing `#`, `/`, `:` or `.`) bypass the chain entirely and hit
+  /// `nix run` directly, matching prior behavior.
   ///
   /// # Errors
   ///
-  /// Returns an error if the command fails.
+  /// Returns an error if all tiers fail.
   pub fn run(self) -> Result<()> {
+    // Explicit override → tier 3 only
     if self.locate {
-      return self.run_locate();
+      return self.run_locate_via(locate::LocateSource::SystemNixpkgs);
     }
 
-    ensure_flake_locked(resolve_local_flake_dir_from_installable(
-      &self.installable,
-    ))?;
+    // Explicit flake ref / file / expr / store path → traditional `nix run`
+    let Some(name) = extract_bare_name(&self.installable) else {
+      return self.run_traditional();
+    };
 
-    // Capture suggestion info before borrowing installable
+    // Locate a flake root (if any) and make sure it's locked.
+    let flake_dir_candidate =
+      resolve_local_flake_dir_from_installable(&self.installable);
+    ensure_flake_locked(flake_dir_candidate.clone())?;
+    let flake_dir =
+      flake_dir_candidate.filter(|d| d.join("flake.nix").exists());
+    let system = current_nix_system();
+
+    // ---------------------------------------------------------------------
+    // Tier 1: local flake apps/packages
+    // ---------------------------------------------------------------------
+    if let Some(ref dir) = flake_dir
+      && (attr_exists_in_flake(dir, "apps", &system, &name)
+        || attr_exists_in_flake(dir, "packages", &system, &name))
+    {
+      debug!("[run] tier 1 hit: flake apps/packages");
+      return self.run_traditional();
+    }
+
+    // ---------------------------------------------------------------------
+    // Tier 2: flake's locked nixpkgs input
+    // ---------------------------------------------------------------------
+    if let Some(ref dir) = flake_dir
+      && let Some(flakeref) = flake_nixpkgs_flakeref(dir)
+    {
+      debug!("[run] tier 2: flake's nixpkgs input ({flakeref})");
+      return self
+        .run_locate_via(locate::LocateSource::FlakeNixpkgs { flakeref });
+    }
+
+    // ---------------------------------------------------------------------
+    // Tier 3: system nixpkgs
+    // ---------------------------------------------------------------------
+    debug!("[run] tier 3: system nixpkgs");
+    self.run_locate_via(locate::LocateSource::SystemNixpkgs)
+  }
+
+  /// Delegate to `nix run` with the installable as-given. Used when the
+  /// argument is an explicit flake ref, or when tier 1 has already
+  /// confirmed the attribute exists in the local flake.
+  fn run_traditional(self) -> Result<()> {
     let suggest_ref = suggestion_flake_ref(&self.installable);
     let suggest_attr = suggestion_attr(&self.installable);
 
@@ -470,17 +519,12 @@ impl RunArgs {
     let passthrough_args = self.passthrough.to_nix_args();
 
     let target_display = installable_args.first().cloned().unwrap_or_default();
-
     if target_display.is_empty() {
       info!("Running flake app");
     } else {
       info!("Running flake app \"{target_display}\"");
     }
 
-    // Use `nix run` directly — it resolves both apps and packages,
-    // unlike `nix build` which only looks in packages/legacyPackages.
-    // We can't pipe through nom here because the program's stdout/stdin
-    // must pass through to the TTY.
     let mut cmd = NixCommand::new(CommandKind::Run)
       .args(&installable_args)
       .args(&passthrough_args);
@@ -494,56 +538,46 @@ impl RunArgs {
       && let Some(ref attr) = suggest_attr
     {
       xi_core::suggest::print_suggestions_on_failure(&suggest_ref, attr, None);
-
-      // Hint: suggest locate mode for bare names
-      if !is_flake_ref(attr) {
-        eprintln!(
-          "\n{}",
-          xi_core::style::dim(&format!(
-            "hint: use `xi run -l {attr}` to search nixpkgs for a \
-             package providing '{attr}'"
-          ))
-        );
-      }
     }
     result
   }
 
-  /// Run in locate mode: search nixpkgs via nix-index, build, exec.
-  fn run_locate(self) -> Result<()> {
-    // In locate mode, the installable positional arg is the command name.
+  /// Run via the locate machinery against a specific source (nixpkgs
+  /// registry or a locked flake input).
+  fn run_locate_via(self, source: locate::LocateSource) -> Result<()> {
     let command = match &self.installable {
-      xi_core::installable::InstallableArgs::Specified(inst) => {
-        match inst {
-          xi_core::installable::Installable::Flake {
-            reference,
-            attribute,
-          } => {
-            if attribute.is_empty() {
-              reference.clone()
-            } else {
-              // User passed something like "nixpkgs#cowsay" — use the
-              // attribute as the command name
-              attribute.last().cloned().unwrap_or_else(|| reference.clone())
-            }
-          },
-          _ => {
-            bail!(
-              "locate mode expects a bare command name, not a file/expr/store \
-               path"
-            );
-          },
-        }
+      xi_core::installable::InstallableArgs::Specified(inst) => match inst {
+        xi_core::installable::Installable::Flake {
+          reference,
+          attribute,
+        } => {
+          if attribute.is_empty() {
+            reference.clone()
+          } else {
+            attribute
+              .last()
+              .cloned()
+              .unwrap_or_else(|| reference.clone())
+          }
+        },
+        _ => {
+          bail!(
+            "locate mode expects a bare command name, not a file/expr/store \
+             path"
+          );
+        },
       },
       xi_core::installable::InstallableArgs::Unspecified => {
-        bail!("locate mode requires a command name: xi run -l <command>");
+        bail!("locate mode requires a command name: xi run <command>");
       },
     };
 
-    let cache_level = locate::CacheLevel::from_u8(self.cache_level.unwrap_or(2));
+    let cache_level =
+      locate::CacheLevel::from_u8(self.cache_level.unwrap_or(2));
     let passthrough_args = self.passthrough.to_nix_args();
 
     locate::locate_and_run(
+      &source,
       &command,
       &self.extra_args,
       &passthrough_args,
@@ -679,7 +713,6 @@ impl FmtArgs {
 
     Ok(())
   }
-
 }
 
 /// Discover .nix files in a directory, skipping common build/cache dirs.
@@ -938,6 +971,122 @@ pub(crate) fn resolve_local_flake_dir(
   }
 
   None
+}
+
+/// If the installable is a bare name (not a path, URL, or explicit flake ref),
+/// return that name. Used by `xi run` to decide whether to walk the tiered
+/// resolution chain.
+fn extract_bare_name(
+  installable: &xi_core::installable::InstallableArgs,
+) -> Option<String> {
+  match installable {
+    xi_core::installable::InstallableArgs::Unspecified => None,
+    xi_core::installable::InstallableArgs::Specified(inst) => match inst {
+      xi_core::installable::Installable::Flake {
+        reference,
+        attribute,
+      } => {
+        if attribute.is_empty() && !is_flake_ref(reference) {
+          Some(reference.clone())
+        } else {
+          None
+        }
+      },
+      _ => None,
+    },
+  }
+}
+
+/// Fast preflight: does `.#<subpath>.<system>.<name>` exist in the flake?
+///
+/// Runs `nix eval` on a minimal attribute (`.name` for packages, `.type` for
+/// apps) to force evaluation without triggering a build. Returns false on
+/// any error (missing attr, eval failure, missing nix).
+fn attr_exists_in_flake(
+  flake_dir: &Path,
+  subpath: &str,
+  system: &str,
+  name: &str,
+) -> bool {
+  // Pick a leaf attr that's cheap to evaluate for each output kind.
+  let leaf = match subpath {
+    "apps" => "type",
+    _ => "name",
+  };
+  let attr =
+    format!("{}#{subpath}.{system}.{name}.{leaf}", flake_dir.display());
+
+  let status = NixCommand::new(CommandKind::Eval)
+    .arg(&attr)
+    .arg("--raw")
+    .print_build_logs(false)
+    .to_std_command()
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status();
+
+  matches!(status, Ok(s) if s.success())
+}
+
+/// Extract a flake reference string for the flake's locked `nixpkgs` input
+/// from `nix flake metadata --json`. Returns None if the flake has no
+/// `nixpkgs` input, if metadata can't be read, or if the locked node type
+/// isn't recognised.
+///
+/// The returned reference includes the locked revision/hash so builds
+/// against it are reproducible.
+fn flake_nixpkgs_flakeref(flake_dir: &Path) -> Option<String> {
+  let output = std::process::Command::new(nix_command::find_real_nix_binary())
+    .args(["flake", "metadata", "--json"])
+    .arg(flake_dir)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .output()
+    .ok()?;
+
+  if !output.status.success() {
+    return None;
+  }
+
+  let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+  let locked = value.pointer("/locks/nodes/nixpkgs/locked")?;
+  locked_node_to_flakeref(locked)
+}
+
+/// Convert a `locks.nodes.<name>.locked` JSON object into a flake reference
+/// string suitable for use as the left side of `<ref>#<attr>`.
+fn locked_node_to_flakeref(locked: &serde_json::Value) -> Option<String> {
+  let typ = locked.get("type")?.as_str()?;
+  match typ {
+    "github" => {
+      let owner = locked.get("owner")?.as_str()?;
+      let repo = locked.get("repo")?.as_str()?;
+      let rev = locked.get("rev")?.as_str()?;
+      Some(format!("github:{owner}/{repo}/{rev}"))
+    },
+    "gitlab" => {
+      let owner = locked.get("owner")?.as_str()?;
+      let repo = locked.get("repo")?.as_str()?;
+      let rev = locked.get("rev")?.as_str()?;
+      Some(format!("gitlab:{owner}/{repo}/{rev}"))
+    },
+    "git" => {
+      let url = locked.get("url")?.as_str()?;
+      let rev = locked.get("rev")?.as_str()?;
+      Some(format!("git+{url}?rev={rev}"))
+    },
+    "tarball" | "file" => {
+      let url = locked.get("url")?.as_str()?;
+      let hash = locked.get("narHash")?.as_str()?;
+      Some(format!("{typ}+{url}?narHash={hash}"))
+    },
+    "path" => {
+      let path = locked.get("path")?.as_str()?;
+      Some(format!("path:{path}"))
+    },
+    _ => None,
+  }
 }
 
 /// Resolve the local flake directory from an installable args reference.
@@ -1587,5 +1736,86 @@ mod tests {
     let dir = tempfile::tempdir().expect("create tempdir");
     let found = discover_subflakes(dir.path()).expect("discover");
     assert!(found.is_empty());
+  }
+
+  // -----------------------------------------------------------------------
+  // Run routing helpers
+  // -----------------------------------------------------------------------
+
+  #[test]
+  fn extract_bare_name_recognises_plain_name() {
+    let args = xi_core::installable::InstallableArgs::Specified(
+      xi_core::installable::Installable::Flake {
+        reference: "hello".to_string(),
+        attribute: vec![],
+      },
+    );
+    assert_eq!(extract_bare_name(&args).as_deref(), Some("hello"));
+  }
+
+  #[test]
+  fn extract_bare_name_rejects_flake_ref() {
+    let args = xi_core::installable::InstallableArgs::Specified(
+      xi_core::installable::Installable::Flake {
+        reference: "nixpkgs".to_string(),
+        attribute: vec!["hello".to_string()],
+      },
+    );
+    assert_eq!(extract_bare_name(&args), None);
+  }
+
+  #[test]
+  fn extract_bare_name_rejects_unspecified() {
+    assert_eq!(
+      extract_bare_name(&xi_core::installable::InstallableArgs::Unspecified),
+      None
+    );
+  }
+
+  #[test]
+  fn locked_github_node_to_flakeref() {
+    let v = serde_json::json!({
+      "type": "github",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "abc123",
+      "narHash": "sha256-xxx",
+    });
+    assert_eq!(
+      locked_node_to_flakeref(&v).as_deref(),
+      Some("github:NixOS/nixpkgs/abc123")
+    );
+  }
+
+  #[test]
+  fn locked_tarball_node_to_flakeref() {
+    let v = serde_json::json!({
+      "type": "tarball",
+      "url": "https://example.com/x.tar.xz",
+      "narHash": "sha256-yyy",
+    });
+    assert_eq!(
+      locked_node_to_flakeref(&v).as_deref(),
+      Some("tarball+https://example.com/x.tar.xz?narHash=sha256-yyy")
+    );
+  }
+
+  #[test]
+  fn locked_git_node_to_flakeref() {
+    let v = serde_json::json!({
+      "type": "git",
+      "url": "https://example.com/repo.git",
+      "rev": "deadbeef",
+    });
+    assert_eq!(
+      locked_node_to_flakeref(&v).as_deref(),
+      Some("git+https://example.com/repo.git?rev=deadbeef")
+    );
+  }
+
+  #[test]
+  fn locked_unknown_type_yields_none() {
+    let v = serde_json::json!({ "type": "mercurial", "url": "..." });
+    assert_eq!(locked_node_to_flakeref(&v), None);
   }
 }

@@ -9,9 +9,71 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use color_eyre::eyre::bail;
 use color_eyre::Result;
+use color_eyre::eyre::bail;
 use tracing::{debug, info};
+
+// ---------------------------------------------------------------------------
+// Source of packages (which nixpkgs to build against)
+// ---------------------------------------------------------------------------
+
+/// Where to resolve a located derivation from.
+///
+/// Locate mode always resolves attribute names via the system `nix-index`
+/// database (there is only one), but the *build* can target different
+/// nixpkgs sources:
+/// - `SystemNixpkgs`: rolling registry entry (`nixpkgs#<attr>`).
+/// - `FlakeNixpkgs`: a specific flake reference (e.g. the current flake's
+///   locked `nixpkgs` input), giving a reproducible build.
+#[derive(Debug, Clone)]
+pub enum LocateSource {
+  /// Build against the user's system flake-registry entry for `nixpkgs`.
+  SystemNixpkgs,
+  /// Build against a specific flake reference, e.g. `github:NixOS/nixpkgs/<rev>`.
+  /// Typically the local flake's locked `nixpkgs` input.
+  FlakeNixpkgs { flakeref: String },
+}
+
+impl LocateSource {
+  /// The flake reference string (left side of `#`).
+  #[must_use]
+  pub fn flakeref(&self) -> &str {
+    match self {
+      Self::SystemNixpkgs => "nixpkgs",
+      Self::FlakeNixpkgs { flakeref } => flakeref,
+    }
+  }
+
+  /// A nix installable string like `nixpkgs#hello` or `github:.../rev#hello`.
+  #[must_use]
+  pub fn installable(&self, attr: &str) -> String {
+    format!("{}#{}", self.flakeref(), attr)
+  }
+
+  /// Short human-readable label for status messages.
+  #[must_use]
+  pub const fn label(&self) -> &'static str {
+    match self {
+      Self::SystemNixpkgs => "system nixpkgs",
+      Self::FlakeNixpkgs { .. } => "flake's nixpkgs",
+    }
+  }
+
+  /// Stable id used to segment on-disk cache entries so paths cached against
+  /// one source don't collide with another.
+  fn cache_id(&self) -> String {
+    match self {
+      Self::SystemNixpkgs => "system".to_string(),
+      Self::FlakeNixpkgs { flakeref } => {
+        // Short hash of the flakeref (locked, so stable across runs).
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        flakeref.hash(&mut h);
+        format!("flake-{:x}", h.finish())
+      },
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Cache
@@ -40,11 +102,16 @@ impl CacheLevel {
   }
 }
 
-
 /// Simple JSON key-value cache stored in `~/.cache/xi/locate/`.
+///
+/// Choices (command → attr) are shared across sources — attribute
+/// resolution comes from the single system nix-index database. Store paths
+/// (attr → /nix/store/...) are segmented by source, since the same attr
+/// against different nixpkgs revs produces different store paths.
 pub struct LocateCache {
   dir: PathBuf,
   level: CacheLevel,
+  paths_file: String,
 }
 
 /// Cached choice entry: command → derivation attribute.
@@ -57,9 +124,14 @@ struct PathsMap(std::collections::HashMap<String, String>);
 
 impl LocateCache {
   #[must_use]
-  pub fn new(level: CacheLevel) -> Self {
+  pub fn new(level: CacheLevel, source: &LocateSource) -> Self {
     let dir = xi_core::dirs::xdg_cache_dir().join("locate");
-    Self { dir, level }
+    let paths_file = format!("paths-{}.json", source.cache_id());
+    Self {
+      dir,
+      level,
+      paths_file,
+    }
   }
 
   /// Look up a cached store path for a command (level 2 hit).
@@ -103,7 +175,8 @@ impl LocateCache {
       derivation.to_string(),
       store_path.to_string_lossy().to_string(),
     );
-    self.write_json("paths.json", &paths);
+    let filename = self.paths_file.clone();
+    self.write_json(&filename, &paths);
   }
 
   fn load_choices(&self) -> ChoicesMap {
@@ -111,7 +184,7 @@ impl LocateCache {
   }
 
   fn load_paths(&self) -> PathsMap {
-    self.read_json("paths.json").unwrap_or_default()
+    self.read_json(&self.paths_file).unwrap_or_default()
   }
 
   fn read_json<T: serde::de::DeserializeOwned>(
@@ -146,8 +219,9 @@ impl LocateCache {
 
 /// Output specifiers that `nix-locate` appends to attribute paths.
 /// These need to be stripped to get a clean derivation name.
-const NIX_OUTPUT_SUFFIXES: &[&str] =
-  &[".out", ".bin", ".dev", ".lib", ".man", ".doc", ".info", ".debug"];
+const NIX_OUTPUT_SUFFIXES: &[&str] = &[
+  ".out", ".bin", ".dev", ".lib", ".man", ".doc", ".info", ".debug",
+];
 
 /// Strip a trailing nix output suffix (`.out`, `.bin`, ...) from an
 /// attribute path. Returns the unchanged path if no known suffix is found.
@@ -316,13 +390,8 @@ fn run_picker(
   Ok(choice)
 }
 
-fn pick_numbered_menu(
-  candidates: &[String],
-  command: &str,
-) -> Result<String> {
-  eprintln!(
-    "Multiple packages provide '{command}':"
-  );
+fn pick_numbered_menu(candidates: &[String], command: &str) -> Result<String> {
+  eprintln!("Multiple packages provide '{command}':");
   for (i, candidate) in candidates.iter().enumerate() {
     eprintln!("  [{}] {}", i + 1, candidate);
   }
@@ -353,11 +422,12 @@ fn pick_numbered_menu(
 /// Phase 1: build with nom for pretty progress.
 /// Phase 2: query `--print-out-paths` (instant, already cached in store).
 pub fn build_and_resolve_path(
-  derivation: &str,
+  source: &LocateSource,
+  attr: &str,
   passthrough_args: &[String],
   no_nom: bool,
 ) -> Result<PathBuf> {
-  let installable = format!("nixpkgs#{derivation}");
+  let installable = source.installable(attr);
 
   info!("Building {installable}");
 
@@ -404,10 +474,12 @@ pub fn build_and_resolve_path(
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-/// Locate a command via nix-index and run it.
+/// Locate a command via nix-index and run it from the given source.
 ///
-/// This is the main entry point for `xi run --locate`.
+/// This is the main entry point for `xi run --locate` and for the fallback
+/// tiers in `xi run`.
 pub fn locate_and_run(
+  source: &LocateSource,
   command: &str,
   extra_args: &[String],
   passthrough_args: &[String],
@@ -418,7 +490,7 @@ pub fn locate_and_run(
 ) -> Result<()> {
   use xi_core::style;
 
-  let cache = LocateCache::new(cache_level);
+  let cache = LocateCache::new(cache_level, source);
 
   // --- Cache level 2: direct store path exec ---
   if let Some(cached_path) = cache.get_path(command) {
@@ -429,18 +501,18 @@ pub fn locate_and_run(
         return open_shell_from_cache(&cached_path, passthrough_args);
       }
       if install_mode {
-        let derivation =
-          cache.get_choice(command).unwrap_or_else(|| command.to_string());
+        let derivation = cache
+          .get_choice(command)
+          .unwrap_or_else(|| command.to_string());
         return install_package(&derivation);
       }
       return exec_from_store(&bin_path, command, extra_args);
     }
-    // Cached path is stale (GC'd) — fall through to rebuild
     debug!("[locate] cached path is stale, rebuilding");
   }
 
   // --- Resolve derivation (cache level 1 or nix-locate) ---
-  let derivation = if let Some(cached_choice) = cache.get_choice(command) {
+  let attr = if let Some(cached_choice) = cache.get_choice(command) {
     debug!("[locate] cache hit (choice): {cached_choice}");
     cached_choice
   } else {
@@ -449,7 +521,7 @@ pub fn locate_and_run(
       style::labeled_status(
         style::Icon::Loading,
         "locate",
-        &format!("searching for '{command}'"),
+        &format!("searching {} for '{command}'", source.label()),
       )
     );
 
@@ -469,44 +541,44 @@ pub fn locate_and_run(
       style::labeled_status(
         style::Icon::Success,
         "locate",
-        &format!("found nixpkgs#{chosen}"),
+        &format!("found {}", source.installable(&chosen)),
       )
     );
     chosen
   };
 
   // --- Install mode: nix profile install ---
+  // Only meaningful against system nixpkgs — flake-input builds don't
+  // belong in the user's profile.
   if install_mode {
-    return install_package(&derivation);
+    return install_package(&source.installable(&attr));
   }
 
   // --- Build + resolve store path ---
   let store_path =
-    build_and_resolve_path(&derivation, passthrough_args, no_nom)?;
-  cache.save_path(&derivation, &store_path);
+    build_and_resolve_path(source, &attr, passthrough_args, no_nom)?;
+  cache.save_path(&attr, &store_path);
 
   // --- Shell mode: open nix shell ---
   if shell_mode {
-    let installable = format!("nixpkgs#{derivation}");
+    let installable = source.installable(&attr);
     info!("Opening shell with {installable}");
-    let cmd =
-      nix_command::NixCommand::new(nix_command::CommandKind::Shell)
-        .arg(&installable)
-        .args(passthrough_args);
+    let cmd = nix_command::NixCommand::new(nix_command::CommandKind::Shell)
+      .arg(&installable)
+      .args(passthrough_args);
     return crate::run_interactive(&cmd);
   }
 
   // --- Execute ---
   let bin_path = store_path.join("bin").join(command);
   if !bin_path.exists() {
-    // The package might provide the binary under a different name.
-    // Try to find it.
     if let Some(found) = find_binary_in_store(&store_path, command) {
       return exec_from_store(&found, command, extra_args);
     }
     bail!(
-      "Package nixpkgs#{derivation} was built but /bin/{command} not \
-       found in {}.\nThe package may provide a different binary name.",
+      "Package {} was built but /bin/{command} not found in {}.\n\
+       The package may provide a different binary name.",
+      source.installable(&attr),
       store_path.display()
     );
   }
@@ -527,9 +599,7 @@ fn exec_from_store(
   );
 
   // Use std::process::Command with exec() for direct replacement on Unix
-  let err = Command::new(bin_path)
-    .args(extra_args)
-    .exec();
+  let err = Command::new(bin_path).args(extra_args).exec();
 
   // exec() only returns on error
   bail!("failed to exec '{command}': {err}");
@@ -548,12 +618,11 @@ fn open_shell_from_cache(
 }
 
 /// Install a package via `nix profile install`.
-fn install_package(derivation: &str) -> Result<()> {
-  let installable = format!("nixpkgs#{derivation}");
+fn install_package(installable: &str) -> Result<()> {
   info!("Installing {installable}");
 
   let status = Command::new(nix_command::find_real_nix_binary())
-    .args(["profile", "install", &installable])
+    .args(["profile", "install", installable])
     .stdin(Stdio::inherit())
     .stdout(Stdio::inherit())
     .stderr(Stdio::inherit())
@@ -571,7 +640,7 @@ fn install_package(derivation: &str) -> Result<()> {
     xi_core::style::labeled_status(
       xi_core::style::Icon::Success,
       "locate",
-      &format!("installed nixpkgs#{derivation}"),
+      &format!("installed {installable}"),
     )
   );
 
@@ -620,6 +689,7 @@ mod tests {
     let cache = LocateCache {
       dir: dir.path().to_path_buf(),
       level: CacheLevel::Full,
+      paths_file: "paths-test.json".to_string(),
     };
 
     // Initially empty
@@ -642,6 +712,7 @@ mod tests {
     let cache = LocateCache {
       dir: dir.path().to_path_buf(),
       level: CacheLevel::Disabled,
+      paths_file: "paths-test.json".to_string(),
     };
 
     cache.save_choice("cowsay", "cowsay");
@@ -667,6 +738,39 @@ mod tests {
   }
 
   #[test]
+  fn locate_source_installable_shape() {
+    assert_eq!(
+      LocateSource::SystemNixpkgs.installable("hello"),
+      "nixpkgs#hello"
+    );
+    assert_eq!(
+      LocateSource::FlakeNixpkgs {
+        flakeref: "github:NixOS/nixpkgs/abc123".to_string()
+      }
+      .installable("hello"),
+      "github:NixOS/nixpkgs/abc123#hello"
+    );
+  }
+
+  #[test]
+  fn locate_source_cache_ids_disjoint_across_sources() {
+    let sys = LocateSource::SystemNixpkgs.cache_id();
+    let flake_a = LocateSource::FlakeNixpkgs {
+      flakeref: "github:NixOS/nixpkgs/aaa".to_string(),
+    }
+    .cache_id();
+    let flake_b = LocateSource::FlakeNixpkgs {
+      flakeref: "github:NixOS/nixpkgs/bbb".to_string(),
+    }
+    .cache_id();
+
+    assert_eq!(sys, "system");
+    assert!(flake_a.starts_with("flake-"));
+    assert_ne!(flake_a, flake_b);
+    assert_ne!(sys, flake_a);
+  }
+
+  #[test]
   fn rank_prefers_exact_then_last_segment_then_substring() {
     assert_eq!(rank_candidate("hello", "hello"), 0);
     assert_eq!(rank_candidate("haskellPackages.hello", "hello"), 1);
@@ -680,6 +784,7 @@ mod tests {
     let cache = LocateCache {
       dir: dir.path().to_path_buf(),
       level: CacheLevel::Choice,
+      paths_file: "paths-test.json".to_string(),
     };
 
     cache.save_choice("cowsay", "cowsay");
