@@ -1,7 +1,7 @@
 # How to run flake apps and locate nixpkgs commands
 
-`xi run` does two related things: it runs a **flake app** (the normal
-`nix run` behaviour), and — with `--locate` — it acts like a
+`xi run` does two related things: it runs a **flake app** (the normal `nix run`
+behaviour), and — with `--locate` — it acts like a
 [comma](https://github.com/nix-community/comma)-style locator that finds any
 nixpkgs binary by command name and runs it once, without installing it.
 
@@ -64,19 +64,19 @@ If the tool is useful enough to keep:
 xi run --locate ffmpeg --install
 ```
 
-Installs the resolved package into your user profile so `ffmpeg` is on `PATH`
-in every new shell.
+Installs the resolved package into your user profile so `ffmpeg` is on `PATH` in
+every new shell.
 
 ## Control the locate cache
 
-Locate mode caches (a) the command → package resolution and (b) your choice
-when multiple packages provide the same command.
+Locate mode caches (a) the command → package resolution and (b) your choice when
+multiple packages provide the same command.
 
-| Level | Behaviour                                                                  |
-| ----- | -------------------------------------------------------------------------- |
-| `0`   | No cache; ask every time                                                   |
-| `1`   | Remember your choice when a command has multiple candidates                |
-| `2`   | Full: also cache the nixpkgs resolution (default)                          |
+| Level | Behaviour                                                   |
+| ----- | ----------------------------------------------------------- |
+| `0`   | No cache; ask every time                                    |
+| `1`   | Remember your choice when a command has multiple candidates |
+| `2`   | Full: also cache the nixpkgs resolution (default)           |
 
 ```sh
 xi run --locate ffmpeg --cache-level 0    # bypass cache
@@ -104,4 +104,5 @@ remembered for next time.
 ## See also
 
 - [CLI Reference: `xi run`](../reference/cli.md#xi-run--run-a-flake-app-or-nixpkgs-package)
-- [comma](https://github.com/nix-community/comma) — the upstream tool that inspired locate mode
+- [comma](https://github.com/nix-community/comma) — the upstream tool that
+  inspired locate mode

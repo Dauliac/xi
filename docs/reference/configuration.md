@@ -82,9 +82,9 @@ push_command = ["cachix", "push", "mycache"]
 
 ### `[locate]` — `xi run --locate` cache
 
-| Key           | Type | Default | Description                                                            |
-| ------------- | ---- | ------- | ---------------------------------------------------------------------- |
-| `cache_level` | int  | `2`     | `0` disabled, `1` remembers your prior choice per command, `2` full    |
+| Key           | Type | Default | Description                                                         |
+| ------------- | ---- | ------- | ------------------------------------------------------------------- |
+| `cache_level` | int  | `2`     | `0` disabled, `1` remembers your prior choice per command, `2` full |
 
 ### `[fmt]` — formatting
 

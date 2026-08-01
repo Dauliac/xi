@@ -96,10 +96,10 @@ preserved, and the configuration is baked into the derivation. Turning
 implementations. Everything else is passed through to the real `nix` binary,
 resolved from `XI_NIX_BIN` (set by the wrapper) or `$PATH`.
 
-The `XI_NIX_BIN` indirection matters because when xi is aliased to `nix` via
-the wrapper, calling `nix` recursively would loop. `XI_NIX_BIN` gives xi a
-stable pointer to the underlying binary. Setting `XI_UNWRAP=1` or passing
-`--unwrap` bypasses xi entirely for one call.
+The `XI_NIX_BIN` indirection matters because when xi is aliased to `nix` via the
+wrapper, calling `nix` recursively would loop. `XI_NIX_BIN` gives xi a stable
+pointer to the underlying binary. Setting `XI_UNWRAP=1` or passing `--unwrap`
+bypasses xi entirely for one call.
 
 ## Platform support
 

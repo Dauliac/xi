@@ -20,15 +20,15 @@ If any step reports FAIL, `xi ci` exits non-zero.
 
 `xi ci` groups a validation stage (fast, parallel) and a build stage (slower):
 
-| Step              | What it checks                                       | Skip flag                      |
-| ----------------- | ---------------------------------------------------- | ------------------------------ |
-| Lock check        | `flake.lock` is in sync with `flake.nix`             | `--no-lock-check`              |
-| Eval all systems  | Every declared system evaluates cleanly              | `--no-eval`                    |
-| Health check      | `xi doctor` diagnostics (input freshness, branch)    | `--no-health-check`            |
-| Eval tests        | `lib.runTests` evaluates (assertion failures caught) | `--no-test`                    |
-| Lib eval          | `lib` deep-evaluates                                 | `--no-lib-eval`                |
+| Step              | What it checks                                       | Skip flag                               |
+| ----------------- | ---------------------------------------------------- | --------------------------------------- |
+| Lock check        | `flake.lock` is in sync with `flake.nix`             | `--no-lock-check`                       |
+| Eval all systems  | Every declared system evaluates cleanly              | `--no-eval`                             |
+| Health check      | `xi doctor` diagnostics (input freshness, branch)    | `--no-health-check`                     |
+| Eval tests        | `lib.runTests` evaluates (assertion failures caught) | `--no-test`                             |
+| Lib eval          | `lib` deep-evaluates                                 | `--no-lib-eval`                         |
 | Materialize check | Committed materialized files are fresh               | Set `check-in-ci = false` in `.xi.toml` |
-| Build             | Every buildable output builds                        | `--no-build`                   |
+| Build             | Every buildable output builds                        | `--no-build`                            |
 
 Each step reports name, status (ok / warn / FAIL), duration, and detail.
 
@@ -75,8 +75,8 @@ extra-outputs = ["containers", "images"]
 xi ci --recursive
 ```
 
-Walks every `flake.nix` under the project root, runs CI on each, and reports:
-"N of M subflake(s) failed CI".
+Walks every `flake.nix` under the project root, runs CI on each, and reports: "N
+of M subflake(s) failed CI".
 
 ## Fast pre-merge check (no build)
 
@@ -113,8 +113,7 @@ xi ci --no-ifd
 ## Materialization
 
 Xi can pre-compute expensive evaluations (Cargo hashes, generated Nix files,
-prefetch outputs) and commit the results to git so CI doesn't have to redo
-them.
+prefetch outputs) and commit the results to git so CI doesn't have to redo them.
 
 ### Configure targets in `.xi.toml`
 
@@ -146,12 +145,11 @@ xi materialize --setup        # apply git skip-worktree + merge driver
 xi materialize --clean        # remove the cache directory
 ```
 
-Freshness is computed from a SHA-256 of every file matched by `sources`. If
-the hash matches, the target is skipped.
+Freshness is computed from a SHA-256 of every file matched by `sources`. If the
+hash matches, the target is skipped.
 
-With `check-in-ci = true`, `xi ci` fails when any materialized target is
-stale. With `pre-build = true`, `xi ci` re-runs the stale ones before
-building.
+With `check-in-ci = true`, `xi ci` fails when any materialized target is stale.
+With `pre-build = true`, `xi ci` re-runs the stale ones before building.
 
 ## Standalone checks
 

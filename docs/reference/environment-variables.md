@@ -24,15 +24,15 @@ running with a clean environment (e.g. under `sudo`):
 Fallback order for a missing installable: `XI_OS_FLAKE` → `XI_HOME_FLAKE` →
 `XI_DARWIN_FLAKE` → `XI_SYSTEM_FLAKE` → `XI_FLAKE`.
 
-| Variable          | Description                                  |
-| ----------------- | -------------------------------------------- |
-| `XI_FLAKE`        | Default flake path for all commands          |
-| `XI_OS_FLAKE`     | Flake for `xi os` (overrides `XI_FLAKE`)     |
-| `XI_HOME_FLAKE`   | Flake for `xi home` (overrides `XI_FLAKE`)   |
-| `XI_DARWIN_FLAKE` | Flake for `xi darwin` (overrides `XI_FLAKE`) |
-| `XI_SYSTEM_FLAKE` | Flake for `xi system` (overrides `XI_FLAKE`) |
+| Variable          | Description                                   |
+| ----------------- | --------------------------------------------- |
+| `XI_FLAKE`        | Default flake path for all commands           |
+| `XI_OS_FLAKE`     | Flake for `xi os` (overrides `XI_FLAKE`)      |
+| `XI_HOME_FLAKE`   | Flake for `xi home` (overrides `XI_FLAKE`)    |
+| `XI_DARWIN_FLAKE` | Flake for `xi darwin` (overrides `XI_FLAKE`)  |
+| `XI_SYSTEM_FLAKE` | Flake for `xi system` (overrides `XI_FLAKE`)  |
 | `XI_FILE`         | Non-flake Nix file for `-f <PATH>` evaluation |
-| `XI_ATTRP`        | Attribute path for non-flake evaluation      |
+| `XI_ATTRP`        | Attribute path for non-flake evaluation       |
 
 ## Elevation and privilege
 
@@ -47,82 +47,83 @@ Fallback order for a missing installable: `XI_OS_FLAKE` → `XI_HOME_FLAKE` →
 
 ## Build behaviour
 
-| Variable                  | Description                                          |
-| ------------------------- | ---------------------------------------------------- |
-| `XI_NO_NOM`               | Disable nix-output-monitor                           |
-| `XI_SHOW_TRACE`           | Enable `--show-trace`                                |
-| `XI_KEEP_GOING`           | Enable `--keep-going`                                |
-| `XI_IMPURE`               | Enable `--impure`                                    |
-| `XI_ACCEPT_FLAKE_CONFIG`  | Enable `--accept-flake-config`                       |
-| `XI_OFFLINE`              | Enable `--offline`                                   |
-| `XI_MAX_JOBS`             | Set `--max-jobs`                                     |
-| `XI_CONNECT_TIMEOUT`      | Substituter connection timeout in seconds (0 = off)  |
+| Variable                  | Description                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| `XI_NO_NOM`               | Disable nix-output-monitor                                                               |
+| `XI_SHOW_TRACE`           | Enable `--show-trace`                                                                    |
+| `XI_KEEP_GOING`           | Enable `--keep-going`                                                                    |
+| `XI_IMPURE`               | Enable `--impure`                                                                        |
+| `XI_ACCEPT_FLAKE_CONFIG`  | Enable `--accept-flake-config`                                                           |
+| `XI_OFFLINE`              | Enable `--offline`                                                                       |
+| `XI_MAX_JOBS`             | Set `--max-jobs`                                                                         |
+| `XI_CONNECT_TIMEOUT`      | Substituter connection timeout in seconds (0 = off)                                      |
 | `XI_CI_BACKEND`           | Default backend for `xi ci` / `xi build --all`: `auto`, `devour-flake`, `nix-fast-build` |
-| `XI_NO_CHECKS`            | Skip startup checks (Nix version, experimental features) |
-| `XI_NO_VALIDATE`          | Skip pre-activation validation                       |
-| `XI_SHOW_ACTIVATION_LOGS` | Show activation output (`1` to enable)               |
-| `XI_DIFF`                 | Activation diff mode: `auto`, `always`, `never`      |
+| `XI_NO_CHECKS`            | Skip startup checks (Nix version, experimental features)                                 |
+| `XI_NO_VALIDATE`          | Skip pre-activation validation                                                           |
+| `XI_SHOW_ACTIVATION_LOGS` | Show activation output (`1` to enable)                                                   |
+| `XI_DIFF`                 | Activation diff mode: `auto`, `always`, `never`                                          |
 
 ## Cache push
 
-| Variable                     | Description                            |
-| ---------------------------- | -------------------------------------- |
-| `XI_CACHE_URL`               | Default push URL                       |
-| `XI_SIGNING_KEY`             | Default signing key path               |
-| `XI_CACHE_ASYNC`             | Enable async push (`1` to enable)      |
-| `XI_CACHE_QUEUE_EXPIRY_DAYS` | Days before queued entries expire      |
-| `XI_CACHE_QUEUE_MAX_SIZE`    | Maximum queued entries before drop     |
+| Variable                     | Description                        |
+| ---------------------------- | ---------------------------------- |
+| `XI_CACHE_URL`               | Default push URL                   |
+| `XI_SIGNING_KEY`             | Default signing key path           |
+| `XI_CACHE_ASYNC`             | Enable async push (`1` to enable)  |
+| `XI_CACHE_QUEUE_EXPIRY_DAYS` | Days before queued entries expire  |
+| `XI_CACHE_QUEUE_MAX_SIZE`    | Maximum queued entries before drop |
 
 ## Search
 
-| Variable             | Description                                        |
-| -------------------- | -------------------------------------------------- |
-| `XI_DEFAULT_SEARCH`  | Default search mode: `packages` or `options`       |
-| `XI_SEARCH_CHANNEL`  | Default Nixpkgs channel (e.g. `nixos-unstable`)    |
-| `XI_SEARCH_JSON`     | Truthy value to emit JSON                          |
-| `XI_SEARCH_PLATFORM` | Truthy value to include platform lists (packages)  |
+| Variable             | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `XI_DEFAULT_SEARCH`  | Default search mode: `packages` or `options`         |
+| `XI_SEARCH_CHANNEL`  | Default Nixpkgs channel (e.g. `nixos-unstable`)      |
+| `XI_SEARCH_JSON`     | Truthy value to emit JSON                            |
+| `XI_SEARCH_PLATFORM` | Truthy value to include platform lists (packages)    |
 | `XI_OFFLINE_DB`      | Colon-separated SPAM database paths for offline mode |
 
 ## Run + locate
 
-Locate mode for `xi run`. See the [run and locate guide](../guides/run-and-locate.md).
+Locate mode for `xi run`. See the
+[run and locate guide](../guides/run-and-locate.md).
 
-| Variable          | Description                                                          |
-| ----------------- | -------------------------------------------------------------------- |
-| `XI_RUN_LOCATE`   | Truthy value to enable locate mode by default                        |
+| Variable          | Description                                                           |
+| ----------------- | --------------------------------------------------------------------- |
+| `XI_RUN_LOCATE`   | Truthy value to enable locate mode by default                         |
 | `XI_LOCATE_CACHE` | Cache level for locate: `0` disabled, `1` remembers choices, `2` full |
 
 ## Develop
 
 Consumed by `xi develop` and its background daemon.
 
-| Variable           | Description                                                  |
-| ------------------ | ------------------------------------------------------------ |
-| `XI_EVAL_INTERVAL` | Seconds between file-watch evaluations (default `5`)         |
+| Variable           | Description                                                          |
+| ------------------ | -------------------------------------------------------------------- |
+| `XI_EVAL_INTERVAL` | Seconds between file-watch evaluations (default `5`)                 |
 | `XI_WATCH_EXTRA`   | Colon-separated glob patterns to watch beyond `*.nix` / `flake.lock` |
-| `XI_EVAL_CACHE`    | Eval cache mode: `none`, `lock` (default), `inputs`          |
+| `XI_EVAL_CACHE`    | Eval cache mode: `none`, `lock` (default), `inputs`                  |
 
 ## GitHub
 
-| Variable               | Description                                     |
-| ---------------------- | ----------------------------------------------- |
-| `GH_TOKEN`             | GitHub token for `xi search prs` / `issues`     |
-| `XI_GITHUB_TOKEN_FILE` | Override the on-disk token file path            |
+| Variable               | Description                                 |
+| ---------------------- | ------------------------------------------- |
+| `GH_TOKEN`             | GitHub token for `xi search prs` / `issues` |
+| `XI_GITHUB_TOKEN_FILE` | Override the on-disk token file path        |
 
 ## Remote
 
-| Variable            | Description                                              |
-| ------------------- | -------------------------------------------------------- |
-| `XI_REMOTE_CLEANUP` | Attempt to kill remote processes on interrupt            |
+| Variable            | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `XI_REMOTE_CLEANUP` | Attempt to kill remote processes on interrupt |
 
 ## Configuration and diagnostics
 
-| Variable          | Description                                              |
-| ----------------- | -------------------------------------------------------- |
-| `XI_CONFIG`       | Override config file path                                |
-| `XI_LOG`          | Tracing filter directive (e.g. `xi=trace`)               |
-| `XI_NIX_BIN`      | Path to real nix binary (default: `nix`)                 |
-| `XI_UNWRAP`       | Bypass `xi nix` enhancements (`1` to enable)             |
+| Variable          | Description                                                |
+| ----------------- | ---------------------------------------------------------- |
+| `XI_CONFIG`       | Override config file path                                  |
+| `XI_LOG`          | Tracing filter directive (e.g. `xi=trace`)                 |
+| `XI_NIX_BIN`      | Path to real nix binary (default: `nix`)                   |
+| `XI_UNWRAP`       | Bypass `xi nix` enhancements (`1` to enable)               |
 | `XI_PRESERVE_ENV` | `1` to force, `0` to disable env preservation on elevation |
 
 ## Backwards compatibility

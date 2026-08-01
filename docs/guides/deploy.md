@@ -17,9 +17,12 @@ xi deploy
 
 Xi probes the flake and picks a backend:
 
-1. If `deploy` output exists → **deploy-rs** (magic rollback, per-profile deploys)
-2. Else if `colmenaHive` output exists → **colmena** (parallel, tag-based selection)
-3. Else if `nixosConfigurations` exists → **xi built-in** (nixos-rebuild switch over SSH)
+1. If `deploy` output exists → **deploy-rs** (magic rollback, per-profile
+   deploys)
+2. Else if `colmenaHive` output exists → **colmena** (parallel, tag-based
+   selection)
+3. Else if `nixosConfigurations` exists → **xi built-in** (nixos-rebuild switch
+   over SSH)
 
 ## Deploy specific machines
 
@@ -93,13 +96,13 @@ xi deploy -- --auto-rollback true                # deploy-rs flag
 
 ## When to use `xi deploy` vs `xi os switch --target-host`
 
-| Situation                                              | Use                                |
-| ------------------------------------------------------ | ---------------------------------- |
-| One-off remote rebuild of a single host                | `xi os switch --target-host host`  |
-| Fleet, tag selection, parallel activation              | `xi deploy` (colmena backend)      |
-| Rollback-on-failure needed                             | `xi deploy` (deploy-rs backend)    |
-| Non-flake config or ad-hoc target                      | `xi os switch --target-host host`  |
-| Coordinated multi-host push from CI                    | `xi deploy`                        |
+| Situation                                 | Use                               |
+| ----------------------------------------- | --------------------------------- |
+| One-off remote rebuild of a single host   | `xi os switch --target-host host` |
+| Fleet, tag selection, parallel activation | `xi deploy` (colmena backend)     |
+| Rollback-on-failure needed                | `xi deploy` (deploy-rs backend)   |
+| Non-flake config or ad-hoc target         | `xi os switch --target-host host` |
+| Coordinated multi-host push from CI       | `xi deploy`                       |
 
 `xi os switch --target-host` is one host, one shot. `xi deploy` is a fleet
 operator.
@@ -115,5 +118,7 @@ Prints Nix evaluation tracebacks when a build or eval fails.
 ## See also
 
 - [CLI Reference: `xi deploy`](../reference/cli.md#xi-deploy--deploy-configurations-to-remote-machines)
-- [Remote Build](remote-build.md) — building on one host and deploying from another
-- [Binary Cache](binary-cache.md) — pushing built closures to a shared cache before deploy
+- [Remote Build](remote-build.md) — building on one host and deploying from
+  another
+- [Binary Cache](binary-cache.md) — pushing built closures to a shared cache
+  before deploy

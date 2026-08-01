@@ -187,7 +187,7 @@ devShells.default = pkgs.mkShellNoCC {
 
 ## See also
 
-- [Explanation: Module system](../explanation/architecture.md#module-system)
-  — how the wrapper is composed
-- [Reference: Module Options](../reference/module-options.md) — every option
-  the modules expose
+- [Explanation: Module system](../explanation/architecture.md#module-system) —
+  how the wrapper is composed
+- [Reference: Module Options](../reference/module-options.md) — every option the
+  modules expose

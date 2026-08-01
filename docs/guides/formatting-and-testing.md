@@ -190,16 +190,16 @@ categories (`legacyPackages`, empty `checks`, etc.) unless you ask for them.
 
 ### Recognised categories
 
-| Pattern                                                             | Rendered as          |
-| ------------------------------------------------------------------- | -------------------- |
-| `packages`, `devShells`, `checks`, `apps`                           | Per-system tables    |
-| `formatter`                                                         | Inline: `formatter :: <tool>` |
+| Pattern                                                             | Rendered as                                         |
+| ------------------------------------------------------------------- | --------------------------------------------------- |
+| `packages`, `devShells`, `checks`, `apps`                           | Per-system tables                                   |
+| `formatter`                                                         | Inline: `formatter :: <tool>`                       |
 | `lib`, `*Lib`, `*libs`                                              | Compact `lib (N attrs)` with a hint to use `xi lib` |
-| `*Module`, `*Modules`                                               | `:: module`          |
-| `*Configuration`, `*Configurations`, `*Config`                      | `:: configuration`   |
-| `nixosConfigurations`, `homeConfigurations`, `darwinConfigurations` | Discovered tree      |
-| `overlays`, `templates`                                             | Flat listing         |
-| `debug`, `allSystems`                                               | Hidden by default    |
+| `*Module`, `*Modules`                                               | `:: module`                                         |
+| `*Configuration`, `*Configurations`, `*Config`                      | `:: configuration`                                  |
+| `nixosConfigurations`, `homeConfigurations`, `darwinConfigurations` | Discovered tree                                     |
+| `overlays`, `templates`                                             | Flat listing                                        |
+| `debug`, `allSystems`                                               | Hidden by default                                   |
 
 Any output named `default` is tagged `[default]` in every render path.
 
