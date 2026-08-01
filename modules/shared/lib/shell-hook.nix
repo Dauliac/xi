@@ -25,6 +25,9 @@
         (lib.optionalString shellHook.nixAlias ''
           export PATH="${nixWrapper}/bin:$PATH"
         '')
+        (lib.optionalString shellHook.commaAlias ''
+          alias ,='${xiBin} run'
+        '')
         (lib.optionalString shellHook.completion (config.lib.mkCompletionShellHook binArgs))
         (lib.optionalString shellHook.develop ''
           if [ -n "''${ZSH_VERSION-}" ]; then
@@ -61,6 +64,9 @@
         ''
         (lib.optionalString shellHook.nixAlias ''
           set -p PATH "${nixWrapper}/bin"
+        '')
+        (lib.optionalString shellHook.commaAlias ''
+          alias , '${xiBin} run'
         '')
         (lib.optionalString shellHook.completion (config.lib.mkFishCompletionScript binArgs))
         (lib.optionalString shellHook.develop ''
