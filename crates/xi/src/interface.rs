@@ -73,6 +73,7 @@ pub struct Main {
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, doctor, materialize
   Deployment:   deploy
   Development:  develop, search
+  Auth:         auth
   Maintenance:  cache, clean, nix, completions"
 )]
 pub enum XiCommand {
@@ -103,6 +104,9 @@ pub enum XiCommand {
   // -- Development --
   Develop(xi_develop::args::DevelopArgs),
   Search(xi_search::args::SearchArgs),
+
+  // -- Auth --
+  Auth(xi_auth::args::AuthArgs),
 
   // -- Maintenance --
   Cache(crate::cache::args::CacheProxy),
@@ -153,6 +157,7 @@ impl XiCommand {
       | Self::Materialize(..)
       | Self::Deploy(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Search(..)
+      | Self::Auth(..)
       | Self::Cache(..)
       | Self::Clean(..)
       | Self::Nix(..)
@@ -335,6 +340,7 @@ impl XiCommand {
       Self::Materialize(args) => args.run(),
       Self::Deploy(args) => xi_deploy::detect_and_deploy(args),
       Self::Search(args) => args.run(),
+      Self::Auth(args) => xi_auth::run(args),
       Self::Cache(proxy) => proxy.run(),
       Self::Clean(proxy) => proxy.command.run(elevation),
       Self::Nix(args) => args.run(),

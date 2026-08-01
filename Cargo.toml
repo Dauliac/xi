@@ -11,6 +11,7 @@ version      = "4.4.0"
 [workspace.dependencies]
 nix-command = { path = "crates/nix-command", version = "0.2.3" }
 xi          = { path = "crates/xi", version = "4.4.0" }
+xi-auth     = { path = "crates/xi-auth", version = "4.4.0" }
 xi-core     = { path = "crates/xi-core", version = "4.4.0" }
 xi-darwin   = { path = "crates/xi-darwin", version = "4.4.0" }
 xi-deploy   = { path = "crates/xi-deploy", version = "4.4.0" }

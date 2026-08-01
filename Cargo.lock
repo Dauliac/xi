@@ -3075,6 +3075,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "xi-auth",
  "xi-core",
  "xi-darwin",
  "xi-deploy",
@@ -3085,6 +3086,16 @@ dependencies = [
  "xi-nixos",
  "xi-search",
  "yansi",
+]
+
+[[package]]
+name = "xi-auth"
+version = "4.4.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "tracing",
+ "which",
 ]
 
 [[package]]

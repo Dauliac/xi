@@ -7,6 +7,7 @@
     {
       config,
       pkgs,
+      inputs',
       ...
     }:
     let
@@ -40,6 +41,7 @@
                   lib.makeBinPath [
                     pkgs.nix-output-monitor
                     pkgs.nix-fast-build
+                    inputs'.nix-auth.packages.default
                   ]
                 }
             '';
