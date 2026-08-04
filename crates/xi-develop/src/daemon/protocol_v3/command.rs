@@ -9,17 +9,33 @@
 //! re-issued command after a lock bump correctly allocates a fresh job and
 //! never attaches to the pre-change one.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use super::query::JobId;
 
+/// ASCII Unit Separator byte used to delimit the three fields fed to blake3
+/// (`kind`, `canonical_json(params)`, `flake_lock_hash`). Using a byte that
+/// cannot appear at the boundary between canonical-JSON output and the
+/// lock-hash hex string prevents cross-field collisions.
+const FIELD_SEP: u8 = 0x1F;
+
 /// A blake3-derived idempotency key (32 bytes).
 ///
-/// **This is a stub.** Task xi-dyu.1.3 will fill in the derivation:
-/// `blake3(kind || 0x1F || canonical_json(params) || 0x1F || flake_lock_hash)`,
-/// truncated to 16 bytes for on-wire compactness. This module keeps the full
-/// 32-byte digest surface so 1.3 can decide the truncation strategy without
-/// re-shaping this type. The `blake3` crate dependency also belongs to 1.3.
+/// Derivation (see [`IdempotencyKey::derive_for`]):
+/// `blake3(command_kind || 0x1F || canonical_json(params) || 0x1F || flake_lock_hash)`
+///
+/// * `command_kind` — the serde tag of the [`Command`] variant, e.g.
+///   `"eval_devshell"`, `"restart"`, `"abort_job"`, `"invalidate_cache"`.
+/// * `0x1F` — one literal ASCII Unit Separator byte between fields.
+/// * `canonical_json(params)` — a canonical (sorted-keys, no insignificant
+///   whitespace) JSON serialization of every field of the variant *except*
+///   the [`IdempotencyKey`] itself.
+/// * `flake_lock_hash` — the lowercase hex string of `blake3(flake.lock
+///   contents)`. Callers with no lock available pass `""` (the empty
+///   string); the resulting key is stable across such lock-less callers.
 ///
 /// Serialised as a lowercase hex string on the wire so it stays human-readable
 /// under `socat`.
@@ -28,8 +44,9 @@ use super::query::JobId;
 pub struct IdempotencyKey(#[serde(with = "hex_bytes")] pub [u8; 32]);
 
 impl IdempotencyKey {
-  /// Placeholder constructor. **Task 1.3 will replace this with the real
-  /// blake3 derivation** — do not depend on the current byte pattern.
+  /// Placeholder constructor. Retained for callers still on the task-1.2
+  /// wire shape while task-1.3 rolls out. New code should call
+  /// [`IdempotencyKey::derive_for`] instead.
   #[must_use]
   pub const fn placeholder() -> Self {
     Self([0u8; 32])
@@ -37,12 +54,36 @@ impl IdempotencyKey {
 
   /// Construct from an already-derived 32-byte digest.
   ///
-  /// Intended for callers in task 1.3 that compute blake3 externally. Do not
-  /// hand-craft keys — the daemon's dedup relies on the derivation being the
-  /// same at every call site.
+  /// Intended for callers that compute blake3 externally (e.g. tests). Do not
+  /// hand-craft keys in production — the daemon's dedup relies on the
+  /// derivation being identical at every call site.
   #[must_use]
   pub const fn from_bytes(bytes: [u8; 32]) -> Self {
     Self(bytes)
+  }
+
+  /// Derive an [`IdempotencyKey`] for `cmd` at the given `flake_lock_hash`.
+  ///
+  /// See the type-level documentation for the full formula. The
+  /// `flake_lock_hash` should be the lowercase hex of `blake3(flake.lock
+  /// contents)`; callers with no lock available pass `""` (the empty string).
+  ///
+  /// Lock-independent commands (`Restart`, `AbortJob`) still incorporate the
+  /// hash — daemon-side dedup treats them as lock-scoped as a conservative
+  /// default; callers wanting cross-lock dedup can pass `""` explicitly.
+  #[must_use]
+  pub fn derive_for(cmd: &Command, flake_lock_hash: &str) -> Self {
+    let kind = cmd.kind();
+    let params_json = canonical_json_of_params(cmd);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kind.as_bytes());
+    hasher.update(&[FIELD_SEP]);
+    hasher.update(params_json.as_bytes());
+    hasher.update(&[FIELD_SEP]);
+    hasher.update(flake_lock_hash.as_bytes());
+
+    Self(*hasher.finalize().as_bytes())
   }
 }
 
@@ -63,18 +104,14 @@ pub enum Command {
     /// The devshell attribute path (typically `"default"`).
     target: String,
     /// The client-derived idempotency key (see [`IdempotencyKey`]).
-    ///
-    /// Task 1.3 will derive this from `blake3(kind || params || flake.lock)`;
-    /// until then the client passes [`IdempotencyKey::placeholder`].
-    key: IdempotencyKey,
+    key:    IdempotencyKey,
   },
   /// Restart the daemon (used to recover from `Stuck`).
   ///
   /// Aborts non-idempotent in-flight jobs, transitions through `SelfHealing`,
   /// and returns to `Ready`.
   Restart {
-    /// The idempotency key. Lock-independent — task 1.3 must reflect that in
-    /// the derivation for `Restart` and `AbortJob`.
+    /// The idempotency key.
     key: IdempotencyKey,
   },
   /// Abort a specific job.
@@ -84,8 +121,8 @@ pub enum Command {
   AbortJob {
     /// The job id to abort.
     job_id: JobId,
-    /// The idempotency key. Lock-independent.
-    key: IdempotencyKey,
+    /// The idempotency key.
+    key:    IdempotencyKey,
   },
   /// Invalidate one or more daemon caches.
   ///
@@ -95,8 +132,107 @@ pub enum Command {
     /// A free-form cache scope selector (task 2.x refines this).
     scope: String,
     /// The idempotency key.
-    key: IdempotencyKey,
+    key:   IdempotencyKey,
   },
+}
+
+impl Command {
+  /// The serde tag of this variant — the ASCII string mixed into the
+  /// [`IdempotencyKey`] derivation. Kept in lockstep with the
+  /// `#[serde(rename_all = "snake_case")]` on [`Command`].
+  #[must_use]
+  pub const fn kind(&self) -> &'static str {
+    match *self {
+      Self::EvalDevshell { .. } => "eval_devshell",
+      Self::Restart { .. } => "restart",
+      Self::AbortJob { .. } => "abort_job",
+      Self::InvalidateCache { .. } => "invalidate_cache",
+    }
+  }
+}
+
+/// Serialise a command's parameter payload (everything except `key`) into
+/// canonical JSON.
+///
+/// We deliberately do not `serde_json::to_string(cmd)` here — that would
+/// include the `key` field, which is exactly what we're trying to derive, and
+/// would also emit the tag/content wrapper. Instead we build a `Value` tree
+/// per-variant and hand it to [`canonicalize`].
+fn canonical_json_of_params(cmd: &Command) -> String {
+  let mut params = Map::new();
+  match cmd {
+    Command::EvalDevshell { target, .. } => {
+      params.insert("target".to_owned(), Value::String(target.clone()));
+    }
+    Command::Restart { .. } => {}
+    Command::AbortJob { job_id, .. } => {
+      // JobId serialises via its own serde impl; roundtrip through Value so
+      // we depend on the same representation as the wire.
+      let v = serde_json::to_value(job_id).unwrap_or(Value::Null);
+      params.insert("job_id".to_owned(), v);
+    }
+    Command::InvalidateCache { scope, .. } => {
+      params.insert("scope".to_owned(), Value::String(scope.clone()));
+    }
+  }
+  canonicalize(&Value::Object(params))
+}
+
+/// Emit a canonical JSON string: object keys sorted lexicographically, no
+/// insignificant whitespace.
+///
+/// `serde_json::Map` preserves insertion order by default, so this rewrite is
+/// the only way to guarantee stable object-key ordering across callers.
+/// Numbers are re-emitted through `serde_json::Number`'s `Display`, which does
+/// not canonicalise floating-point representation — all values fed here
+/// originate from wire-parseable command params (strings and integer job ids)
+/// so float ambiguity does not currently apply. Revisit if a variant later
+/// grows a `f64` param.
+fn canonicalize(value: &Value) -> String {
+  let mut out = String::new();
+  write_canonical(value, &mut out);
+  out
+}
+
+fn write_canonical(value: &Value, out: &mut String) {
+  match value {
+    Value::Null => out.push_str("null"),
+    Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+    Value::Number(n) => out.push_str(&n.to_string()),
+    Value::String(s) => {
+      // Delegate string escaping to serde_json to stay compatible with the
+      // wire representation.
+      let escaped =
+        serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""));
+      out.push_str(&escaped);
+    }
+    Value::Array(items) => {
+      out.push('[');
+      for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        write_canonical(item, out);
+      }
+      out.push(']');
+    }
+    Value::Object(map) => {
+      // Sort keys lexicographically via BTreeMap.
+      let sorted: BTreeMap<&String, &Value> = map.iter().collect();
+      out.push('{');
+      for (i, (k, v)) in sorted.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        let escaped = serde_json::to_string(k.as_str())
+          .unwrap_or_else(|_| String::from("\"\""));
+        out.push_str(&escaped);
+        out.push(':');
+        write_canonical(v, out);
+      }
+      out.push('}');
+    }
+  }
 }
 
 /// The reply body returned by the daemon for a preceding [`Command`].
@@ -114,7 +250,7 @@ pub enum CommandReply {
   /// The command was accepted and a job id is available.
   Accepted {
     /// The existing or newly-allocated job id.
-    job_id: JobId,
+    job_id:   JobId,
     /// True when this request attached to an already-running job by
     /// matching [`IdempotencyKey`]; false when a fresh job was allocated.
     attached: bool,
@@ -192,6 +328,22 @@ mod hex_bytes {
 mod tests {
   use super::*;
 
+  const PLACEHOLDER: IdempotencyKey = IdempotencyKey::placeholder();
+
+  fn eval(target: &str) -> Command {
+    Command::EvalDevshell {
+      target: target.to_owned(),
+      key:    PLACEHOLDER,
+    }
+  }
+
+  fn invalidate(scope: &str) -> Command {
+    Command::InvalidateCache {
+      scope: scope.to_owned(),
+      key:   PLACEHOLDER,
+    }
+  }
+
   #[test]
   fn idempotency_key_hex_roundtrip() {
     let mut bytes = [0u8; 32];
@@ -210,5 +362,98 @@ mod tests {
   #[test]
   fn placeholder_is_zeroed() {
     assert_eq!(IdempotencyKey::placeholder().0, [0u8; 32]);
+  }
+
+  #[test]
+  fn derive_is_deterministic_for_same_inputs() {
+    let a = IdempotencyKey::derive_for(&eval("default"), "lockhash");
+    let b = IdempotencyKey::derive_for(&eval("default"), "lockhash");
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn derive_differs_for_different_params() {
+    let a = IdempotencyKey::derive_for(&eval("default"), "lockhash");
+    let b = IdempotencyKey::derive_for(&eval("dev"), "lockhash");
+    assert_ne!(a, b);
+  }
+
+  #[test]
+  fn derive_differs_for_different_kinds() {
+    // Different kinds against the same lock hash and (deliberately) empty
+    // scope must diverge purely on the kind tag mixed into blake3.
+    let a = IdempotencyKey::derive_for(
+      &Command::Restart { key: PLACEHOLDER },
+      "lockhash",
+    );
+    let b = IdempotencyKey::derive_for(&invalidate(""), "lockhash");
+    assert_ne!(a, b);
+  }
+
+  #[test]
+  fn derive_differs_for_different_lock_hashes() {
+    let a = IdempotencyKey::derive_for(&eval("default"), "lockhash-a");
+    let b = IdempotencyKey::derive_for(&eval("default"), "lockhash-b");
+    assert_ne!(a, b);
+  }
+
+  #[test]
+  fn derive_key_field_is_ignored() {
+    // Two commands with different `key` fields but otherwise identical
+    // must produce the same derived key — the derivation ignores `key`.
+    let a = Command::EvalDevshell {
+      target: "default".to_owned(),
+      key:    IdempotencyKey::placeholder(),
+    };
+    let b = Command::EvalDevshell {
+      target: "default".to_owned(),
+      key:    IdempotencyKey::from_bytes([0xAA; 32]),
+    };
+    assert_eq!(
+      IdempotencyKey::derive_for(&a, "lockhash"),
+      IdempotencyKey::derive_for(&b, "lockhash"),
+    );
+  }
+
+  #[test]
+  fn canonical_json_sorts_object_keys() {
+    // Direct canonicalize check: keys inserted in reverse order still emit
+    // in lexicographic order.
+    let mut m = Map::new();
+    m.insert("z".to_owned(), Value::String("last".to_owned()));
+    m.insert("a".to_owned(), Value::String("first".to_owned()));
+    let canonical = canonicalize(&Value::Object(m));
+    assert_eq!(canonical, r#"{"a":"first","z":"last"}"#);
+  }
+
+  #[test]
+  fn canonical_json_is_stable_under_key_reordering() {
+    // End-to-end: two logically-identical objects with different key
+    // insertion orders canonicalise to the same string.
+    let mut a = Map::new();
+    a.insert("scope".to_owned(), Value::String("evals".to_owned()));
+    a.insert("extra".to_owned(), Value::String("x".to_owned()));
+
+    let mut b = Map::new();
+    b.insert("extra".to_owned(), Value::String("x".to_owned()));
+    b.insert("scope".to_owned(), Value::String("evals".to_owned()));
+
+    assert_eq!(
+      canonicalize(&Value::Object(a)),
+      canonicalize(&Value::Object(b))
+    );
+  }
+
+  #[test]
+  fn derive_flake_lock_empty_string_is_valid() {
+    // Callers with no lock available pass `""`. This must produce a
+    // deterministic key and must differ from the same command against a
+    // non-empty hash.
+    let no_lock = IdempotencyKey::derive_for(&eval("default"), "");
+    let with_lock =
+      IdempotencyKey::derive_for(&eval("default"), "somehash");
+    assert_ne!(no_lock, with_lock);
+    // Deterministic:
+    assert_eq!(no_lock, IdempotencyKey::derive_for(&eval("default"), ""));
   }
 }

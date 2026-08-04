@@ -1,9 +1,13 @@
 pub mod client;
+pub mod env_pointer;
+pub mod job_registry;
 pub mod lifecycle;
 pub mod notifications;
 pub mod protocol;
 pub mod protocol_v3;
 pub mod server;
 pub mod shell_registry;
+pub mod state_machine;
 pub mod state_meta;
+pub mod state_responder;
 pub mod watcher;
