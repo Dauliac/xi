@@ -150,6 +150,10 @@ pub struct CachePushResponse {
 }
 
 /// Daemon state — covers all lifecycle phases and degraded modes.
+///
+/// Adding a variant here requires extending [`crate::daemon::state_meta`] as
+/// well. That module contains a compile-time exhaustive `match` that fails
+/// the build if a variant is added without a catalog entry (SC-016).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonState {
   Starting,
@@ -159,6 +163,23 @@ pub enum DaemonState {
   WatcherDegraded,
   ConfigError { error: String },
   ShuttingDown,
+  /// v3: A read-only query has an in-flight job producing the value.
+  ///
+  /// Emitted by `Query::*` reads when the value is not yet materialised
+  /// but a job is running. Carries the running job id.
+  Pending { job_id: String },
+  /// v3: The requested value has no producer and no job is running.
+  ///
+  /// Emitted by `Query::*` reads for values that never existed and are
+  /// not being computed (e.g. a query for a non-existent target).
+  Missing,
+  /// v3: The daemon is serving from a degraded source (offline cache,
+  /// stale watcher, partial results).
+  Degraded { reason: String },
+  /// v3: A job has made no progress for longer than the stuck threshold.
+  Stuck { job_id: String, stuck_ms: u64 },
+  /// v3: The daemon is aborting a stuck job and restarting itself.
+  SelfHealing,
 }
 
 /// Request sent by `xi develop prompt` to the daemon.

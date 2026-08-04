@@ -15,6 +15,7 @@ pub mod shell;
 mod store_path;
 pub mod subshell;
 mod switch;
+pub mod timeouts;
 mod trust;
 mod ui;
 
@@ -336,6 +337,21 @@ fn status() -> Result<()> {
             "{}{} shutting down{}",
             color::YELLOW,
             Icon::Loading.glyph(),
+            color::RESET
+          )
+        },
+        // v3-only variants (Pending, Missing, Degraded, Stuck, SelfHealing)
+        // — v3 protocol renderer lives in a sibling task. For now render
+        // via the state catalog so this call site stays uniform.
+        other => {
+          use crate::daemon::state_meta;
+          let meta =
+            state_meta::meta_for_state(other).expect("state_meta parity");
+          format!(
+            "{}{} {}{}",
+            color::YELLOW,
+            Icon::Info.glyph(),
+            meta.display,
             color::RESET
           )
         },

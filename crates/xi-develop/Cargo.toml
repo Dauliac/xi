@@ -22,6 +22,7 @@ serde_json    = { workspace = true }
 sha2          = "0.10"
 subprocess    = { workspace = true }
 thiserror     = { workspace = true }
+toml_edit     = { workspace = true }
 tracing       = { workspace = true }
 xi-core       = { workspace = true }
 xi-diff       = { workspace = true }
