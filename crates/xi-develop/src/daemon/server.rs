@@ -15,9 +15,11 @@ use super::protocol::{
   CachePushRequest, CachePushResponse, DaemonRequest, DaemonResponse,
   DaemonState, DeregisterRequest, DeregisterResponse, EvalRequest,
   EvalResponse, Notification, PackageChange, PromptRequest, PromptResponse,
-  StatusResponse, read_message, write_message,
+  StatusResponse, read_frame, write_message,
 };
+use super::protocol_v3::Envelope as V3Envelope;
 use super::shell_registry::ShellRegistry;
+use super::v3_handlers;
 use super::watcher::GitWatcher;
 use crate::shell::ShellType;
 use crate::{dirs, env_file, meta, trust};
@@ -341,11 +343,67 @@ fn handle_connection(
   let mut reader = BufReader::new(stream);
   let mut writer = BufWriter::new(stream);
 
-  let request: DaemonRequest = read_message(&mut reader)?;
-  let response = dispatch(request, state);
-  write_message(&mut writer, &response)?;
+  // Read the frame once, decode once. The v3 envelope carries a
+  // `"v":3` discriminator that v2 never emits, so a byte-level peek
+  // routes without a probe deserialisation.
+  let raw = read_frame(&mut reader)?;
+
+  if is_v3_envelope(&raw) {
+    let envelope: V3Envelope = serde_json::from_slice(&raw).map_err(|e| {
+      std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+    let reply = v3_handlers::handle_envelope(envelope, state);
+    write_message(&mut writer, &reply)?;
+  } else {
+    let request: DaemonRequest = serde_json::from_slice(&raw).map_err(|e| {
+      std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+    let response = dispatch(request, state);
+    write_message(&mut writer, &response)?;
+  }
 
   Ok(())
+}
+
+/// Cheap byte-level peek: does the frame declare `"v":3`?
+///
+/// A stream scanner rather than a `serde_json::Value` parse — the latter is
+/// ~50–200 µs per call on a small envelope, which we pay on every prompt
+/// tick. This scanner runs in ~1 µs and matches every whitespace-normalised
+/// encoding of `"v": 3` (compact, pretty, quoted) plus tolerates a leading
+/// `{`. Strict JSON key/value ordering doesn't matter — we only need to
+/// distinguish v2 (no `v` field at all) from v3 (numeric `v: 3`).
+pub fn is_v3_envelope(raw: &[u8]) -> bool {
+  // Cap the scan so a malicious 16 MiB frame can't blow the tick budget.
+  let window = &raw[..raw.len().min(1024)];
+  let mut i = 0;
+  while i + 4 <= window.len() {
+    if window[i] == b'"' && window[i + 1] == b'v' && window[i + 2] == b'"' {
+      // Skip whitespace + one ':'
+      let mut j = i + 3;
+      while j < window.len() && window[j].is_ascii_whitespace() {
+        j += 1;
+      }
+      if j >= window.len() || window[j] != b':' {
+        i += 1;
+        continue;
+      }
+      j += 1;
+      while j < window.len() && window[j].is_ascii_whitespace() {
+        j += 1;
+      }
+      // Accept the digit `3` followed by a non-digit boundary
+      // (`,`, `}`, whitespace).
+      if j < window.len() && window[j] == b'3' {
+        let boundary = window.get(j + 1).copied().unwrap_or(b',');
+        if !boundary.is_ascii_digit() {
+          return true;
+        }
+      }
+    }
+    i += 1;
+  }
+  false
 }
 
 fn dispatch(

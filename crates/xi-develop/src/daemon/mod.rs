@@ -10,4 +10,5 @@ pub mod shell_registry;
 pub mod state_machine;
 pub mod state_meta;
 pub mod state_responder;
+pub mod v3_handlers;
 pub mod watcher;

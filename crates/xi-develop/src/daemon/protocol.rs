@@ -262,19 +262,24 @@ pub fn write_message<W: std::io::Write, T: Serialize>(
   writer.flush()
 }
 
-/// Read a length-prefixed JSON message from a reader.
+/// Maximum accepted message length (JSON body).
+pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read one length-prefixed frame without decoding the JSON body.
+///
+/// Used by the server dispatcher to peek the protocol version before
+/// committing to a specific deserialiser.
 ///
 /// # Errors
-/// Returns an error if deserialization or I/O fails.
-pub fn read_message<R: std::io::Read, T: for<'de> Deserialize<'de>>(
-  reader: &mut R,
-) -> std::io::Result<T> {
+///
+/// Returns an error on short reads or when the announced length exceeds
+/// [`MAX_FRAME_BYTES`].
+pub fn read_frame<R: std::io::Read>(reader: &mut R) -> std::io::Result<Vec<u8>> {
   let mut len_buf = [0u8; 4];
   reader.read_exact(&mut len_buf)?;
   let len = u32::from_le_bytes(len_buf) as usize;
 
-  // Sanity check: max 16MB
-  if len > 16 * 1024 * 1024 {
+  if len > MAX_FRAME_BYTES {
     return Err(std::io::Error::new(
       std::io::ErrorKind::InvalidData,
       format!("Message too large: {len} bytes"),
@@ -283,6 +288,17 @@ pub fn read_message<R: std::io::Read, T: for<'de> Deserialize<'de>>(
 
   let mut buf = vec![0u8; len];
   reader.read_exact(&mut buf)?;
+  Ok(buf)
+}
+
+/// Read a length-prefixed JSON message from a reader.
+///
+/// # Errors
+/// Returns an error if deserialization or I/O fails.
+pub fn read_message<R: std::io::Read, T: for<'de> Deserialize<'de>>(
+  reader: &mut R,
+) -> std::io::Result<T> {
+  let buf = read_frame(reader)?;
   serde_json::from_slice(&buf)
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
