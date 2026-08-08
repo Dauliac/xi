@@ -1,4 +1,5 @@
 pub mod client;
+pub mod client_v3;
 pub mod env_pointer;
 pub mod job_registry;
 pub mod lifecycle;
