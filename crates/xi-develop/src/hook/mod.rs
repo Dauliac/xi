@@ -20,6 +20,7 @@ pub mod offline;
 pub mod queue;
 pub mod refine;
 pub mod shortcut;
+pub mod tick;
 
 pub use budget::Budget;
 pub use diag_log::DiagLog;
@@ -27,6 +28,7 @@ pub use offline::{BackoffState, OfflineCache};
 pub use queue::{Queue, QueueEntry, QueuePayload};
 pub use refine::refine_and_flush;
 pub use shortcut::should_shortcut;
+pub use tick::{DaemonCaller, TickCtx, TickOutcome, run_tick};
 
 /// Test-only shared lock protecting the `XDG_STATE_HOME` process env var.
 ///
