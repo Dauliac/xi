@@ -24,6 +24,7 @@ serde            = { workspace = true }
 serde_json       = { workspace = true }
 sha2             = "0.10"
 subprocess       = { workspace = true }
+ulid             = "1"
 thiserror        = { workspace = true }
 toml_edit        = { workspace = true }
 tracing          = { workspace = true }

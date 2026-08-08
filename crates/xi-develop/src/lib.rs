@@ -9,6 +9,7 @@ mod enter;
 pub mod env_file;
 mod exec;
 pub mod flake_detect;
+pub mod hook;
 mod meta;
 pub mod prompt;
 pub mod shell;

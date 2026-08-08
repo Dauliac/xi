@@ -54,9 +54,18 @@ pub fn profile_path(state_dir: &Path, target: &str) -> PathBuf {
 /// Base state directory.
 /// `$XDG_STATE_HOME/xi/develop/`
 pub fn state_base() -> PathBuf {
+  xi_state_root().join("develop")
+}
+
+/// Xi's state root — one level above `state_base()`.
+/// `$XDG_STATE_HOME/xi/`
+///
+/// Hook sidecars (`hook-queue/`, `hook-cache/`, `hook.log`) live here beside
+/// the per-flake `develop/<fid>` subtree.
+pub fn xi_state_root() -> PathBuf {
   let base = env::var("XDG_STATE_HOME")
     .map_or_else(|_| home_dir().join(".local/state"), PathBuf::from);
-  base.join("xi/develop")
+  base.join("xi")
 }
 
 /// Trust directory.
