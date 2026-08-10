@@ -349,15 +349,13 @@ fn handle_connection(
   let raw = read_frame(&mut reader)?;
 
   if is_v3_envelope(&raw) {
-    let envelope: V3Envelope = serde_json::from_slice(&raw).map_err(|e| {
-      std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let envelope: V3Envelope = serde_json::from_slice(&raw)
+      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let reply = v3_handlers::handle_envelope(envelope, state);
     write_message(&mut writer, &reply)?;
   } else {
-    let request: DaemonRequest = serde_json::from_slice(&raw).map_err(|e| {
-      std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let request: DaemonRequest = serde_json::from_slice(&raw)
+      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let response = dispatch(request, state);
     write_message(&mut writer, &response)?;
   }
@@ -373,6 +371,7 @@ fn handle_connection(
 /// encoding of `"v": 3` (compact, pretty, quoted) plus tolerates a leading
 /// `{`. Strict JSON key/value ordering doesn't matter — we only need to
 /// distinguish v2 (no `v` field at all) from v3 (numeric `v: 3`).
+#[must_use]
 pub fn is_v3_envelope(raw: &[u8]) -> bool {
   // Cap the scan so a malicious 16 MiB frame can't blow the tick budget.
   let window = &raw[..raw.len().min(1024)];

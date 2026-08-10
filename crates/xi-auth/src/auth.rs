@@ -26,7 +26,7 @@ fn locate_binary() -> Result<std::path::PathBuf> {
 /// child process fails to spawn. When `nix-auth` itself exits non-zero,
 /// this function exits the current process with the same status code
 /// rather than returning.
-pub fn run(args: AuthArgs) -> Result<()> {
+pub fn run(args: &AuthArgs) -> Result<()> {
   let bin = locate_binary()?;
   let subcommand = args.command.subcommand_name();
   let passthrough = args.command.passthrough_args();

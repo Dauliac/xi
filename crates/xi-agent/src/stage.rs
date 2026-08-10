@@ -16,14 +16,20 @@ use crate::{
 
 pub const CMD: &str = "stage";
 
-pub fn run(_args: StageArgs) -> Result<()> {
+/// Emit the stage envelope on stdout.
+///
+/// # Errors
+///
+/// Returns an error only when writing the JSON envelope to stdout fails.
+pub fn run(_args: &StageArgs) -> Result<()> {
   let start = Instant::now();
-  match collect() {
+  let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+  match collect_at(&cwd) {
     Ok(payload) => emit(&Envelope::ok(CMD, payload, elapsed_ms(start)))?,
     Err(diag) => {
       let payload = StagePayload {
         entries: Vec::new(),
-        clean:   true,
+        clean: true,
       };
       emit(&Envelope::partial(
         CMD,
@@ -36,11 +42,28 @@ pub fn run(_args: StageArgs) -> Result<()> {
   Ok(())
 }
 
+/// Snapshot the working tree from the current directory.
+///
+/// # Errors
+///
+/// Returns a `Diagnostic` when `git status` cannot be spawned or exits
+/// non-zero.
 pub fn collect() -> Result<StagePayload, Diagnostic> {
   let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+  collect_at(&cwd)
+}
+
+/// Same as `collect` but with an explicit workspace root. Kept public
+/// so contract tests can drive it against a fixture git repo.
+///
+/// # Errors
+///
+/// Returns a `Diagnostic` when `git status` cannot be spawned or exits
+/// non-zero for `cwd`.
+pub fn collect_at(cwd: &Path) -> Result<StagePayload, Diagnostic> {
   let output = Command::new("git")
     .args(["status", "--porcelain=v1", "-uall"])
-    .current_dir(&cwd)
+    .current_dir(cwd)
     .output()
     .map_err(|e| {
       Diagnostic::new("git.spawn-failed", e.to_string()).with_source("git")
@@ -66,7 +89,7 @@ pub fn collect() -> Result<StagePayload, Diagnostic> {
     let path = line[3..].trim();
     let (git_status, staged) = classify(x, y);
     let entry_path = PathBuf::from(path);
-    let referenced_by = flake_references_for(&cwd, &entry_path);
+    let referenced_by = flake_references_for(cwd, &entry_path);
     entries.push(StageEntry {
       path: entry_path,
       git_status,
@@ -80,7 +103,7 @@ pub fn collect() -> Result<StagePayload, Diagnostic> {
   Ok(StagePayload { entries, clean })
 }
 
-fn classify(x: u8, y: u8) -> (GitStatus, bool) {
+const fn classify(x: u8, y: u8) -> (GitStatus, bool) {
   match (x, y) {
     (b'?', b'?') => (GitStatus::Untracked, false),
     (b'!', b'!') => (GitStatus::Ignored, false),

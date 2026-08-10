@@ -13,15 +13,24 @@ use crate::{
   SKILLS,
   args::{InstallArgs, InstallScope, InstallTarget},
   schema::{
-    Diagnostic, Envelope, InstallAction, InstallEntry, InstallPayload, elapsed_ms, emit,
+    Diagnostic, Envelope, InstallAction, InstallEntry, InstallPayload,
+    elapsed_ms, emit,
   },
 };
 
 pub const CMD: &str = "install";
 
-pub fn run(args: InstallArgs) -> Result<()> {
+/// Emit the install envelope on stdout.
+///
+/// # Errors
+///
+/// Returns an error if base directories cannot be resolved, if a skill
+/// file cannot be persisted to disk, or if writing the JSON envelope to
+/// stdout fails.
+pub fn run(args: &InstallArgs) -> Result<()> {
   let start = Instant::now();
-  let base_dirs = BaseDirs::new().ok_or_else(|| eyre!("cannot resolve base dirs"))?;
+  let base_dirs =
+    BaseDirs::new().ok_or_else(|| eyre!("cannot resolve base dirs"))?;
   let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
   let mut entries: Vec<InstallEntry> = Vec::new();
@@ -29,20 +38,32 @@ pub fn run(args: InstallArgs) -> Result<()> {
 
   let targets = match args.target {
     InstallTarget::All => vec![
-      TargetSpec { runtime: "claude-code", subdir: ".claude/skills" },
-      TargetSpec { runtime: "codex",       subdir: ".codex/skills" },
+      TargetSpec {
+        runtime: "claude-code",
+        subdir: ".claude/skills",
+      },
+      TargetSpec {
+        runtime: "codex",
+        subdir: ".codex/skills",
+      },
     ],
     InstallTarget::ClaudeCode => {
-      vec![TargetSpec { runtime: "claude-code", subdir: ".claude/skills" }]
+      vec![TargetSpec {
+        runtime: "claude-code",
+        subdir: ".claude/skills",
+      }]
     },
     InstallTarget::Codex => {
-      vec![TargetSpec { runtime: "codex", subdir: ".codex/skills" }]
+      vec![TargetSpec {
+        runtime: "codex",
+        subdir: ".codex/skills",
+      }]
     },
   };
 
   let base = match args.scope {
     InstallScope::User => base_dirs.home_dir().to_path_buf(),
-    InstallScope::Project => cwd.clone(),
+    InstallScope::Project => cwd,
   };
 
   for tgt in &targets {
@@ -55,16 +76,23 @@ pub fn run(args: InstallArgs) -> Result<()> {
       continue;
     }
     for skill_dir in SKILLS.dirs() {
-      install_skill(skill_dir, &root, tgt.runtime, args.force, args.dry_run, &mut entries)?;
+      install_skill(
+        skill_dir,
+        &root,
+        tgt.runtime,
+        args.force,
+        args.dry_run,
+        &mut entries,
+      )?;
     }
   }
 
   let payload = InstallPayload {
-    scope:   match args.scope {
+    scope: match args.scope {
       InstallScope::User => "user".into(),
       InstallScope::Project => "project".into(),
     },
-    target:  match args.target {
+    target: match args.target {
       InstallTarget::All => "all".into(),
       InstallTarget::ClaudeCode => "claude-code".into(),
       InstallTarget::Codex => "codex".into(),
@@ -82,7 +110,7 @@ pub fn run(args: InstallArgs) -> Result<()> {
 
 struct TargetSpec {
   runtime: &'static str,
-  subdir:  &'static str,
+  subdir: &'static str,
 }
 
 fn install_skill(
@@ -97,22 +125,23 @@ fn install_skill(
     return Ok(());
   };
   let skill_root = root.join(skill_name);
-  if !dry_run
-    && let Err(e) = std::fs::create_dir_all(&skill_root)
-  {
+  if !dry_run && let Err(e) = std::fs::create_dir_all(&skill_root) {
     return Err(eyre!("mkdir {}: {}", skill_root.display(), e));
   }
 
   for entry in dir.entries() {
     if let DirEntry::File(f) = entry {
-      let rel = f.path().strip_prefix(dir.path()).unwrap_or(f.path());
+      let rel = f
+        .path()
+        .strip_prefix(dir.path())
+        .unwrap_or_else(|_| f.path());
       let dst = skill_root.join(rel);
       let bytes = f.contents();
       let sha = sha256_hex(bytes);
       let action = write_if_needed(&dst, bytes, &sha, force, dry_run)?;
       let entry = InstallEntry {
-        skill:  format!("{runtime}/{skill_name}"),
-        path:   dst,
+        skill: format!("{runtime}/{skill_name}"),
+        path: dst,
         action,
         sha256: sha,
       };
@@ -129,9 +158,7 @@ fn write_if_needed(
   force: bool,
   dry_run: bool,
 ) -> Result<InstallAction> {
-  if !force
-    && let Ok(existing) = std::fs::read(path)
-  {
+  if !force && let Ok(existing) = std::fs::read(path) {
     let existing_sha = sha256_hex(&existing);
     if existing_sha == new_sha {
       return Ok(InstallAction::UpToDate);
@@ -140,12 +167,16 @@ fn write_if_needed(
   if dry_run {
     return Ok(InstallAction::Wrote);
   }
-  let parent = path.parent().ok_or_else(|| eyre!("no parent for {}", path.display()))?;
+  let parent = path
+    .parent()
+    .ok_or_else(|| eyre!("no parent for {}", path.display()))?;
   std::fs::create_dir_all(parent)?;
   let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
   tmp.write_all(content)?;
   tmp.flush()?;
-  tmp.persist(path).map_err(|e| eyre!("persist: {}", e.error))?;
+  tmp
+    .persist(path)
+    .map_err(|e| eyre!("persist: {}", e.error))?;
   Ok(InstallAction::Wrote)
 }
 

@@ -20,7 +20,7 @@
 //!   `seq` — they return a typed error the caller must handle.
 //!
 //! [`StateSnapshot`] is intentionally minimal in this task (state + seq +
-//! emitted_at). Sibling tasks will extend it with `current_env`, `pending_env`,
+//! `emitted_at`). Sibling tasks will extend it with `current_env`, `pending_env`,
 //! `active_jobs`, `subscribers`, etc. — extend as sibling tasks wire in.
 
 use std::path::PathBuf;
@@ -53,7 +53,7 @@ pub struct StateSnapshot {
 }
 
 impl StateSnapshot {
-  /// Build the initial snapshot (seq=0, state=Starting, emitted_at=now).
+  /// Build the initial snapshot (seq=0, state=Starting, `emitted_at=now`).
   #[must_use]
   pub fn initial() -> Self {
     Self {
@@ -148,9 +148,7 @@ pub use super::state_meta::{DaemonStateKind, kind_of};
 /// Emitted only when the machine refuses to move — never on success. Log it,
 /// do not swallow it.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-  "illegal transition: {event_kind} from {from:?} rejected ({reason})"
-)]
+#[error("illegal transition: {event_kind} from {from:?} rejected ({reason})")]
 pub struct TransitionRejected {
   /// Coarse kind of the state the machine was in when the event arrived.
   pub from: DaemonStateKind,
@@ -206,15 +204,15 @@ impl StateMachine {
   /// current state.
   pub fn transition(
     &mut self,
-    event: TransitionEvent,
+    event: &TransitionEvent,
   ) -> Result<StateSnapshot, TransitionRejected> {
     let current = self.handle.load();
     let from_kind = kind_of(&current.state);
-    let next = Self::next_state(&current.state, &event).ok_or_else(|| {
+    let next = Self::next_state(&current.state, event).ok_or_else(|| {
       TransitionRejected {
         from: from_kind,
         event_kind: event.kind(),
-        reason: reason_for(&current.state, &event),
+        reason: reason_for(&current.state, event),
       }
     })?;
 
@@ -256,54 +254,36 @@ impl StateMachine {
     }
 
     match (current, event) {
-      // Starting → Evaluating
-      (S::Starting, E::EvalStarted) => Some(S::Evaluating),
+      // → Evaluating: fresh eval kick-off from any settled state, plus
+      // retry/self-heal from BuildFailed and self-heal from ConfigError.
+      (S::Starting | S::Ready | S::WatcherDegraded, E::EvalStarted)
+      | (S::BuildFailed { .. }, E::EvalStarted | E::SelfHeal)
+      | (S::ConfigError { .. }, E::SelfHeal) => Some(S::Evaluating),
 
-      // Evaluating → Ready | BuildFailed | ConfigError
-      (S::Evaluating, E::EvalSucceeded { .. }) => Some(S::Ready),
+      // → Ready: successful evaluation, or watcher recovery.
+      (S::Evaluating, E::EvalSucceeded { .. })
+      | (S::WatcherDegraded, E::SelfHeal) => Some(S::Ready),
+
+      // Evaluating → BuildFailed
+      (S::Evaluating, E::EvalFailed { error, retry_count }) => {
+        Some(S::BuildFailed {
+          error: error.clone(),
+          retry_count: *retry_count,
+        })
+      },
+
+      // → ConfigError: config errors observed from any live state.
       (
-        S::Evaluating,
-        E::EvalFailed {
-          error,
-          retry_count,
-        },
-      ) => Some(S::BuildFailed {
-        error: error.clone(),
-        retry_count: *retry_count,
-      }),
-      (S::Evaluating, E::ConfigError { error }) => Some(S::ConfigError {
-        error: error.clone(),
-      }),
-      (S::Evaluating, E::WatcherDegraded) => Some(S::WatcherDegraded),
-
-      // Ready → Evaluating (reload) | WatcherDegraded | ConfigError
-      (S::Ready, E::EvalStarted) => Some(S::Evaluating),
-      (S::Ready, E::WatcherDegraded) => Some(S::WatcherDegraded),
-      (S::Ready, E::ConfigError { error }) => Some(S::ConfigError {
+        S::Evaluating | S::Ready | S::BuildFailed { .. } | S::WatcherDegraded,
+        E::ConfigError { error },
+      ) => Some(S::ConfigError {
         error: error.clone(),
       }),
 
-      // BuildFailed → Evaluating (retry) | ConfigError
-      (S::BuildFailed { .. }, E::EvalStarted) => Some(S::Evaluating),
-      (S::BuildFailed { .. }, E::SelfHeal) => Some(S::Evaluating),
-      (S::BuildFailed { .. }, E::ConfigError { error }) => {
-        Some(S::ConfigError {
-          error: error.clone(),
-        })
-      }
-
-      // WatcherDegraded → Evaluating (reload) | ConfigError | SelfHeal → Ready
-      (S::WatcherDegraded, E::EvalStarted) => Some(S::Evaluating),
-      (S::WatcherDegraded, E::SelfHeal) => Some(S::Ready),
-      (S::WatcherDegraded, E::ConfigError { error }) => {
-        Some(S::ConfigError {
-          error: error.clone(),
-        })
-      }
-
-      // ConfigError → Starting only via Restart (handled above);
-      // SelfHeal explicitly tries to recover by re-evaluating.
-      (S::ConfigError { .. }, E::SelfHeal) => Some(S::Evaluating),
+      // → WatcherDegraded: watcher failure observed from a live state.
+      (S::Evaluating | S::Ready, E::WatcherDegraded) => {
+        Some(S::WatcherDegraded)
+      },
 
       // Everything else is illegal.
       _ => None,
@@ -332,19 +312,19 @@ const fn reason_for(
     (S::Starting, E::Restart) => "already starting",
     (S::Starting, E::EvalSucceeded { .. } | E::EvalFailed { .. }) => {
       "must EvalStarted before eval can succeed or fail"
-    }
+    },
     (S::Ready, E::EvalSucceeded { .. } | E::EvalFailed { .. }) => {
       "no eval in flight from Ready"
-    }
+    },
     (S::BuildFailed { .. }, E::EvalSucceeded { .. } | E::EvalFailed { .. }) => {
       "no eval in flight from BuildFailed"
-    }
+    },
     (_, E::Stuck { .. }) => {
       "no target state for Stuck yet — sibling task adds the variant"
-    }
+    },
     (S::ConfigError { .. }, _) => {
       "config must be fixed and daemon restarted before other events apply"
-    }
+    },
     _ => "no transition defined for this (state, event) pair",
   }
 }
@@ -374,13 +354,13 @@ mod tests {
     let mut sm = StateMachine::new();
 
     let s1 = sm
-      .transition(TransitionEvent::EvalStarted)
+      .transition(&TransitionEvent::EvalStarted)
       .expect("Starting + EvalStarted must be legal");
     assert_state(&s1.state, &DaemonState::Evaluating);
     assert_eq!(s1.seq, 1);
 
     let s2 = sm
-      .transition(TransitionEvent::EvalSucceeded {
+      .transition(&TransitionEvent::EvalSucceeded {
         env: PathBuf::from("/nix/store/fake-env"),
       })
       .expect("Evaluating + EvalSucceeded must be legal");
@@ -392,15 +372,15 @@ mod tests {
   fn illegal_ready_to_starting_via_eval_succeeded_is_rejected() {
     // Ready cannot receive EvalSucceeded — no eval is in flight.
     let mut sm = StateMachine::new();
-    sm.transition(TransitionEvent::EvalStarted)
+    sm.transition(&TransitionEvent::EvalStarted)
       .expect("first EvalStarted must be legal");
-    sm.transition(TransitionEvent::EvalSucceeded {
+    sm.transition(&TransitionEvent::EvalSucceeded {
       env: PathBuf::from("/nix/store/fake-env"),
     })
     .expect("EvalSucceeded from Evaluating must be legal");
 
     let err = sm
-      .transition(TransitionEvent::EvalSucceeded {
+      .transition(&TransitionEvent::EvalSucceeded {
         env: PathBuf::from("/nix/store/fake-env-2"),
       })
       .expect_err("Ready + EvalSucceeded must be rejected");
@@ -415,7 +395,7 @@ mod tests {
     // Directly Starting → Ready via EvalSucceeded (skipping Evaluating) illegal.
     let mut sm = StateMachine::new();
     let err = sm
-      .transition(TransitionEvent::EvalSucceeded {
+      .transition(&TransitionEvent::EvalSucceeded {
         env: PathBuf::from("/nix/store/fake-env"),
       })
       .expect_err("Starting + EvalSucceeded must be rejected");
@@ -429,16 +409,17 @@ mod tests {
     let mut sm = StateMachine::new();
     assert_eq!(sm.snapshot().seq, 0);
 
-    sm.transition(TransitionEvent::EvalStarted).expect("accept");
+    sm.transition(&TransitionEvent::EvalStarted)
+      .expect("accept");
     assert_eq!(sm.snapshot().seq, 1);
 
     // Rejected — seq must NOT increase.
     let _ = sm
-      .transition(TransitionEvent::EvalStarted)
+      .transition(&TransitionEvent::EvalStarted)
       .expect_err("Evaluating + EvalStarted illegal");
     assert_eq!(sm.snapshot().seq, 1, "seq must not bump on rejection");
 
-    sm.transition(TransitionEvent::EvalSucceeded {
+    sm.transition(&TransitionEvent::EvalSucceeded {
       env: PathBuf::from("/nix/store/fake-env"),
     })
     .expect("accept");
@@ -457,7 +438,7 @@ mod tests {
     drop(observed);
 
     // Writer transitions.
-    sm.transition(TransitionEvent::EvalStarted)
+    sm.transition(&TransitionEvent::EvalStarted)
       .expect("accept EvalStarted");
 
     // Same reader handle observes the new snapshot without any signalling.
@@ -469,7 +450,7 @@ mod tests {
   #[test]
   fn shutdown_is_terminal() {
     let mut sm = StateMachine::new();
-    sm.transition(TransitionEvent::Shutdown)
+    sm.transition(&TransitionEvent::Shutdown)
       .expect("Shutdown from Starting must be legal");
 
     for ev in [
@@ -479,7 +460,7 @@ mod tests {
       TransitionEvent::WatcherDegraded,
     ] {
       let err = sm
-        .transition(ev.clone())
+        .transition(&ev)
         .expect_err("ShuttingDown must reject every event");
       assert_eq!(err.from, DaemonStateKind::ShuttingDown);
     }
@@ -489,18 +470,19 @@ mod tests {
   fn restart_from_any_live_state_goes_to_starting() {
     // Ready → Restart → Starting.
     let mut sm = StateMachine::new();
-    sm.transition(TransitionEvent::EvalStarted).expect("accept");
-    sm.transition(TransitionEvent::EvalSucceeded {
+    sm.transition(&TransitionEvent::EvalStarted)
+      .expect("accept");
+    sm.transition(&TransitionEvent::EvalSucceeded {
       env: PathBuf::from("/nix/store/fake-env"),
     })
     .expect("accept");
 
-    let s = sm.transition(TransitionEvent::Restart).expect("accept");
+    let s = sm.transition(&TransitionEvent::Restart).expect("accept");
     assert_state(&s.state, &DaemonState::Starting);
 
     // Starting + Restart is rejected — already there.
     let err = sm
-      .transition(TransitionEvent::Restart)
+      .transition(&TransitionEvent::Restart)
       .expect_err("Starting + Restart illegal");
     assert_eq!(err.reason, "already starting");
   }
@@ -508,11 +490,12 @@ mod tests {
   #[test]
   fn self_heal_from_watcher_degraded_returns_to_ready() {
     let mut sm = StateMachine::new();
-    sm.transition(TransitionEvent::EvalStarted).expect("accept");
-    sm.transition(TransitionEvent::WatcherDegraded)
+    sm.transition(&TransitionEvent::EvalStarted)
+      .expect("accept");
+    sm.transition(&TransitionEvent::WatcherDegraded)
       .expect("Evaluating + WatcherDegraded must be legal");
 
-    let s = sm.transition(TransitionEvent::SelfHeal).expect("accept");
+    let s = sm.transition(&TransitionEvent::SelfHeal).expect("accept");
     assert_state(&s.state, &DaemonState::Ready);
   }
 }

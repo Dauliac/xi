@@ -46,7 +46,7 @@ pub fn handle_envelope(
   let reply_id = request.id.clone();
   let reply = match request.payload {
     Payload::Query(q) => Reply::Query(handle_query(q, state)),
-    Payload::Command(c) => Reply::Command(handle_command(c)),
+    Payload::Command(c) => Reply::Command(handle_command(&c)),
     Payload::Subscribe(_) => Reply::SubscribeAck { from_seq: 0 },
     Payload::Reply(_) | Payload::Event(_) => Reply::Error {
       message: "server received a reply/event envelope; ignoring".into(),
@@ -84,12 +84,12 @@ fn handle_query(query: Query, state: &ServerState) -> QueryReply {
 /// Dispatch a v3 [`Command`], allocating (or attaching to) a job via the
 /// authoritative job registry.
 #[must_use]
-fn handle_command(command: Command) -> CommandReply {
-  let kind = job_kind_for(&command);
-  let key = wire_key_to_registry(command_key(&command));
+fn handle_command(command: &Command) -> CommandReply {
+  let kind = job_kind_for(command);
+  let key = wire_key_to_registry(command_key(command));
   let (job_id, attached) = registry().attach_or_start(key, kind);
   CommandReply::Accepted {
-    job_id:   job_id.as_str().to_owned(),
+    job_id: job_id.as_str().to_owned(),
     attached: matches!(attached, Attached::Yes),
   }
 }
@@ -109,7 +109,7 @@ fn job_kind_for(cmd: &Command) -> JobKind {
   }
 }
 
-fn command_key(cmd: &Command) -> IdempotencyKey {
+const fn command_key(cmd: &Command) -> IdempotencyKey {
   match cmd {
     Command::EvalDevshell { key, .. }
     | Command::Restart { key }
@@ -118,7 +118,7 @@ fn command_key(cmd: &Command) -> IdempotencyKey {
   }
 }
 
-fn wire_key_to_registry(key: IdempotencyKey) -> RegistryKey {
+const fn wire_key_to_registry(key: IdempotencyKey) -> RegistryKey {
   RegistryKey::from_bytes(key.0)
 }
 
@@ -126,21 +126,25 @@ fn status_value(state: &ServerState) -> serde_json::Value {
   let s = state
     .eval_state
     .read()
-    .unwrap_or_else(std::sync::PoisonError::into_inner);
+    .unwrap_or_else(std::sync::PoisonError::into_inner)
+    .clone();
   let target = state
     .current_target
     .read()
-    .unwrap_or_else(std::sync::PoisonError::into_inner);
+    .unwrap_or_else(std::sync::PoisonError::into_inner)
+    .clone();
   let pkg_count = state
     .current_env
     .read()
     .unwrap_or_else(std::sync::PoisonError::into_inner)
     .as_ref()
-    .map_or(0u32, |e| u32::try_from(e.packages.len()).unwrap_or(u32::MAX));
+    .map_or(0u32, |e| {
+      u32::try_from(e.packages.len()).unwrap_or(u32::MAX)
+    });
   json!({
-    "state": &*s,
+    "state": s,
     "uptime_secs": state.start_time.elapsed().as_secs(),
-    "current_target": &*target,
+    "current_target": target,
     "package_count": pkg_count,
     "version": state.version,
   })
@@ -164,12 +168,11 @@ fn devshell_availability(
     .current_env
     .read()
     .unwrap_or_else(std::sync::PoisonError::into_inner);
-  match env.as_ref() {
-    Some(dev) => Availability::Ready {
+  env
+    .as_ref()
+    .map_or(Availability::Missing, |dev| Availability::Ready {
       value: env_snapshot_value(dev),
-    },
-    None => Availability::Missing,
-  }
+    })
 }
 
 fn env_snapshot_value(env: &crate::env_file::DevEnv) -> serde_json::Value {
@@ -181,12 +184,12 @@ fn env_snapshot_value(env: &crate::env_file::DevEnv) -> serde_json::Value {
 }
 
 fn job_availability(job_id: &str) -> Availability<serde_json::Value> {
-  match registry().get(&JobId(job_id.to_owned())) {
-    Some(entry) => Availability::Ready {
+  registry().get(&JobId(job_id.to_owned())).map_or(
+    Availability::Missing,
+    |entry| Availability::Ready {
       value: job_entry_value(&entry),
     },
-    None => Availability::Missing,
-  }
+  )
 }
 
 fn job_entry_value(entry: &JobEntry) -> serde_json::Value {
@@ -197,7 +200,7 @@ fn job_entry_value(entry: &JobEntry) -> serde_json::Value {
   })
 }
 
-fn job_kind_str(kind: &JobKind) -> &'static str {
+const fn job_kind_str(kind: &JobKind) -> &'static str {
   match kind {
     JobKind::EvalDevshell { .. } => "eval_devshell",
     JobKind::Restart => "restart",
@@ -206,7 +209,7 @@ fn job_kind_str(kind: &JobKind) -> &'static str {
   }
 }
 
-fn job_status_str(status: &JobStatus) -> &'static str {
+const fn job_status_str(status: &JobStatus) -> &'static str {
   match status {
     JobStatus::Running => "running",
     JobStatus::Succeeded => "succeeded",
@@ -272,9 +275,9 @@ mod tests {
   fn eval_devshell_command_returns_job_id_fresh() {
     let cmd = Command::EvalDevshell {
       target: "default".into(),
-      key:    IdempotencyKey::from_bytes([1u8; 32]),
+      key: IdempotencyKey::from_bytes([1u8; 32]),
     };
-    let CommandReply::Accepted { job_id, attached } = handle_command(cmd)
+    let CommandReply::Accepted { job_id, attached } = handle_command(&cmd)
     else {
       unreachable!("EvalDevshell must be accepted")
     };
@@ -293,8 +296,8 @@ mod tests {
       target: "identical".into(),
       key,
     };
-    let first = must_accept(handle_command(cmd_a));
-    let second = must_accept(handle_command(cmd_b));
+    let first = must_accept(handle_command(&cmd_a));
+    let second = must_accept(handle_command(&cmd_b));
     assert_eq!(first.0, second.0, "same key must return same job id");
     assert!(second.1, "second request must report attached=true");
   }

@@ -19,6 +19,10 @@ impl ColmenaBackend {
   /// Try to create a colmena backend.
   ///
   /// Succeeds only if `colmena` is available in PATH.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `colmena` is not found on `PATH`.
   pub fn new() -> Result<Self> {
     if which::which("colmena").is_err() {
       bail!(

@@ -17,14 +17,20 @@ use crate::{
 
 pub const CMD: &str = "validate";
 
-pub fn run(args: ValidateArgs) -> Result<()> {
+/// Emit the validation plan (or execute it) on stdout.
+///
+/// # Errors
+///
+/// Returns an error when writing the JSON envelope to stdout fails, or
+/// when `args.run` is set and one or more blocking steps fail.
+pub fn run(args: &ValidateArgs) -> Result<()> {
   let start = Instant::now();
   let plan = derive_plan();
   if !args.run {
     emit(&Envelope::ok(CMD, plan, elapsed_ms(start)))?;
     return Ok(());
   }
-  execute(plan, args.fail_fast, start)
+  execute(&plan, args.fail_fast, start)
 }
 
 /// Derive a plan from what the project surface actually supports.
@@ -38,44 +44,44 @@ pub fn derive_plan() -> ValidationPlan {
 
   if cwd.join("flake.nix").exists() {
     steps.push(ValidationStep {
-      id:         "fmt-check".to_owned(),
-      command:    vec!["xi".into(), "fmt".into(), "--check".into()],
-      purpose:    "verify formatting is stable".to_owned(),
-      blocking:   true,
+      id: "fmt-check".to_owned(),
+      command: vec!["xi".into(), "fmt".into(), "--check".into()],
+      purpose: "verify formatting is stable".to_owned(),
+      blocking: true,
       depends_on: Vec::new(),
     });
     steps.push(ValidationStep {
-      id:         "doctor".to_owned(),
-      command:    vec!["xi".into(), "doctor".into()],
-      purpose:    "run xi's flake sanity checks".to_owned(),
-      blocking:   true,
+      id: "doctor".to_owned(),
+      command: vec!["xi".into(), "doctor".into()],
+      purpose: "run xi's flake sanity checks".to_owned(),
+      blocking: true,
       depends_on: Vec::new(),
     });
     steps.push(ValidationStep {
-      id:         "flake-check".to_owned(),
-      command:    vec!["xi".into(), "check".into()],
-      purpose:    "evaluate `nix flake check` outputs".to_owned(),
-      blocking:   true,
+      id: "flake-check".to_owned(),
+      command: vec!["xi".into(), "check".into()],
+      purpose: "evaluate `nix flake check` outputs".to_owned(),
+      blocking: true,
       depends_on: vec!["doctor".into()],
     });
   }
 
   if cwd.join("Cargo.toml").exists() {
     steps.push(ValidationStep {
-      id:         "cargo-test".to_owned(),
-      command:    vec!["cargo".into(), "test".into(), "--workspace".into()],
-      purpose:    "run the Rust test suite".to_owned(),
-      blocking:   true,
+      id: "cargo-test".to_owned(),
+      command: vec!["cargo".into(), "test".into(), "--workspace".into()],
+      purpose: "run the Rust test suite".to_owned(),
+      blocking: true,
       depends_on: Vec::new(),
     });
   }
 
   if xi_toml_has_section(&cwd, "ci") {
     steps.push(ValidationStep {
-      id:         "ci".to_owned(),
-      command:    vec!["xi".into(), "ci".into()],
-      purpose:    "run the same pipeline as CI".to_owned(),
-      blocking:   true,
+      id: "ci".to_owned(),
+      command: vec!["xi".into(), "ci".into()],
+      purpose: "run the same pipeline as CI".to_owned(),
+      blocking: true,
       depends_on: vec!["flake-check".into()],
     });
   }
@@ -92,15 +98,18 @@ fn xi_toml_has_section(cwd: &Path, section: &str) -> bool {
 }
 
 fn execute(
-  plan: ValidationPlan,
+  plan: &ValidationPlan,
   fail_fast: bool,
   start: Instant,
 ) -> Result<()> {
   use std::collections::{HashMap, HashSet};
-  let mut passed: HashSet<String> = HashSet::new();
   let mut failed: HashSet<String> = HashSet::new();
-  let by_id: HashMap<String, ValidationStep> =
-    plan.steps.iter().cloned().map(|s| (s.id.clone(), s)).collect();
+  let by_id: HashMap<String, ValidationStep> = plan
+    .steps
+    .iter()
+    .cloned()
+    .map(|s| (s.id.clone(), s))
+    .collect();
   let mut all_blocking_passed = true;
 
   for step in &plan.steps {
@@ -111,10 +120,10 @@ fn execute(
       .any(|d| failed.contains(d) || !by_id.contains_key(d));
     if blocked {
       let ev = ValidationEvent::Finished {
-        id:          step.id.clone(),
-        status:      ValidationStatus::Blocked,
+        id: step.id.clone(),
+        status: ValidationStatus::Blocked,
         duration_ms: 0,
-        error:       Some("dependency failed".to_owned()),
+        error: Some("dependency failed".to_owned()),
       };
       emit(&Envelope::ok(CMD, ev, 0))?;
       if step.blocking {
@@ -137,17 +146,14 @@ fn execute(
     let (status, err) = run_step(&step.command);
     let dur = elapsed_ms(step_start);
     let finished = ValidationEvent::Finished {
-      id:          step.id.clone(),
+      id: step.id.clone(),
       status,
       duration_ms: dur,
-      error:       err,
+      error: err,
     };
     emit(&Envelope::ok(CMD, finished, dur))?;
 
     match status {
-      ValidationStatus::Passed => {
-        passed.insert(step.id.clone());
-      },
       ValidationStatus::Failed | ValidationStatus::Blocked => {
         failed.insert(step.id.clone());
         if step.blocking {
@@ -157,12 +163,12 @@ fn execute(
           }
         }
       },
-      ValidationStatus::Skipped => {},
+      ValidationStatus::Passed | ValidationStatus::Skipped => {},
     }
   }
 
   let complete = ValidationEvent::Complete {
-    total_ms:            elapsed_ms(start),
+    total_ms: elapsed_ms(start),
     all_blocking_passed,
   };
   emit(&Envelope::ok(CMD, complete, elapsed_ms(start)))?;
@@ -177,10 +183,7 @@ fn execute(
 
 fn run_step(argv: &[String]) -> (ValidationStatus, Option<String>) {
   let Some((prog, rest)) = argv.split_first() else {
-    return (
-      ValidationStatus::Failed,
-      Some("empty command".to_owned()),
-    );
+    return (ValidationStatus::Failed, Some("empty command".to_owned()));
   };
   let output = Command::new(prog)
     .args(rest)

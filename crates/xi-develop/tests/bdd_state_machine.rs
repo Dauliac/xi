@@ -34,16 +34,16 @@ fn seq_increments_monotonically_across_legal_path() {
   let mut sm = StateMachine::new();
   assert_eq!(sm.snapshot().seq, 0);
 
-  sm.transition(TransitionEvent::EvalStarted).expect("legal");
+  sm.transition(&TransitionEvent::EvalStarted).expect("legal");
   assert_eq!(sm.snapshot().seq, 1);
 
-  sm.transition(TransitionEvent::EvalSucceeded {
+  sm.transition(&TransitionEvent::EvalSucceeded {
     env: PathBuf::from("/nix/store/fake-env"),
   })
   .expect("legal");
   assert_eq!(sm.snapshot().seq, 2);
 
-  sm.transition(TransitionEvent::EvalStarted).expect("legal");
+  sm.transition(&TransitionEvent::EvalStarted).expect("legal");
   assert_eq!(sm.snapshot().seq, 3);
 }
 
@@ -55,7 +55,7 @@ fn illegal_transition_rejected_and_snapshot_unchanged() {
   // Starting + EvalSucceeded is illegal (must EvalStarted first).
   let before = sm.snapshot();
   let rejection = sm
-    .transition(TransitionEvent::EvalSucceeded {
+    .transition(&TransitionEvent::EvalSucceeded {
       env: PathBuf::from("/nix/store/fake"),
     })
     .expect_err("must be rejected");
@@ -76,7 +76,7 @@ fn illegal_transition_rejected_and_snapshot_unchanged() {
 #[test]
 fn shutting_down_is_terminal() {
   let mut sm = StateMachine::new();
-  sm.transition(TransitionEvent::Shutdown).expect("legal");
+  sm.transition(&TransitionEvent::Shutdown).expect("legal");
   assert_eq!(kind_of(&sm.snapshot().state), DaemonStateKind::ShuttingDown);
 
   let seq_before = sm.snapshot().seq;
@@ -86,9 +86,7 @@ fn shutting_down_is_terminal() {
     TransitionEvent::SelfHeal,
     TransitionEvent::WatcherDegraded,
   ] {
-    let err = sm
-      .transition(event.clone())
-      .expect_err("shutdown is terminal");
+    let err = sm.transition(&event).expect_err("shutdown is terminal");
     assert_eq!(err.from, DaemonStateKind::ShuttingDown);
   }
   assert_eq!(sm.snapshot().seq, seq_before, "no seq bump post-shutdown");
@@ -98,10 +96,10 @@ fn shutting_down_is_terminal() {
 #[test]
 fn build_failed_carries_error_and_retry_count() {
   let mut sm = StateMachine::new();
-  sm.transition(TransitionEvent::EvalStarted).expect("legal");
+  sm.transition(&TransitionEvent::EvalStarted).expect("legal");
   let snap = sm
-    .transition(TransitionEvent::EvalFailed {
-      error:       "flake syntax error".into(),
+    .transition(&TransitionEvent::EvalFailed {
+      error: "flake syntax error".into(),
       retry_count: 3,
     })
     .expect("legal");
@@ -156,9 +154,9 @@ fn readers_observe_monotonic_snapshots_under_concurrent_writes() {
   // Toggle between Evaluating and Ready to bump seq deterministically.
   for i in 0..write_count {
     if i % 2 == 0 {
-      sm.transition(TransitionEvent::EvalStarted).expect("legal");
+      sm.transition(&TransitionEvent::EvalStarted).expect("legal");
     } else {
-      sm.transition(TransitionEvent::EvalSucceeded {
+      sm.transition(&TransitionEvent::EvalSucceeded {
         env: PathBuf::from(format!("/nix/store/e-{i}")),
       })
       .expect("legal");
@@ -176,14 +174,14 @@ fn readers_observe_monotonic_snapshots_under_concurrent_writes() {
 #[test]
 fn restart_from_ready_returns_to_starting() {
   let mut sm = StateMachine::new();
-  sm.transition(TransitionEvent::EvalStarted).expect("legal");
-  sm.transition(TransitionEvent::EvalSucceeded {
+  sm.transition(&TransitionEvent::EvalStarted).expect("legal");
+  sm.transition(&TransitionEvent::EvalSucceeded {
     env: PathBuf::from("/x"),
   })
   .expect("legal");
   let before = sm.snapshot().seq;
 
-  let after = sm.transition(TransitionEvent::Restart).expect("legal");
+  let after = sm.transition(&TransitionEvent::Restart).expect("legal");
   assert_eq!(kind_of(&after.state), DaemonStateKind::Starting);
   assert_eq!(after.seq, before + 1);
 }
@@ -194,7 +192,7 @@ fn restart_from_ready_returns_to_starting() {
 fn restart_from_starting_is_rejected() {
   let mut sm = StateMachine::new();
   let err = sm
-    .transition(TransitionEvent::Restart)
+    .transition(&TransitionEvent::Restart)
     .expect_err("already starting");
   assert_eq!(err.from, DaemonStateKind::Starting);
   assert_eq!(err.event_kind, "Restart");

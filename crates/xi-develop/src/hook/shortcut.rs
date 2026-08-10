@@ -76,11 +76,10 @@ pub fn should_shortcut(
   let Some(reply_at) = last_reply_at else {
     return false;
   };
-  match SystemTime::now().duration_since(reply_at) {
-    Ok(age) => age < SHORTCUT_MAX_AGE,
-    // reply_at is in the future — treat as fresh (clock skew tolerance).
-    Err(_) => true,
-  }
+  // `reply_at` in the future — treat as fresh (clock skew tolerance).
+  SystemTime::now()
+    .duration_since(reply_at)
+    .map_or(true, |age| age < SHORTCUT_MAX_AGE)
 }
 
 #[cfg(test)]

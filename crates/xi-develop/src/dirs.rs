@@ -53,6 +53,7 @@ pub fn profile_path(state_dir: &Path, target: &str) -> PathBuf {
 
 /// Base state directory.
 /// `$XDG_STATE_HOME/xi/develop/`
+#[must_use]
 pub fn state_base() -> PathBuf {
   xi_state_root().join("develop")
 }

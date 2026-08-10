@@ -296,10 +296,12 @@ impl FmtBackend {
   pub const AUTO: &str = "auto";
   pub const FLAKE: &str = "flake";
 
+  #[must_use]
   pub fn is_auto(&self) -> bool {
     self.0 == Self::AUTO
   }
 
+  #[must_use]
   pub fn is_flake(&self) -> bool {
     self.0 == Self::FLAKE
   }

@@ -343,10 +343,10 @@ impl XiCommand {
       Self::Test(args) => args.run(),
       Self::Doctor(args) => args.run(),
       Self::Materialize(args) => args.run(),
-      Self::Deploy(args) => xi_deploy::detect_and_deploy(args),
+      Self::Deploy(args) => xi_deploy::detect_and_deploy(&args),
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
-      Self::Auth(args) => xi_auth::run(args),
+      Self::Auth(args) => xi_auth::run(&args),
       Self::Cache(proxy) => proxy.run(),
       Self::Clean(proxy) => proxy.command.run(elevation),
       Self::Nix(args) => args.run(),
@@ -359,6 +359,14 @@ impl XiCommand {
 }
 
 impl CompletionsArgs {
+  /// Emit shell completions for the selected shell.
+  ///
+  /// # Panics
+  ///
+  /// Cannot panic in practice: the `Nushell` variant returns before the
+  /// `unreachable!()`, and every remaining variant maps to a built-in
+  /// `clap_complete` shell whose registration is always registered.
+  #[allow(clippy::unreachable, clippy::expect_used)]
   pub fn run(&self) {
     let mut cmd = Main::command();
     if matches!(self.shell, CompletionShell::Nushell) {

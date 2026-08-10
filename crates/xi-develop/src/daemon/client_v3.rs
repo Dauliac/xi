@@ -112,10 +112,10 @@ pub fn command(socket_path: &Path, c: Command) -> Result<CommandOutcome> {
 /// this socket. Anything else (v2 fallback, transport error) is `false`.
 #[must_use]
 pub fn heartbeat_ok(socket_path: &Path) -> bool {
-  match query(socket_path, Query::HeartBeat) {
-    Ok(QueryOutcome::V3(QueryReply::HeartBeat)) => true,
-    _ => false,
-  }
+  matches!(
+    query(socket_path, Query::HeartBeat),
+    Ok(QueryOutcome::V3(QueryReply::HeartBeat))
+  )
 }
 
 /// Open a subscription to the given [`Topics`] and return the raw stream
@@ -160,9 +160,7 @@ pub fn subscribe(
 /// # Errors
 ///
 /// Returns an error on I/O or if the envelope shape is not an `Event`.
-pub fn read_event(
-  stream: &UnixStream,
-) -> Result<super::protocol_v3::Event> {
+pub fn read_event(stream: &UnixStream) -> Result<super::protocol_v3::Event> {
   let mut reader = BufReader::new(stream);
   let raw = read_frame(&mut reader)?;
   let env: Envelope = serde_json::from_slice(&raw).map_err(|e| eyre!(e))?;
@@ -267,7 +265,7 @@ fn status_from_availability(
   use super::protocol_v3::Availability;
   match avail {
     Availability::Ready { value } => serde_json::from_value(value.clone())
-      .or_else(|_| synth_status_from_v3(value))
+      .or_else(|_| synth_status_from_v3(&value))
       .map_err(|e| eyre!("could not decode v3 status: {e}")),
     Availability::Pending { job_id } => {
       bail!("daemon status pending (job {job_id})")
@@ -284,14 +282,14 @@ fn status_from_availability(
 /// `package_count`, `version`) which the older `StatusResponse` almost
 /// mirrors; unfilled fields default to empty.
 fn synth_status_from_v3(
-  value: serde_json::Value,
+  value: &serde_json::Value,
 ) -> std::result::Result<StatusResponse, serde_json::Error> {
   use super::protocol::DaemonState;
   let state: DaemonState = serde_json::from_value(
     value
       .get("state")
       .cloned()
-      .unwrap_or(serde_json::Value::String("Ready".into())),
+      .unwrap_or_else(|| serde_json::Value::String("Ready".into())),
   )?;
   let uptime_secs = value
     .get("uptime_secs")

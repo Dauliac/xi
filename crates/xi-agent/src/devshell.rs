@@ -1,18 +1,26 @@
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
 use color_eyre::eyre::Result;
 use xi_develop::{compute_flake_id, daemon::client, dirs};
 
 use crate::{
   args::DevshellArgs,
-  schema::{Diagnostic, Envelope, DevshellPayload, DevshellState, elapsed_ms, emit},
+  schema::{
+    DevshellPayload, DevshellState, Diagnostic, Envelope, elapsed_ms, emit,
+  },
 };
 
 pub const CMD: &str = "devshell";
 
-pub fn run(args: DevshellArgs) -> Result<()> {
+/// Emit the devshell envelope on stdout.
+///
+/// # Errors
+///
+/// Returns an error only when writing the JSON envelope to stdout fails.
+pub fn run(args: &DevshellArgs) -> Result<()> {
   let start = Instant::now();
-  let payload = collect(&args);
+  let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+  let payload = collect_at(args, &cwd);
   let env = Envelope::ok(CMD, payload, elapsed_ms(start));
   emit(&env)?;
   Ok(())
@@ -20,19 +28,27 @@ pub fn run(args: DevshellArgs) -> Result<()> {
 
 /// Query the daemon (fast path). Emits `NotRunning` if the socket does
 /// not exist, `Degraded` on any transport error. Never blocks.
+#[must_use]
 pub fn collect(args: &DevshellArgs) -> DevshellPayload {
   let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-  let flake_id = compute_flake_id(&cwd);
+  collect_at(args, &cwd)
+}
+
+/// Same as `collect` but with an explicit workspace root, for tests
+/// that need to point at a fixture that has no live daemon socket.
+#[must_use]
+pub fn collect_at(args: &DevshellArgs, cwd: &Path) -> DevshellPayload {
+  let flake_id = compute_flake_id(cwd);
   let socket = dirs::daemon_socket_path(&flake_id);
 
   if !client::is_alive(&socket) {
     return DevshellPayload {
-      state:               DevshellState::NotRunning,
-      target:              None,
-      package_count:       0,
-      daemon_state:        None,
+      state: DevshellState::NotRunning,
+      target: None,
+      package_count: 0,
+      daemon_state: None,
       active_cache_pushes: Vec::new(),
-      entered_command:     "xi develop".to_owned(),
+      entered_command: "xi develop".to_owned(),
     };
   }
 
@@ -40,7 +56,9 @@ pub fn collect(args: &DevshellArgs) -> DevshellPayload {
   match client::status(&socket) {
     Ok(status) => {
       let state = match status.state {
-        xi_develop::daemon::protocol::DaemonState::Ready => DevshellState::Ready,
+        xi_develop::daemon::protocol::DaemonState::Ready => {
+          DevshellState::Ready
+        },
         xi_develop::daemon::protocol::DaemonState::Evaluating
         | xi_develop::daemon::protocol::DaemonState::Starting => {
           DevshellState::Evaluating
@@ -57,12 +75,12 @@ pub fn collect(args: &DevshellArgs) -> DevshellPayload {
       }
     },
     Err(_) => DevshellPayload {
-      state:               DevshellState::Degraded,
-      target:              None,
-      package_count:       0,
-      daemon_state:        None,
+      state: DevshellState::Degraded,
+      target: None,
+      package_count: 0,
+      daemon_state: None,
       active_cache_pushes: Vec::new(),
-      entered_command:     "xi develop".to_owned(),
+      entered_command: "xi develop".to_owned(),
     },
   }
 }

@@ -55,37 +55,37 @@ impl DaemonStateKind {
   /// via [`assert_parity`] (a variant added here but forgotten from
   /// [`CATALOG`] panics at startup; a variant added to [`DaemonState`] but
   /// forgotten here fails to compile in [`kind_of`]).
-  pub const ALL: &'static [DaemonStateKind] = &[
-    DaemonStateKind::Starting,
-    DaemonStateKind::Evaluating,
-    DaemonStateKind::Ready,
-    DaemonStateKind::BuildFailed,
-    DaemonStateKind::WatcherDegraded,
-    DaemonStateKind::ConfigError,
-    DaemonStateKind::ShuttingDown,
-    DaemonStateKind::Pending,
-    DaemonStateKind::Missing,
-    DaemonStateKind::Degraded,
-    DaemonStateKind::Stuck,
-    DaemonStateKind::SelfHealing,
+  pub const ALL: &'static [Self] = &[
+    Self::Starting,
+    Self::Evaluating,
+    Self::Ready,
+    Self::BuildFailed,
+    Self::WatcherDegraded,
+    Self::ConfigError,
+    Self::ShuttingDown,
+    Self::Pending,
+    Self::Missing,
+    Self::Degraded,
+    Self::Stuck,
+    Self::SelfHealing,
   ];
 
   /// Stable string name used on the wire in `Query::StateCatalog`.
   #[must_use]
   pub const fn as_str(self) -> &'static str {
     match self {
-      DaemonStateKind::Starting => "Starting",
-      DaemonStateKind::Evaluating => "Evaluating",
-      DaemonStateKind::Ready => "Ready",
-      DaemonStateKind::BuildFailed => "BuildFailed",
-      DaemonStateKind::WatcherDegraded => "WatcherDegraded",
-      DaemonStateKind::ConfigError => "ConfigError",
-      DaemonStateKind::ShuttingDown => "ShuttingDown",
-      DaemonStateKind::Pending => "Pending",
-      DaemonStateKind::Missing => "Missing",
-      DaemonStateKind::Degraded => "Degraded",
-      DaemonStateKind::Stuck => "Stuck",
-      DaemonStateKind::SelfHealing => "SelfHealing",
+      Self::Starting => "Starting",
+      Self::Evaluating => "Evaluating",
+      Self::Ready => "Ready",
+      Self::BuildFailed => "BuildFailed",
+      Self::WatcherDegraded => "WatcherDegraded",
+      Self::ConfigError => "ConfigError",
+      Self::ShuttingDown => "ShuttingDown",
+      Self::Pending => "Pending",
+      Self::Missing => "Missing",
+      Self::Degraded => "Degraded",
+      Self::Stuck => "Stuck",
+      Self::SelfHealing => "SelfHealing",
     }
   }
 }
@@ -294,7 +294,9 @@ pub static CATALOG: &[(DaemonStateKind, StateMeta)] = &[
 /// [`assert_parity`] rules this out at startup.
 #[must_use]
 pub fn meta_for(kind: DaemonStateKind) -> Option<&'static StateMeta> {
-  CATALOG.iter().find_map(|(k, meta)| (*k == kind).then_some(meta))
+  CATALOG
+    .iter()
+    .find_map(|(k, meta)| (*k == kind).then_some(meta))
 }
 
 /// Convenience: look up metadata directly for a `DaemonState`.
@@ -317,9 +319,8 @@ pub fn assert_parity() {
   for kind in DaemonStateKind::ALL {
     assert!(
       CATALOG.iter().any(|(k, _)| k == kind),
-      "state_meta parity failure: DaemonStateKind::{:?} is missing from CATALOG. \
+      "state_meta parity failure: DaemonStateKind::{kind:?} is missing from CATALOG. \
        Add an entry in state_meta.rs.",
-      kind,
     );
   }
 
@@ -338,9 +339,8 @@ pub fn assert_parity() {
     let occurrences = CATALOG.iter().filter(|(k, _)| k == kind).count();
     assert_eq!(
       occurrences, 1,
-      "state_meta parity failure: DaemonStateKind::{:?} appears {} times in \
+      "state_meta parity failure: DaemonStateKind::{kind:?} appears {occurrences} times in \
        CATALOG (expected exactly 1).",
-      kind, occurrences,
     );
   }
 }
@@ -359,11 +359,7 @@ mod tests {
   #[test]
   fn every_kind_has_meta() {
     for kind in DaemonStateKind::ALL {
-      assert!(
-        meta_for(*kind).is_some(),
-        "no meta for {:?}",
-        kind,
-      );
+      assert!(meta_for(*kind).is_some(), "no meta for {:?}", kind,);
     }
   }
 
@@ -385,7 +381,10 @@ mod tests {
         },
         DaemonStateKind::BuildFailed,
       ),
-      (DaemonState::WatcherDegraded, DaemonStateKind::WatcherDegraded),
+      (
+        DaemonState::WatcherDegraded,
+        DaemonStateKind::WatcherDegraded,
+      ),
       (
         DaemonState::ConfigError {
           error: String::new(),

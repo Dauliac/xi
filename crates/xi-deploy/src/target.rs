@@ -162,7 +162,7 @@ impl DeployRsConfig {
               path: profile.path.clone(),
               user: profile.user.clone(),
               kind,
-              profile_path: profile.profile_path.clone(),
+              profile_path: profile.profile_path,
             }
           })
           .collect();
@@ -185,10 +185,10 @@ impl DeployRsConfig {
 /// Infer the activation kind from a profile name.
 fn infer_profile_kind(name: &str) -> ProfileKind {
   match name {
-    "system" => ProfileKind::NixOS,
     "home" | "home-manager" => ProfileKind::HomeManager,
     "darwin" => ProfileKind::Darwin,
-    _ => ProfileKind::NixOS, // deploy-rs default
+    // "system" and unknown names default to NixOS (deploy-rs default).
+    _ => ProfileKind::NixOS,
   }
 }
 

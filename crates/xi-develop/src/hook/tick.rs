@@ -14,7 +14,7 @@
 //!    query for the next tick and return [`TickOutcome::Deferred`] (or
 //!    [`TickOutcome::Offline`] if the cache is still valid).
 //!
-//! [`prompt.rs`] plugs a real socket-backed caller in; the BDD tests
+//! `prompt.rs` plugs a real socket-backed caller in; the BDD tests
 //! plug a mock in and drive every branch deterministically. Wiring
 //! `prompt.rs` to route through this module is a separate task — the
 //! interactive migration is intentionally decoupled from the
@@ -73,12 +73,12 @@ pub enum TickOutcome {
 /// Context passed into [`run_tick`] — the caller assembles this once per
 /// prompt and re-uses the [`Queue`] handle across ticks.
 pub struct TickCtx<'a> {
-  pub cwd:            &'a Path,
+  pub cwd: &'a Path,
   pub last_lock_hash: Option<&'a str>,
-  pub last_reply_at:  Option<std::time::SystemTime>,
-  pub offline_valid:  bool,
-  pub queue:          &'a Queue,
-  pub budget:         Budget,
+  pub last_reply_at: Option<std::time::SystemTime>,
+  pub offline_valid: bool,
+  pub queue: &'a Queue,
+  pub budget: Budget,
 }
 
 /// Run one tick.
@@ -104,20 +104,15 @@ pub fn run_tick<C: DaemonCaller>(
     return Ok(fallback_outcome(ctx));
   }
 
-  match caller.call(query.clone(), ctx.budget.remaining()) {
-    Ok(Some(reply)) => Ok(TickOutcome::Live(reply)),
-    Ok(None) => {
-      defer(ctx.queue, query)?;
-      Ok(fallback_outcome(ctx))
-    },
-    Err(_) => {
-      defer(ctx.queue, query)?;
-      Ok(fallback_outcome(ctx))
-    },
+  if let Ok(Some(reply)) = caller.call(query.clone(), ctx.budget.remaining()) {
+    Ok(TickOutcome::Live(reply))
+  } else {
+    defer(ctx.queue, query)?;
+    Ok(fallback_outcome(ctx))
   }
 }
 
-fn fallback_outcome(ctx: &TickCtx<'_>) -> TickOutcome {
+const fn fallback_outcome(ctx: &TickCtx<'_>) -> TickOutcome {
   if ctx.offline_valid {
     TickOutcome::Offline
   } else {
@@ -197,7 +192,11 @@ mod tests {
     let out = run_tick(&ctx, Query::HeartBeat, &caller).expect("tick");
     assert!(matches!(out, TickOutcome::Live(QueryReply::HeartBeat)));
     assert_eq!(calls.get(), 1);
-    assert_eq!(q.load().expect("load").len(), 0, "warm path enqueues nothing");
+    assert_eq!(
+      q.load().expect("load").len(),
+      0,
+      "warm path enqueues nothing"
+    );
   }
 
   #[test]
@@ -206,27 +205,23 @@ mod tests {
     let caller = MockCaller(|_r| {
       panic!("caller must not run when budget is already exceeded")
     });
-    let ctx = make_ctx(
-      Path::new("/tmp"),
-      &q,
-      Budget::start(Duration::ZERO),
-      false,
-    );
+    let ctx =
+      make_ctx(Path::new("/tmp"), &q, Budget::start(Duration::ZERO), false);
     let out = run_tick(&ctx, Query::HeartBeat, &caller).expect("tick");
     assert!(matches!(out, TickOutcome::Silent));
-    assert_eq!(q.load().expect("load").len(), 1, "budget-exhausted enqueues");
+    assert_eq!(
+      q.load().expect("load").len(),
+      1,
+      "budget-exhausted enqueues"
+    );
   }
 
   #[test]
   fn exhausted_budget_defers_and_reports_offline_when_cache_valid() {
     let (q, _td) = make_queue();
     let caller = MockCaller(|_r| unreachable!());
-    let ctx = make_ctx(
-      Path::new("/tmp"),
-      &q,
-      Budget::start(Duration::ZERO),
-      true,
-    );
+    let ctx =
+      make_ctx(Path::new("/tmp"), &q, Budget::start(Duration::ZERO), true);
     let out = run_tick(&ctx, Query::HeartBeat, &caller).expect("tick");
     assert!(matches!(out, TickOutcome::Offline));
     assert_eq!(q.load().expect("load").len(), 1);
@@ -235,9 +230,8 @@ mod tests {
   #[test]
   fn daemon_error_defers_and_falls_back_to_offline() {
     let (q, _td) = make_queue();
-    let caller = MockCaller(|_r| {
-      Err(color_eyre::eyre::eyre!("connection refused"))
-    });
+    let caller =
+      MockCaller(|_r| Err(color_eyre::eyre::eyre!("connection refused")));
     let ctx = make_ctx(
       Path::new("/tmp"),
       &q,

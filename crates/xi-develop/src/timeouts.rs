@@ -64,15 +64,15 @@ pub struct Timeouts {
 impl Default for Timeouts {
   fn default() -> Self {
     Self {
-      state_query:           Duration::from_millis(20),
-      prompt_budget:         Duration::from_millis(100),
-      stuck_threshold:       Duration::from_secs(30),
-      offline_cache_ttl:     Duration::from_secs(24 * 60 * 60),
-      subscriber_ring_size:  1000,
-      keepalive:             Duration::from_secs(30),
-      broadcast_batching:    Duration::from_millis(100),
-      idle_shutdown:         Duration::from_secs(30 * 60),
-      reconnect_backoff_cap: Duration::from_secs(60),
+      state_query: Duration::from_millis(20),
+      prompt_budget: Duration::from_millis(100),
+      stuck_threshold: Duration::from_secs(30),
+      offline_cache_ttl: Duration::from_hours(24),
+      subscriber_ring_size: 1000,
+      keepalive: Duration::from_secs(30),
+      broadcast_batching: Duration::from_millis(100),
+      idle_shutdown: Duration::from_mins(30),
+      reconnect_backoff_cap: Duration::from_mins(1),
     }
   }
 }
@@ -88,17 +88,18 @@ impl Timeouts {
   pub fn load(flake_dir: Option<&Path>) -> Self {
     let dir = flake_dir.unwrap_or_else(|| Path::new("."));
     let config_path = dir.join(".xi.toml");
-    let project_doc = std::fs::read_to_string(&config_path)
-      .ok()
-      .and_then(|raw| match raw.parse::<toml_edit::DocumentMut>() {
-        Ok(d) => Some(d),
-        Err(e) => {
-          warn!("Failed to parse {}: {e}", config_path.display());
-          None
-        },
+    let project_doc =
+      std::fs::read_to_string(&config_path).ok().and_then(|raw| {
+        match raw.parse::<toml_edit::DocumentMut>() {
+          Ok(d) => Some(d),
+          Err(e) => {
+            warn!("Failed to parse {}: {e}", config_path.display());
+            None
+          },
+        }
       });
 
-    Self::resolve(project_doc.as_ref(), EnvSource::process())
+    Self::resolve(project_doc.as_ref(), &EnvSource::process())
   }
 
   /// Layered loader.
@@ -110,7 +111,7 @@ impl Timeouts {
   #[must_use]
   pub fn resolve(
     project_doc: Option<&toml_edit::DocumentMut>,
-    env: EnvSource<'_>,
+    env: &EnvSource<'_>,
   ) -> Self {
     let mut out = Self::default();
 
@@ -118,16 +119,19 @@ impl Timeouts {
       apply_toml(&mut out, doc);
     }
 
-    apply_env(&mut out, &env);
+    apply_env(&mut out, env);
 
     out
   }
 }
 
+/// Env lookup closure — `key → optional value`.
+type EnvLookup<'a> = Box<dyn Fn(&str) -> Option<String> + 'a>;
+
 /// Abstract environment lookup so tests can inject fixtures without
 /// touching the real process env.
 pub struct EnvSource<'a> {
-  lookup: Box<dyn Fn(&str) -> Option<String> + 'a>,
+  lookup: EnvLookup<'a>,
 }
 
 impl<'a> EnvSource<'a> {
@@ -253,7 +257,9 @@ fn parse_env_u64(env: &EnvSource<'_>, key: &str) -> Option<u64> {
   match raw.trim().parse::<u64>() {
     Ok(n) => Some(n),
     Err(e) => {
-      warn!("Ignoring invalid env var {key}={raw:?}: {e}; using previous layer");
+      warn!(
+        "Ignoring invalid env var {key}={raw:?}: {e}; using previous layer"
+      );
       None
     },
   }
@@ -273,17 +279,17 @@ mod tests {
     assert_eq!(t.state_query, Duration::from_millis(20));
     assert_eq!(t.prompt_budget, Duration::from_millis(100));
     assert_eq!(t.stuck_threshold, Duration::from_secs(30));
-    assert_eq!(t.offline_cache_ttl, Duration::from_secs(24 * 60 * 60));
+    assert_eq!(t.offline_cache_ttl, Duration::from_hours(24));
     assert_eq!(t.subscriber_ring_size, 1000);
     assert_eq!(t.keepalive, Duration::from_secs(30));
     assert_eq!(t.broadcast_batching, Duration::from_millis(100));
-    assert_eq!(t.idle_shutdown, Duration::from_secs(30 * 60));
-    assert_eq!(t.reconnect_backoff_cap, Duration::from_secs(60));
+    assert_eq!(t.idle_shutdown, Duration::from_mins(30));
+    assert_eq!(t.reconnect_backoff_cap, Duration::from_mins(1));
   }
 
   #[test]
   fn empty_env_and_no_project_yields_defaults() {
-    let t = Timeouts::resolve(None, EnvSource::empty());
+    let t = Timeouts::resolve(None, &EnvSource::empty());
     assert_eq!(t, Timeouts::default());
   }
 
@@ -304,7 +310,7 @@ reconnect_backoff_cap_ms = 120000
 "#,
     );
 
-    let t = Timeouts::resolve(Some(&doc), EnvSource::empty());
+    let t = Timeouts::resolve(Some(&doc), &EnvSource::empty());
 
     assert_eq!(t.state_query, Duration::from_millis(50));
     assert_eq!(t.prompt_budget, Duration::from_millis(250));
@@ -334,7 +340,7 @@ prompt_budget_ms = 250
     ];
     let env = EnvSource::from_pairs(&pairs);
 
-    let t = Timeouts::resolve(Some(&doc), env);
+    let t = Timeouts::resolve(Some(&doc), &env);
 
     // Env wins over project.
     assert_eq!(t.state_query, Duration::from_millis(5));
@@ -350,7 +356,7 @@ prompt_budget_ms = 250
   #[test]
   fn env_alone_overrides_default() {
     let pairs = [("XI_DEVELOP_PROMPT_BUDGET_MS", "42")];
-    let t = Timeouts::resolve(None, EnvSource::from_pairs(&pairs));
+    let t = Timeouts::resolve(None, &EnvSource::from_pairs(&pairs));
     assert_eq!(t.prompt_budget, Duration::from_millis(42));
     assert_eq!(t.state_query, Timeouts::default().state_query);
   }
@@ -364,7 +370,7 @@ prompt_budget_ms = 250
 "#,
     );
     let pairs = [("XI_DEVELOP_PROMPT_BUDGET_MS", "not-a-number")];
-    let t = Timeouts::resolve(Some(&doc), EnvSource::from_pairs(&pairs));
+    let t = Timeouts::resolve(Some(&doc), &EnvSource::from_pairs(&pairs));
     assert_eq!(t.prompt_budget, Duration::from_millis(250));
   }
 
@@ -376,7 +382,7 @@ prompt_budget_ms = 250
 prompt_budget_ms = -1
 "#,
     );
-    let t = Timeouts::resolve(Some(&doc), EnvSource::empty());
+    let t = Timeouts::resolve(Some(&doc), &EnvSource::empty());
     assert_eq!(t.prompt_budget, Timeouts::default().prompt_budget);
   }
 
@@ -388,7 +394,7 @@ prompt_budget_ms = -1
 backend = "auto"
 "#,
     );
-    let t = Timeouts::resolve(Some(&doc), EnvSource::empty());
+    let t = Timeouts::resolve(Some(&doc), &EnvSource::empty());
     assert_eq!(t, Timeouts::default());
   }
 }

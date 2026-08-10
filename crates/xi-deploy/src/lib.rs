@@ -31,18 +31,18 @@ pub use target::{DeployProfile, DeployTarget, ProfileKind};
 /// # Errors
 ///
 /// Returns an error if no backend can be detected or if deployment fails.
-pub fn detect_and_deploy(args: DeployArgs) -> Result<()> {
+pub fn detect_and_deploy(args: &DeployArgs) -> Result<()> {
   let flake_ref = args.flake_ref.as_deref().unwrap_or(".");
 
   let backend: Box<dyn DeployBackend> = if let Some(ref name) = args.backend {
     resolve_explicit_backend(name, flake_ref)?
   } else {
-    detect_backend(flake_ref)?
+    detect_backend(flake_ref)
   };
 
   info!("Using {} backend", backend.name());
 
-  backend.deploy(flake_ref, &args)
+  backend.deploy(flake_ref, args)
 }
 
 /// Resolve a backend by explicit name.
@@ -64,17 +64,17 @@ fn resolve_explicit_backend(
 }
 
 /// Auto-detect backend by probing flake outputs.
-fn detect_backend(flake_ref: &str) -> Result<Box<dyn DeployBackend>> {
+fn detect_backend(flake_ref: &str) -> Box<dyn DeployBackend> {
   // 1. deploy-rs: check for `deploy` output
   if let Ok(backend) = backend::deploy_rs::DeployRsBackend::new(flake_ref) {
-    return Ok(Box::new(backend));
+    return Box::new(backend);
   }
 
   // 2. colmena: check for `colmenaHive` output
   if let Ok(backend) = backend::colmena::ColmenaBackend::new() {
-    return Ok(Box::new(backend));
+    return Box::new(backend);
   }
 
   // 3. builtin: always available as fallback
-  Ok(Box::new(backend::builtin::BuiltinBackend))
+  Box::new(backend::builtin::BuiltinBackend)
 }

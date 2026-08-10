@@ -34,7 +34,7 @@ pub const ROTATE_AT_BYTES: u64 = 1024 * 1024;
 /// fresh so concurrent shells don't need to coordinate.
 #[derive(Debug)]
 pub struct DiagLog {
-  path:   PathBuf,
+  path: PathBuf,
   rotate: Mutex<()>,
 }
 
@@ -52,7 +52,10 @@ impl DiagLog {
     if let Some(parent) = path.parent() {
       fs::create_dir_all(parent)?;
     }
-    Ok(Self { path, rotate: Mutex::new(()) })
+    Ok(Self {
+      path,
+      rotate: Mutex::new(()),
+    })
   }
 
   /// Path of the current log file.
@@ -72,8 +75,7 @@ impl DiagLog {
   pub fn write(&self, level: &str, event: &str, flake_id: &str, msg: &str) {
     let ts = SystemTime::now()
       .duration_since(UNIX_EPOCH)
-      .map(|d| d.as_millis())
-      .unwrap_or(0);
+      .map_or(0, |d| d.as_millis());
     let line = json!({
       "ts":       ts,
       "level":    level,
@@ -125,11 +127,10 @@ impl DiagLog {
     }
 
     let mut rotated = self.path.clone();
-    let name = self
-      .path
-      .file_name()
-      .map(|n| n.to_string_lossy().into_owned())
-      .unwrap_or_else(|| String::from("hook.log"));
+    let name = self.path.file_name().map_or_else(
+      || String::from("hook.log"),
+      |n| n.to_string_lossy().into_owned(),
+    );
     rotated.set_file_name(format!("{name}.1"));
     // Overwrite any prior .1.
     let _ = fs::remove_file(&rotated);
@@ -150,7 +151,7 @@ mod tests {
   use tempfile::TempDir;
 
   struct StateHomeGuard {
-    _td:   TempDir,
+    _td: TempDir,
     _lock: MutexGuard<'static, ()>,
   }
 
@@ -163,7 +164,10 @@ mod tests {
     unsafe {
       std::env::set_var("XDG_STATE_HOME", td.path());
     }
-    StateHomeGuard { _td: td, _lock: lock }
+    StateHomeGuard {
+      _td: td,
+      _lock: lock,
+    }
   }
 
   #[test]
@@ -183,7 +187,11 @@ mod tests {
     log.write("info", "test", "fid", "hello");
 
     let mut rotated = path.clone();
-    let name = path.file_name().expect("name").to_string_lossy().into_owned();
+    let name = path
+      .file_name()
+      .expect("name")
+      .to_string_lossy()
+      .into_owned();
     rotated.set_file_name(format!("{name}.1"));
 
     assert!(rotated.exists(), "rotated file should exist");

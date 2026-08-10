@@ -26,12 +26,12 @@ pub static SKILLS: include_dir::Dir<'_> =
 /// failure is reported inside the JSON envelope on stdout.
 pub fn run(args: args::AgentArgs) -> Result<()> {
   match args.command {
-    args::AgentCommand::Context(a) => context::run(a),
-    args::AgentCommand::Outputs(a) => outputs::run(a),
-    args::AgentCommand::Devshell(a) => devshell::run(a),
-    args::AgentCommand::Stage(a) => stage::run(a),
-    args::AgentCommand::Manifest(a) => manifest::run(a),
-    args::AgentCommand::Validate(a) => validate::run(a),
-    args::AgentCommand::Install(a) => install::run(a),
+    args::AgentCommand::Context(a) => context::run(&a),
+    args::AgentCommand::Outputs(a) => outputs::run(&a),
+    args::AgentCommand::Devshell(a) => devshell::run(&a),
+    args::AgentCommand::Stage(a) => stage::run(&a),
+    args::AgentCommand::Manifest(a) => manifest::run(&a),
+    args::AgentCommand::Validate(a) => validate::run(&a),
+    args::AgentCommand::Install(a) => install::run(&a),
   }
 }

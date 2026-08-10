@@ -1,4 +1,5 @@
 use std::{
+  path::{Path, PathBuf},
   process::{Command, Stdio},
   time::Instant,
 };
@@ -10,21 +11,29 @@ use xi_core::flake_output::{FlakeOutput, FlakeOutputKind, current_nix_system};
 
 use crate::{
   args::OutputsArgs,
-  schema::{Diagnostic, Envelope, OutputEntry, OutputsPayload, elapsed_ms, emit},
+  schema::{
+    Diagnostic, Envelope, OutputEntry, OutputsPayload, elapsed_ms, emit,
+  },
 };
 
 pub const CMD: &str = "outputs";
 
-pub fn run(args: OutputsArgs) -> Result<()> {
+/// Emit the outputs envelope on stdout.
+///
+/// # Errors
+///
+/// Returns an error only when writing the JSON envelope to stdout fails.
+pub fn run(args: &OutputsArgs) -> Result<()> {
   let start = Instant::now();
   let system = args.system.clone().unwrap_or_else(current_nix_system);
-  match collect(&args, &system) {
+  let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+  match collect(args, &system, &cwd) {
     Ok(payload) => emit(&Envelope::ok(CMD, payload, elapsed_ms(start)))?,
     Err(diag) => {
       let payload = OutputsPayload {
-        system:  system.clone(),
+        system: system.clone(),
         outputs: Vec::new(),
-        hidden:  Vec::new(),
+        hidden: Vec::new(),
       };
       emit(&Envelope::partial(
         CMD,
@@ -37,11 +46,29 @@ pub fn run(args: OutputsArgs) -> Result<()> {
   Ok(())
 }
 
+/// Enumerate the flake's outputs for the given system.
+///
+/// # Errors
+///
+/// Returns a `Diagnostic` when there is no `flake.nix`, when the `nix
+/// flake show` subprocess fails to spawn or exits non-zero, or when its
+/// JSON output cannot be parsed.
 pub fn collect(
   args: &OutputsArgs,
   system: &str,
+  cwd: &Path,
 ) -> Result<OutputsPayload, Diagnostic> {
+  // No flake.nix in cwd — skip the nix subprocess entirely. Consumers see
+  // an empty payload with a `workspace.not-a-flake` diagnostic; FR-013
+  // requires read paths to work offline when Nix evaluation is not needed.
+  if !cwd.join("flake.nix").exists() {
+    return Err(Diagnostic::new(
+      "workspace.not-a-flake",
+      format!("no flake.nix at {}", cwd.display()),
+    ));
+  }
   let mut cmd = Command::new(find_real_nix_binary());
+  cmd.current_dir(cwd);
   cmd.args([
     "--extra-experimental-features",
     "nix-command flakes",
@@ -76,7 +103,7 @@ pub fn collect(
 
   let Some(root_map) = root.as_object() else {
     return Ok(OutputsPayload {
-      system:  system.to_owned(),
+      system: system.to_owned(),
       outputs,
       hidden,
     });
@@ -84,7 +111,8 @@ pub fn collect(
 
   for (top_name, top_val) in root_map {
     let category = FlakeOutput::from_nix_name(top_name);
-    let category_str = category.map_or(top_name.clone(), |o| o.as_str().to_owned());
+    let category_str =
+      category.map_or_else(|| top_name.clone(), |o| o.as_str().to_owned());
 
     if !args.include_hidden
       && xi_core::flake_output::is_hidden_by_default(top_name)
@@ -98,7 +126,8 @@ pub fn collect(
       let Some(per_system) = top_val.as_object() else {
         continue;
       };
-      let Some(entries) = per_system.get(system).and_then(Value::as_object) else {
+      let Some(entries) = per_system.get(system).and_then(Value::as_object)
+      else {
         continue;
       };
       for (attr, val) in entries {
@@ -106,7 +135,13 @@ pub fn collect(
       }
     } else {
       let Some(attrs) = top_val.as_object() else {
-        outputs.push(entry_from(&category_str, top_name, "", "default", top_val));
+        outputs.push(entry_from(
+          &category_str,
+          top_name,
+          "",
+          "default",
+          top_val,
+        ));
         continue;
       };
       for (attr, val) in attrs {
@@ -115,7 +150,11 @@ pub fn collect(
     }
   }
 
-  outputs.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.name.cmp(&b.name)));
+  outputs.sort_by(|a, b| {
+    a.category
+      .cmp(&b.category)
+      .then_with(|| a.name.cmp(&b.name))
+  });
   Ok(OutputsPayload {
     system: system.to_owned(),
     outputs,
@@ -130,19 +169,16 @@ fn entry_from(
   attr: &str,
   val: &Value,
 ) -> OutputEntry {
-  let kind_str = val
-    .get("type")
-    .and_then(Value::as_str)
-    .map_or_else(
-      || {
-        FlakeOutput::from_nix_name(category_nix)
-          .and_then(FlakeOutput::inferred_kind)
-          .unwrap_or(FlakeOutputKind::Unknown)
-          .as_str()
-          .to_owned()
-      },
-      ToOwned::to_owned,
-    );
+  let kind_str = val.get("type").and_then(Value::as_str).map_or_else(
+    || {
+      FlakeOutput::from_nix_name(category_nix)
+        .and_then(FlakeOutput::inferred_kind)
+        .unwrap_or(FlakeOutputKind::Unknown)
+        .as_str()
+        .to_owned()
+    },
+    ToOwned::to_owned,
+  );
   let description = val
     .get("description")
     .and_then(Value::as_str)
@@ -153,9 +189,9 @@ fn entry_from(
     format!(".#{category_nix}.{system}.{attr}")
   };
   OutputEntry {
-    category:    category_display.to_owned(),
-    kind:        kind_str,
-    name:        attr.to_owned(),
+    category: category_display.to_owned(),
+    kind: kind_str,
+    name: attr.to_owned(),
     description,
     installable,
   }

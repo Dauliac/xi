@@ -23,8 +23,8 @@
 //! | ----------------------------- | ---------- | ------------------------------------------- |
 //! | [`StateSnapshot`]             | 1.4        | `state_machine::StateSnapshot`              |
 //! | [`StateHandle`]               | 1.4        | `state_machine::StateHandle`                |
-//! | [`Query`], [`QueryReply`]     | protocol_v3| `daemon::protocol_v3::{query,reply}`        |
-//! | [`Availability`]              | protocol_v3| `daemon::protocol_v3::reply::Availability`  |
+//! | [`Query`], [`QueryReply`]     | `protocol_v3`| `daemon::protocol_v3::{query,reply}`      |
+//! | [`Availability`]              | `protocol_v3`| `daemon::protocol_v3::reply::Availability`|
 //! | [`state_meta::CATALOG`]       | 1.4        | `state_machine::state_meta::CATALOG`        |
 //!
 //! When the integrator lands the real types, the shape (public field names,
@@ -103,7 +103,7 @@ pub mod state_meta {
   /// A single entry in the state catalog.
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   pub struct StateEntry {
-    /// Machine-readable name, matches the [`DaemonState`] variant name.
+    /// Machine-readable name, matches the `DaemonState` variant name.
     pub name: &'static str,
     /// Human-readable one-line description.
     pub description: &'static str,
@@ -132,8 +132,7 @@ pub mod state_meta {
     },
     StateEntry {
       name: "WatcherDegraded",
-      description:
-        "The filesystem watcher lost the tree; falling back to poll.",
+      description: "The filesystem watcher lost the tree; falling back to poll.",
     },
     StateEntry {
       name: "ConfigError",
@@ -171,7 +170,7 @@ pub enum Availability<T> {
 /// Placeholder for `daemon::protocol_v3::query::Query`.
 #[derive(Debug, Clone)]
 pub enum Query {
-  /// Coarse status — same information as legacy [`super::protocol::Status`].
+  /// Coarse status — same information as legacy `super::protocol::Status`.
   Status,
   /// Resolved devshell env, if any (task 2.3 wires the real pointer).
   Devshell,
@@ -183,7 +182,7 @@ pub enum Query {
   StateCatalog,
   /// Fetch snapshot at a given sequence number, or the current one.
   Snapshot(u64),
-  /// Fetch a specific job (task 2.2 owns job_registry).
+  /// Fetch a specific job (task 2.2 owns `job_registry`).
   GetJob(String),
 }
 
@@ -251,7 +250,7 @@ pub struct FlakeOutputsPayload {
   pub outputs_json: String,
 }
 
-/// Payload for [`Query::GetJob`] once task 2.2 (job_registry) lands.
+/// Payload for [`Query::GetJob`] once task 2.2 (`job_registry`) lands.
 #[derive(Debug, Clone)]
 pub struct JobPayload {
   /// Job identifier.
@@ -291,7 +290,7 @@ impl StateResponder {
   /// Construct a responder without spawning a thread. Useful for unit tests
   /// that want to drive [`Self::answer`] directly.
   #[must_use]
-  pub fn new(handle: StateHandle, rx: Receiver<QueryEnvelope>) -> Self {
+  pub const fn new(handle: StateHandle, rx: Receiver<QueryEnvelope>) -> Self {
     Self { handle, rx }
   }
 
@@ -299,6 +298,12 @@ impl StateResponder {
   ///
   /// The thread exits cleanly when every [`Sender`] paired with `rx` is
   /// dropped.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the OS refuses to spawn the responder thread — treated as a
+  /// startup-time invariant (the daemon cannot serve queries without it).
+  #[allow(clippy::expect_used)] // startup invariant — see # Panics above
   pub fn spawn(
     handle: StateHandle,
     rx: Receiver<QueryEnvelope>,
@@ -332,15 +337,15 @@ impl StateResponder {
       Query::Status => {
         let snap = handle.load();
         QueryReply::Status(Availability::Ready(StatusPayload {
-          state:          snap.state.clone(),
-          uptime_secs:    snap.uptime_secs,
+          state: snap.state.clone(),
+          uptime_secs: snap.uptime_secs,
           consumer_count: snap.consumer_count,
-          package_count:  snap.package_count,
+          package_count: snap.package_count,
           current_target: snap.current_target.clone(),
-          version:        snap.version.clone(),
-          seq:            snap.seq,
+          version: snap.version.clone(),
+          seq: snap.seq,
         }))
-      }
+      },
       Query::Devshell => {
         // TODO(task 2.3 env_pointer): once the env pointer is wired into the
         // snapshot, produce Ready { env_file_path, store_path } when the
@@ -349,18 +354,18 @@ impl StateResponder {
         QueryReply::Devshell(Availability::Missing {
           reason: "env pointer not wired (task 2.3)".to_string(),
         })
-      }
+      },
       Query::FlakeOutputs => {
         // TODO(task 2.5 flake_outputs): return the cached outputs blob once
         // the flake_outputs worker publishes it via the snapshot.
         QueryReply::FlakeOutputs(Availability::Missing {
           reason: "flake outputs not wired (task 2.5)".to_string(),
         })
-      }
+      },
       Query::HeartBeat => QueryReply::HeartBeat,
-      Query::StateCatalog => QueryReply::StateCatalog(
-        state_meta::CATALOG.iter().copied().collect(),
-      ),
+      Query::StateCatalog => {
+        QueryReply::StateCatalog(state_meta::CATALOG.to_vec())
+      },
       Query::Snapshot(requested_seq) => {
         let snap = handle.load();
         if snap.seq == requested_seq {
@@ -371,7 +376,7 @@ impl StateResponder {
             current_seq: snap.seq,
           }
         }
-      }
+      },
       Query::GetJob(_id) => {
         // TODO(task 2.2 job_registry): once the job registry is available,
         // consult it (still lock-free — the registry is expected to publish
@@ -379,7 +384,7 @@ impl StateResponder {
         QueryReply::Job(Availability::Missing {
           reason: "job registry not wired (task 2.2)".to_string(),
         })
-      }
+      },
     }
   }
 }
@@ -426,7 +431,7 @@ mod tests {
         assert_eq!(payload.package_count, 17);
         assert_eq!(payload.current_target, ".#default");
         assert_eq!(payload.version, "test");
-      }
+      },
       other => panic!("expected Status(Ready), got {other:?}"),
     }
   }
@@ -449,7 +454,7 @@ mod tests {
           assert_eq!(a.name, b.name);
           assert_eq!(a.description, b.description);
         }
-      }
+      },
       other => panic!("expected StateCatalog, got {other:?}"),
     }
   }
@@ -480,7 +485,7 @@ mod tests {
       } => {
         assert_eq!(requested_seq, 3);
         assert_eq!(current_seq, 10);
-      }
+      },
       other => panic!("expected Gap, got {other:?}"),
     }
   }
@@ -492,7 +497,7 @@ mod tests {
     match reply {
       QueryReply::Devshell(Availability::Missing { reason }) => {
         assert!(reason.contains("2.3"), "reason should cite task 2.3");
-      }
+      },
       other => panic!("expected Devshell(Missing), got {other:?}"),
     }
   }
@@ -504,7 +509,7 @@ mod tests {
     match reply {
       QueryReply::FlakeOutputs(Availability::Missing { reason }) => {
         assert!(reason.contains("2.5"), "reason should cite task 2.5");
-      }
+      },
       other => panic!("expected FlakeOutputs(Missing), got {other:?}"),
     }
   }
@@ -517,7 +522,7 @@ mod tests {
     match reply {
       QueryReply::Job(Availability::Missing { reason }) => {
         assert!(reason.contains("2.2"), "reason should cite task 2.2");
-      }
+      },
       other => panic!("expected Job(Missing), got {other:?}"),
     }
   }
@@ -563,7 +568,7 @@ mod tests {
       QueryReply::Status(Availability::Ready(p)) => {
         assert_eq!(p.state, DaemonState::Starting);
         assert_eq!(p.seq, 1);
-      }
+      },
       other => panic!("expected first Status(Ready), got {other:?}"),
     }
 
@@ -584,7 +589,7 @@ mod tests {
       QueryReply::Status(Availability::Ready(p)) => {
         assert_eq!(p.state, DaemonState::Ready);
         assert_eq!(p.seq, 2);
-      }
+      },
       other => panic!("expected second Status(Ready), got {other:?}"),
     }
 

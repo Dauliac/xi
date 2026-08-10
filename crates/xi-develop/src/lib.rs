@@ -346,6 +346,9 @@ fn status() -> Result<()> {
         // via the state catalog so this call site stays uniform.
         other => {
           use crate::daemon::state_meta;
+          // Startup `assert_parity()` guarantees every DaemonState maps to a
+          // catalog entry; None here would already have panicked at boot.
+          #[allow(clippy::expect_used)]
           let meta =
             state_meta::meta_for_state(other).expect("state_meta parity");
           format!(

@@ -23,6 +23,11 @@ impl DeployRsBackend {
   /// Try to create a deploy-rs backend by evaluating `<flake>#deploy`.
   ///
   /// Returns `Err` if the flake has no `deploy` output.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the flake has no `deploy` output or the
+  /// evaluation of that output fails.
   pub fn new(flake_ref: &str) -> Result<Self> {
     let config = eval_deploy_config(flake_ref)?;
     Ok(Self { config })

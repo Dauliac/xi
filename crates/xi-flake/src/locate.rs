@@ -478,6 +478,7 @@ pub fn build_and_resolve_path(
 ///
 /// This is the main entry point for `xi run --locate` and for the fallback
 /// tiers in `xi run`.
+#[allow(clippy::too_many_arguments)]
 pub fn locate_and_run(
   source: &LocateSource,
   command: &str,

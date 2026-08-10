@@ -23,7 +23,7 @@
 //!
 //! ## SC-014 guarantee
 //!
-//! `abandon_eval` writes a new [`EnvState`] whose `current` is a clone of the
+//! `abandon_eval` writes a new `EnvState` whose `current` is a clone of the
 //! **previous** `current`. Readers holding an `Arc<EnvState>` from before the
 //! `begin_eval` see the old snapshot until they reload; readers who load
 //! after `abandon_eval` see a state whose `current` equals what it was before
@@ -114,7 +114,7 @@ impl EnvPointer {
   ///
   /// Called by the state machine on entry to `Evaluating`. Overwrites any
   /// prior `pending` (a later eval supersedes an earlier one).
-  pub fn begin_eval(&self, pending: EnvSnapshot) {
+  pub fn begin_eval(&self, pending: &EnvSnapshot) {
     // `rcu` (read-copy-update) is a compare-and-swap loop: we clone the
     // observed state, mutate the clone, and swap only if nothing else beat
     // us. This is contention-safe without any locks.
@@ -129,15 +129,17 @@ impl EnvPointer {
   /// Called on successful eval. If no eval was in flight, this is a no-op
   /// (`current` unchanged).
   pub fn commit_eval(&self) {
-    self.state.rcu(|cur| match cur.pending.clone() {
-      Some(new_current) => EnvState {
-        current: Some(new_current),
-        pending: None,
-      },
-      None => EnvState {
-        current: cur.current.clone(),
-        pending: None,
-      },
+    self.state.rcu(|cur| {
+      cur.pending.clone().map_or_else(
+        || EnvState {
+          current: cur.current.clone(),
+          pending: None,
+        },
+        |new_current| EnvState {
+          current: Some(new_current),
+          pending: None,
+        },
+      )
     });
   }
 
@@ -223,7 +225,7 @@ mod tests {
     p.set_current_for_test(good.clone());
 
     let in_flight = snap("in-flight", "/nix/store/in-flight");
-    p.begin_eval(in_flight.clone());
+    p.begin_eval(&in_flight);
 
     assert_eq!(p.current().as_ref(), Some(&good));
     assert_eq!(p.pending().as_ref(), Some(&in_flight));
@@ -237,7 +239,7 @@ mod tests {
     p.set_current_for_test(good.clone());
 
     let in_flight = snap("in-flight", "/nix/store/in-flight");
-    p.begin_eval(in_flight.clone());
+    p.begin_eval(&in_flight);
     p.commit_eval();
 
     assert_eq!(p.current().as_ref(), Some(&in_flight));
@@ -268,11 +270,14 @@ mod tests {
 
     let before = p.current();
     let in_flight = snap("in-flight", "/nix/store/in-flight");
-    p.begin_eval(in_flight);
+    p.begin_eval(&in_flight);
     p.abandon_eval();
     let after = p.current();
 
-    assert_eq!(before, after, "SC-014: current_env must survive BuildFailed");
+    assert_eq!(
+      before, after,
+      "SC-014: current_env must survive BuildFailed"
+    );
     assert_eq!(after.as_ref(), Some(&good));
     assert!(p.pending().is_none());
     assert!(!p.is_evaluating());
@@ -282,7 +287,7 @@ mod tests {
   fn abandon_eval_when_current_is_none_leaves_none() {
     let p = EnvPointer::new();
     let in_flight = snap("in-flight", "/nix/store/in-flight");
-    p.begin_eval(in_flight);
+    p.begin_eval(&in_flight);
     p.abandon_eval();
 
     assert!(p.current().is_none());
@@ -294,13 +299,13 @@ mod tests {
     let p = EnvPointer::new();
     assert!(!p.is_evaluating());
 
-    p.begin_eval(snap("a", "/nix/store/a"));
+    p.begin_eval(&snap("a", "/nix/store/a"));
     assert!(p.is_evaluating());
 
     p.commit_eval();
     assert!(!p.is_evaluating());
 
-    p.begin_eval(snap("b", "/nix/store/b"));
+    p.begin_eval(&snap("b", "/nix/store/b"));
     assert!(p.is_evaluating());
 
     p.abandon_eval();
@@ -313,9 +318,9 @@ mod tests {
     let good = snap("good", "/nix/store/good");
     p.set_current_for_test(good.clone());
 
-    p.begin_eval(snap("first", "/nix/store/first"));
+    p.begin_eval(&snap("first", "/nix/store/first"));
     let second = snap("second", "/nix/store/second");
-    p.begin_eval(second.clone());
+    p.begin_eval(&second);
 
     assert_eq!(p.pending().as_ref(), Some(&second));
     assert_eq!(p.current().as_ref(), Some(&good));
@@ -357,7 +362,7 @@ mod tests {
         &format!("candidate-{cycle}"),
         &format!("/nix/store/candidate-{cycle}"),
       );
-      p.begin_eval(candidate);
+      p.begin_eval(&candidate);
       p.abandon_eval();
       cycle = cycle.wrapping_add(1);
     }
@@ -365,7 +370,10 @@ mod tests {
     let observations = reader.join().expect("reader panicked");
 
     assert!(cycle > 0, "writer should have run at least one cycle");
-    assert!(observations > 0, "reader should have observed at least once");
+    assert!(
+      observations > 0,
+      "reader should have observed at least once"
+    );
     // Final state is still the last-good.
     assert_eq!(p.current().as_ref(), Some(&good));
     assert!(!p.is_evaluating());
@@ -386,9 +394,9 @@ mod tests {
 
     let reader = thread::spawn(move || {
       while !reader_stop.load(Ordering::Relaxed) {
-        let obs = reader_p
-          .current()
-          .expect("current must never be None once a snapshot has been committed");
+        let obs = reader_p.current().expect(
+          "current must never be None once a snapshot has been committed",
+        );
         assert!(
           obs == old_for_reader || obs == new_for_reader,
           "torn read observed: {obs:?}",
@@ -397,7 +405,7 @@ mod tests {
     });
 
     // A single begin_eval + commit_eval flips current old → new.
-    p.begin_eval(new.clone());
+    p.begin_eval(&new);
     p.commit_eval();
     // Give the reader a tick to observe the new state.
     thread::sleep(Duration::from_millis(5));
@@ -407,5 +415,4 @@ mod tests {
     assert_eq!(p.current().as_ref(), Some(&new));
     assert!(p.pending().is_none());
   }
-
 }

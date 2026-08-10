@@ -30,7 +30,7 @@ pub struct BackoffState {
   /// Wall-clock at which the last daemon-facing operation failed.
   pub last_failed_at: SystemTime,
   /// Consecutive failure count; success resets to zero.
-  pub attempt_count:  u32,
+  pub attempt_count: u32,
 }
 
 /// Persisted per-flake hook cache.
@@ -41,14 +41,14 @@ pub struct BackoffState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfflineCache {
   /// Hex `sha256(flake.lock)` at the time the cache was written.
-  pub lock_hash:       String,
+  pub lock_hash: String,
   /// Wall-clock at which the daemon last replied successfully.
-  pub last_seen_at:    SystemTime,
+  pub last_seen_at: SystemTime,
   /// Optional stable hash of the sourced env (used by consumers to detect
   /// re-source needs cheaply).
-  pub env_hash:        Option<String>,
+  pub env_hash: Option<String>,
   /// Number of packages in the last observed devshell (for cheap status).
-  pub package_count:   u32,
+  pub package_count: u32,
   /// Reconnect backoff — `None` when the daemon is healthy.
   pub reconnect_state: Option<BackoffState>,
 }
@@ -114,11 +114,10 @@ impl OfflineCache {
     if self.lock_hash != current_lock_hash {
       return false;
     }
-    match SystemTime::now().duration_since(self.last_seen_at) {
-      Ok(age) => age < ttl,
-      // `last_seen_at` in the future — clock skew, treat as fresh.
-      Err(_) => true,
-    }
+    // `last_seen_at` in the future — clock skew, treat as fresh.
+    SystemTime::now()
+      .duration_since(self.last_seen_at)
+      .map_or(true, |age| age < ttl)
   }
 
   /// Next reconnect delay for this flake's backoff loop.
@@ -135,9 +134,9 @@ impl OfflineCache {
       .reconnect_state
       .map_or(0u32, |s| s.attempt_count.min(62));
     // Compute in nanos (u128) so we don't lose precision or overflow.
-    let base_nanos = u128::from(state_query.as_nanos().min(u128::from(u64::MAX)));
+    let base_nanos = state_query.as_nanos().min(u128::from(u64::MAX));
     let scaled = base_nanos.saturating_mul(1u128 << attempts);
-    let cap_nanos = u128::from(cap.as_nanos().min(u128::from(u64::MAX)));
+    let cap_nanos = cap.as_nanos().min(u128::from(u64::MAX));
     let bounded = scaled.min(cap_nanos);
     // Cap value to u64::MAX nanos before converting back — Duration can
     // represent that without further loss.
@@ -163,7 +162,7 @@ mod tests {
   use tempfile::TempDir;
 
   struct StateHomeGuard {
-    _td:   TempDir,
+    _td: TempDir,
     _lock: MutexGuard<'static, ()>,
   }
 
@@ -176,15 +175,18 @@ mod tests {
     unsafe {
       std::env::set_var("XDG_STATE_HOME", td.path());
     }
-    StateHomeGuard { _td: td, _lock: lock }
+    StateHomeGuard {
+      _td: td,
+      _lock: lock,
+    }
   }
 
   fn sample_cache() -> OfflineCache {
     OfflineCache {
-      lock_hash:       "abc123".to_owned(),
-      last_seen_at:    SystemTime::now(),
-      env_hash:        Some("envhash".to_owned()),
-      package_count:   42,
+      lock_hash: "abc123".to_owned(),
+      last_seen_at: SystemTime::now(),
+      env_hash: Some("envhash".to_owned()),
+      package_count: 42,
       reconnect_state: None,
     }
   }
@@ -223,7 +225,7 @@ mod tests {
     // Attempt 0 -> exactly base.
     c.reconnect_state = Some(BackoffState {
       last_failed_at: SystemTime::now(),
-      attempt_count:  0,
+      attempt_count: 0,
     });
     let d0 = c.next_backoff_delay(base, cap);
     assert_eq!(d0, base);
@@ -233,7 +235,7 @@ mod tests {
     for n in 1..8 {
       c.reconnect_state = Some(BackoffState {
         last_failed_at: SystemTime::now(),
-        attempt_count:  n,
+        attempt_count: n,
       });
       let cur = c.next_backoff_delay(base, cap);
       assert!(cur >= prev, "attempt {n}: {cur:?} !>= {prev:?}");
@@ -243,14 +245,14 @@ mod tests {
     // Deep attempt saturates at cap.
     c.reconnect_state = Some(BackoffState {
       last_failed_at: SystemTime::now(),
-      attempt_count:  40,
+      attempt_count: 40,
     });
     assert_eq!(c.next_backoff_delay(base, cap), cap);
 
     // Extreme attempt still clamps, no overflow.
     c.reconnect_state = Some(BackoffState {
       last_failed_at: SystemTime::now(),
-      attempt_count:  u32::MAX,
+      attempt_count: u32::MAX,
     });
     assert_eq!(c.next_backoff_delay(base, cap), cap);
   }
@@ -264,11 +266,7 @@ mod tests {
     let tmp_files: Vec<_> = fs::read_dir(&dir)
       .expect("readdir")
       .filter_map(std::result::Result::ok)
-      .filter(|e| {
-        e.file_name()
-          .to_string_lossy()
-          .contains(".tmp")
-      })
+      .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
       .collect();
     assert!(tmp_files.is_empty(), "leftover tmp: {tmp_files:?}");
   }

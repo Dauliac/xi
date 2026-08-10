@@ -135,9 +135,9 @@ impl FlakeOutput {
       Self::Packages
       | Self::DevShells
       | Self::Checks
-      | Self::LegacyPackages => Some(FlakeOutputKind::Derivation),
+      | Self::LegacyPackages
+      | Self::Formatter => Some(FlakeOutputKind::Derivation),
       Self::Apps => Some(FlakeOutputKind::App),
-      Self::Formatter => Some(FlakeOutputKind::Derivation),
       Self::Overlays => Some(FlakeOutputKind::Overlay),
       Self::NixosModules | Self::HomeModules | Self::DarwinModules => {
         Some(FlakeOutputKind::Module)
@@ -145,11 +145,12 @@ impl FlakeOutput {
       Self::NixosConfigurations
       | Self::HomeConfigurations
       | Self::DarwinConfigurations
-      | Self::SystemConfigs => Some(FlakeOutputKind::Configuration),
+      | Self::SystemConfigs
+      | Self::Deploy
+      | Self::ColmenaHive
+      | Self::DiskoConfigurations => Some(FlakeOutputKind::Configuration),
       Self::Templates => Some(FlakeOutputKind::Template),
       Self::Lib => Some(FlakeOutputKind::Lib),
-      Self::Deploy | Self::ColmenaHive => Some(FlakeOutputKind::Configuration),
-      Self::DiskoConfigurations => Some(FlakeOutputKind::Configuration),
     }
   }
 

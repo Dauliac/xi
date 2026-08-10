@@ -16,13 +16,18 @@ use crate::{
 
 pub const CMD: &str = "manifest";
 
-pub fn run(_args: ManifestArgs) -> Result<()> {
+/// Emit the manifest envelope on stdout.
+///
+/// # Errors
+///
+/// Returns an error only when writing the JSON envelope to stdout fails.
+pub fn run(_args: &ManifestArgs) -> Result<()> {
   let start = Instant::now();
   match collect() {
     Ok(payload) => emit(&Envelope::ok(CMD, payload, elapsed_ms(start)))?,
     Err(diag) => {
       let payload = ManifestPayload {
-        root:  PathBuf::from("flake.nix"),
+        root: PathBuf::from("flake.nix"),
         files: Vec::new(),
       };
       emit(&Envelope::partial(
@@ -36,6 +41,11 @@ pub fn run(_args: ManifestArgs) -> Result<()> {
   Ok(())
 }
 
+/// Build the manifest payload by BFS over `.nix` files from `flake.nix`.
+///
+/// # Errors
+///
+/// Returns a `Diagnostic` when the current workspace has no `flake.nix`.
 pub fn collect() -> Result<ManifestPayload, Diagnostic> {
   let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
   let root = cwd.join("flake.nix");
@@ -53,7 +63,7 @@ pub fn collect() -> Result<ManifestPayload, Diagnostic> {
   let mut edges: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
 
   queue.push_back(root.clone());
-  seen.insert(root.clone());
+  seen.insert(root);
 
   while let Some(file) = queue.pop_front() {
     let Ok(text) = std::fs::read_to_string(&file) else {
@@ -82,9 +92,7 @@ pub fn collect() -> Result<ManifestPayload, Diagnostic> {
         .map(|list| {
           list
             .iter()
-            .map(|p| {
-              p.strip_prefix(cwd_ref).unwrap_or(p).to_path_buf()
-            })
+            .map(|p| p.strip_prefix(cwd_ref).unwrap_or(p).to_path_buf())
             .collect()
         })
         .unwrap_or_default();
@@ -120,8 +128,8 @@ fn extract_nix_paths(text: &str, base: &Path) -> Vec<PathBuf> {
       let start = i;
       while i < bytes.len() {
         let b = bytes[i];
-        let is_path = b.is_ascii_alphanumeric()
-          || matches!(b, b'.' | b'/' | b'_' | b'-');
+        let is_path =
+          b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'_' | b'-');
         if !is_path {
           break;
         }

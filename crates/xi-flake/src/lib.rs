@@ -463,7 +463,7 @@ impl RunArgs {
   pub fn run(self) -> Result<()> {
     // Explicit override → tier 3 only
     if self.locate {
-      return self.run_locate_via(locate::LocateSource::SystemNixpkgs);
+      return self.run_locate_via(&locate::LocateSource::SystemNixpkgs);
     }
 
     // Explicit flake ref / file / expr / store path → traditional `nix run`
@@ -498,14 +498,14 @@ impl RunArgs {
     {
       debug!("[run] tier 2: flake's nixpkgs input ({flakeref})");
       return self
-        .run_locate_via(locate::LocateSource::FlakeNixpkgs { flakeref });
+        .run_locate_via(&locate::LocateSource::FlakeNixpkgs { flakeref });
     }
 
     // ---------------------------------------------------------------------
     // Tier 3: system nixpkgs
     // ---------------------------------------------------------------------
     debug!("[run] tier 3: system nixpkgs");
-    self.run_locate_via(locate::LocateSource::SystemNixpkgs)
+    self.run_locate_via(&locate::LocateSource::SystemNixpkgs)
   }
 
   /// Delegate to `nix run` with the installable as-given. Used when the
@@ -544,7 +544,7 @@ impl RunArgs {
 
   /// Run via the locate machinery against a specific source (nixpkgs
   /// registry or a locked flake input).
-  fn run_locate_via(self, source: locate::LocateSource) -> Result<()> {
+  fn run_locate_via(self, source: &locate::LocateSource) -> Result<()> {
     let command = match &self.installable {
       xi_core::installable::InstallableArgs::Specified(inst) => match inst {
         xi_core::installable::Installable::Flake {
@@ -577,7 +577,7 @@ impl RunArgs {
     let passthrough_args = self.passthrough.to_nix_args();
 
     locate::locate_and_run(
-      &source,
+      source,
       &command,
       &self.extra_args,
       &passthrough_args,

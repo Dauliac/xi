@@ -45,7 +45,7 @@ const INGRESS_MAX_BYTES: u64 = 256 * 1024;
 /// Entries older than this are dropped during refinement. Matches the
 /// bounded-lifetime clause of the spec (`Client — persistent prompt queue
 /// with refinement`).
-pub const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+pub const STALE_AFTER: Duration = Duration::from_mins(5);
 
 /// Serialised payload of a single queued request.
 ///
@@ -68,11 +68,11 @@ pub enum QueuePayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueEntry {
   /// ULID; unique per enqueue call.
-  pub id:         String,
+  pub id: String,
   /// Wall-clock at which the entry was created.
   pub created_at: SystemTime,
   /// The deferred request.
-  pub payload:    QueuePayload,
+  pub payload: QueuePayload,
 }
 
 impl QueueEntry {
@@ -123,7 +123,7 @@ impl Queue {
   /// Uses `O_APPEND` + one `write_all` of `serialized || '\n'` so parallel
   /// shells interleave at line boundaries.
   ///
-  /// If the queue file has already grown past [`INGRESS_MAX_BYTES`] the
+  /// If the queue file has already grown past `INGRESS_MAX_BYTES` the
   /// append is dropped silently. That guards a hostile edge case where a
   /// stuck client fails every tick without ever running `refine_and_flush`,
   /// letting the JSONL grow unboundedly — the refine-time cap on
@@ -206,8 +206,7 @@ impl Queue {
   pub fn quarantine(&self) -> Result<()> {
     let ts = SystemTime::now()
       .duration_since(UNIX_EPOCH)
-      .map(|d| d.as_millis())
-      .unwrap_or(0);
+      .map_or(0, |d| d.as_millis());
     let mut target = self.path.clone();
     let name = self
       .path
@@ -253,9 +252,9 @@ impl Queue {
     let mut fresh: Vec<QueueEntry> = entries
       .into_iter()
       .filter(|e| {
-        now.duration_since(e.created_at)
-          .map(|age| age < STALE_AFTER)
-          .unwrap_or(true) // clock skew — keep the entry
+        now
+          .duration_since(e.created_at)
+          .map_or(true, |age| age < STALE_AFTER) // clock skew — keep the entry
       })
       .collect();
 
@@ -358,7 +357,8 @@ fn queue_dir() -> PathBuf {
 /// avoids leaking `Query`-specific match ladders here — any future variant
 /// automatically dedups on its wire shape.
 fn query_dedup_key(q: &Query) -> String {
-  serde_json::to_string(q).unwrap_or_else(|_| String::from("__unser__"))
+  serde_json::to_string(q)
+    .unwrap_or_else(|_| String::from("__unserializable__"))
 }
 
 /// Idempotency key of a command.
@@ -366,7 +366,7 @@ fn query_dedup_key(q: &Query) -> String {
 /// The daemon's own dedup is driven by [`IdempotencyKey`]; matching that
 /// here means "the same command that would attach on the daemon" also
 /// collapses in the client queue.
-fn command_key(c: &Command) -> IdempotencyKey {
+const fn command_key(c: &Command) -> IdempotencyKey {
   match c {
     Command::EvalDevshell { key, .. }
     | Command::Restart { key }
@@ -384,7 +384,7 @@ mod tests {
   /// Guard bundling the temp dir with the env-lock guard so both drop at
   /// end of scope.
   struct StateHomeGuard {
-    _td:   TempDir,
+    _td: TempDir,
     _lock: MutexGuard<'static, ()>,
   }
 
@@ -400,7 +400,10 @@ mod tests {
     unsafe {
       std::env::set_var("XDG_STATE_HOME", td.path());
     }
-    StateHomeGuard { _td: td, _lock: lock }
+    StateHomeGuard {
+      _td: td,
+      _lock: lock,
+    }
   }
 
   fn sample_query() -> Query {
@@ -414,14 +417,14 @@ mod tests {
   fn sample_command() -> Command {
     Command::EvalDevshell {
       target: "default".to_owned(),
-      key:    IdempotencyKey::placeholder(),
+      key: IdempotencyKey::placeholder(),
     }
   }
 
   fn sample_command_key(bytes: [u8; 32]) -> Command {
     Command::EvalDevshell {
       target: "default".to_owned(),
-      key:    IdempotencyKey::from_bytes(bytes),
+      key: IdempotencyKey::from_bytes(bytes),
     }
   }
 
@@ -476,19 +479,19 @@ mod tests {
     // Pin timestamps relative to `now` so nothing gets filtered as stale.
     let now = SystemTime::now();
     let old = QueueEntry {
-      id:         "01".to_owned(),
+      id: "01".to_owned(),
       created_at: now - Duration::from_secs(30),
-      payload:    QueuePayload::Query(sample_query()),
+      payload: QueuePayload::Query(sample_query()),
     };
     let new = QueueEntry {
-      id:         "02".to_owned(),
+      id: "02".to_owned(),
       created_at: now - Duration::from_secs(10),
-      payload:    QueuePayload::Query(sample_query()),
+      payload: QueuePayload::Query(sample_query()),
     };
     let other = QueueEntry {
-      id:         "03".to_owned(),
+      id: "03".to_owned(),
       created_at: now - Duration::from_secs(20),
-      payload:    QueuePayload::Query(sample_status_query()),
+      payload: QueuePayload::Query(sample_status_query()),
     };
 
     let refined = Queue::refine(vec![old, new.clone(), other.clone()]);
@@ -503,14 +506,14 @@ mod tests {
     let key_a = [0xAA; 32];
     let now = SystemTime::now();
     let earliest = QueueEntry {
-      id:         "e".to_owned(),
+      id: "e".to_owned(),
       created_at: now - Duration::from_secs(30),
-      payload:    QueuePayload::Command(sample_command_key(key_a)),
+      payload: QueuePayload::Command(sample_command_key(key_a)),
     };
     let later = QueueEntry {
-      id:         "l".to_owned(),
+      id: "l".to_owned(),
       created_at: now - Duration::from_secs(10),
-      payload:    QueuePayload::Command(sample_command_key(key_a)),
+      payload: QueuePayload::Command(sample_command_key(key_a)),
     };
     let refined = Queue::refine(vec![earliest.clone(), later]);
     assert_eq!(refined.len(), 1);
@@ -520,9 +523,9 @@ mod tests {
   #[test]
   fn refine_drops_stale_entries() {
     let ancient = QueueEntry {
-      id:         "ancient".to_owned(),
+      id: "ancient".to_owned(),
       created_at: SystemTime::now() - (STALE_AFTER + Duration::from_secs(10)),
-      payload:    QueuePayload::Query(sample_query()),
+      payload: QueuePayload::Query(sample_query()),
     };
     let fresh = QueueEntry::new(QueuePayload::Query(sample_status_query()));
     let refined = Queue::refine(vec![ancient, fresh.clone()]);
@@ -540,10 +543,12 @@ mod tests {
       key[0] = u8::try_from(i & 0xFF).unwrap_or(0);
       key[1] = u8::try_from((i >> 8) & 0xFF).unwrap_or(0);
       entries.push(QueueEntry {
-        id:         format!("cmd-{i}"),
+        id: format!("cmd-{i}"),
         created_at: SystemTime::now()
-          - Duration::from_secs(u64::try_from(MAX_ENTRIES + 3 - i).unwrap_or(0)),
-        payload:    QueuePayload::Command(sample_command_key(key)),
+          - Duration::from_secs(
+            u64::try_from(MAX_ENTRIES + 3 - i).unwrap_or(0),
+          ),
+        payload: QueuePayload::Command(sample_command_key(key)),
       });
     }
     let refined = Queue::refine(entries);

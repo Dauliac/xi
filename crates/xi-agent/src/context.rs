@@ -1,51 +1,72 @@
-use std::{path::PathBuf, process::Command, time::Instant};
+use std::{
+  path::{Path, PathBuf},
+  process::Command,
+  time::Instant,
+};
 
 use color_eyre::eyre::Result;
 use xi_core::flake_output::current_nix_system;
 
 use crate::{
   args::{ContextArgs, DevshellArgs, OutputsArgs},
-  devshell,
-  outputs,
+  devshell, outputs,
   schema::{
-    AgentContext, DevshellPayload, DevshellState, Envelope, FlakeSummary, GitState,
-    WorkspaceInfo, XiConfigSummary, elapsed_ms, emit,
+    AgentContext, DevshellPayload, DevshellState, Envelope, FlakeSummary,
+    GitState, WorkspaceInfo, XiConfigSummary, elapsed_ms, emit,
   },
   validate,
 };
 
 pub const CMD: &str = "context";
 
-pub fn run(args: ContextArgs) -> Result<()> {
+/// Emit the context envelope on stdout.
+///
+/// # Errors
+///
+/// Returns an error only when writing the JSON envelope to stdout fails.
+pub fn run(args: &ContextArgs) -> Result<()> {
+  let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+  let env = build(&cwd, args);
+  emit(&env)?;
+  Ok(())
+}
+
+/// Build the context envelope for a given workspace root.
+///
+/// Extracted from `run` so contract tests can drive it with a fixture
+/// directory without touching stdout or the process cwd.
+#[must_use]
+pub fn build(cwd: &Path, args: &ContextArgs) -> Envelope<AgentContext> {
   let start = Instant::now();
-  let workspace = collect_workspace(args.system.clone());
-  let cwd = workspace.root.clone();
-  let flake = collect_flake_summary(&cwd);
+  let workspace = collect_workspace(cwd, args.system.clone());
+  let flake = collect_flake_summary(cwd);
   let devshell = if args.no_daemon {
     DevshellPayload {
-      state:               DevshellState::NotRunning,
-      target:              None,
-      package_count:       0,
-      daemon_state:        None,
+      state: DevshellState::NotRunning,
+      target: None,
+      package_count: 0,
+      daemon_state: None,
       active_cache_pushes: Vec::new(),
-      entered_command:     "xi develop".to_owned(),
+      entered_command: "xi develop".to_owned(),
     }
   } else {
     devshell::collect(&DevshellArgs { timeout_ms: 500 })
   };
-  let git = collect_git_state(&cwd);
+  let git = collect_git_state(cwd);
   let validation = validate::plan_only();
-  let xi_config = collect_xi_config(&cwd);
+  let xi_config = collect_xi_config(cwd);
 
   let mut errors = Vec::new();
   // outputs are the most likely to fail (nix eval) — collect but do not
   // fail the whole context if they do.
   let outputs_args = OutputsArgs {
-    all_systems:    false,
-    system:         Some(workspace.current_system.clone()),
+    all_systems: false,
+    system: Some(workspace.current_system.clone()),
     include_hidden: false,
   };
-  if let Err(diag) = outputs::collect(&outputs_args, &workspace.current_system) {
+  if let Err(diag) =
+    outputs::collect(&outputs_args, &workspace.current_system, cwd)
+  {
     errors.push(diag);
   }
 
@@ -58,19 +79,20 @@ pub fn run(args: ContextArgs) -> Result<()> {
     xi_config,
   };
   if errors.is_empty() {
-    emit(&Envelope::ok(CMD, payload, elapsed_ms(start)))?;
+    Envelope::ok(CMD, payload, elapsed_ms(start))
   } else {
-    emit(&Envelope::partial(CMD, payload, elapsed_ms(start), errors))?;
+    Envelope::partial(CMD, payload, elapsed_ms(start), errors)
   }
-  Ok(())
 }
 
-fn collect_workspace(system_override: Option<String>) -> WorkspaceInfo {
-  let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+fn collect_workspace(
+  cwd: &Path,
+  system_override: Option<String>,
+) -> WorkspaceInfo {
   let current_system = system_override.unwrap_or_else(current_nix_system);
   let xi_version = env!("CARGO_PKG_VERSION").to_owned();
   WorkspaceInfo {
-    root,
+    root: cwd.to_path_buf(),
     current_system,
     xi_version,
   }
@@ -86,7 +108,11 @@ fn collect_flake_summary(cwd: &std::path::Path) -> Option<FlakeSummary> {
     .and_then(|s| {
       serde_json::from_str::<serde_json::Value>(&s)
         .ok()
-        .and_then(|v| v.get("root").and_then(|r| r.as_str()).map(ToOwned::to_owned))
+        .and_then(|v| {
+          v.get("root")
+            .and_then(|r| r.as_str())
+            .map(ToOwned::to_owned)
+        })
     });
   Some(FlakeSummary {
     path: flake,
@@ -98,7 +124,8 @@ fn collect_flake_summary(cwd: &std::path::Path) -> Option<FlakeSummary> {
 fn collect_git_state(cwd: &std::path::Path) -> GitState {
   let head = run_git(cwd, &["rev-parse", "HEAD"]);
   let branch = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
-  let status = run_git(cwd, &["status", "--porcelain=v1", "-uall"]).unwrap_or_default();
+  let status =
+    run_git(cwd, &["status", "--porcelain=v1", "-uall"]).unwrap_or_default();
   let mut untracked_count = 0u32;
   let mut dirty = false;
   for line in status.lines() {

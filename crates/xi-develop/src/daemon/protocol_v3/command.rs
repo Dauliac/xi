@@ -104,7 +104,7 @@ pub enum Command {
     /// The devshell attribute path (typically `"default"`).
     target: String,
     /// The client-derived idempotency key (see [`IdempotencyKey`]).
-    key:    IdempotencyKey,
+    key: IdempotencyKey,
   },
   /// Restart the daemon (used to recover from `Stuck`).
   ///
@@ -122,7 +122,7 @@ pub enum Command {
     /// The job id to abort.
     job_id: JobId,
     /// The idempotency key.
-    key:    IdempotencyKey,
+    key: IdempotencyKey,
   },
   /// Invalidate one or more daemon caches.
   ///
@@ -132,7 +132,7 @@ pub enum Command {
     /// A free-form cache scope selector (task 2.x refines this).
     scope: String,
     /// The idempotency key.
-    key:   IdempotencyKey,
+    key: IdempotencyKey,
   },
 }
 
@@ -163,17 +163,17 @@ fn canonical_json_of_params(cmd: &Command) -> String {
   match cmd {
     Command::EvalDevshell { target, .. } => {
       params.insert("target".to_owned(), Value::String(target.clone()));
-    }
-    Command::Restart { .. } => {}
+    },
+    Command::Restart { .. } => {},
     Command::AbortJob { job_id, .. } => {
       // JobId serialises via its own serde impl; roundtrip through Value so
       // we depend on the same representation as the wire.
       let v = serde_json::to_value(job_id).unwrap_or(Value::Null);
       params.insert("job_id".to_owned(), v);
-    }
+    },
     Command::InvalidateCache { scope, .. } => {
       params.insert("scope".to_owned(), Value::String(scope.clone()));
-    }
+    },
   }
   canonicalize(&Value::Object(params))
 }
@@ -205,7 +205,7 @@ fn write_canonical(value: &Value, out: &mut String) {
       let escaped =
         serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""));
       out.push_str(&escaped);
-    }
+    },
     Value::Array(items) => {
       out.push('[');
       for (i, item) in items.iter().enumerate() {
@@ -215,7 +215,7 @@ fn write_canonical(value: &Value, out: &mut String) {
         write_canonical(item, out);
       }
       out.push(']');
-    }
+    },
     Value::Object(map) => {
       // Sort keys lexicographically via BTreeMap.
       let sorted: BTreeMap<&String, &Value> = map.iter().collect();
@@ -231,7 +231,7 @@ fn write_canonical(value: &Value, out: &mut String) {
         write_canonical(v, out);
       }
       out.push('}');
-    }
+    },
   }
 }
 
@@ -250,7 +250,7 @@ pub enum CommandReply {
   /// The command was accepted and a job id is available.
   Accepted {
     /// The existing or newly-allocated job id.
-    job_id:   JobId,
+    job_id: JobId,
     /// True when this request attached to an already-running job by
     /// matching [`IdempotencyKey`]; false when a fresh job was allocated.
     attached: bool,
@@ -282,6 +282,7 @@ mod hex_bytes {
       out[i * 2 + 1] = hex_nibble(lo);
     }
     // SAFETY: `hex_nibble` only emits ASCII bytes 0-9 and a-f.
+    #[allow(clippy::expect_used)] // invariant: hex_nibble emits ASCII only
     let s = std::str::from_utf8(&out).expect("hex is ASCII");
     ser.serialize_str(s)
   }
@@ -314,7 +315,7 @@ mod hex_bytes {
     }
   }
 
-  fn decode_nibble(b: u8) -> Result<u8, &'static str> {
+  const fn decode_nibble(b: u8) -> Result<u8, &'static str> {
     match b {
       b'0'..=b'9' => Ok(b - b'0'),
       b'a'..=b'f' => Ok(b - b'a' + 10),
@@ -333,14 +334,14 @@ mod tests {
   fn eval(target: &str) -> Command {
     Command::EvalDevshell {
       target: target.to_owned(),
-      key:    PLACEHOLDER,
+      key: PLACEHOLDER,
     }
   }
 
   fn invalidate(scope: &str) -> Command {
     Command::InvalidateCache {
       scope: scope.to_owned(),
-      key:   PLACEHOLDER,
+      key: PLACEHOLDER,
     }
   }
 
@@ -403,11 +404,11 @@ mod tests {
     // must produce the same derived key — the derivation ignores `key`.
     let a = Command::EvalDevshell {
       target: "default".to_owned(),
-      key:    IdempotencyKey::placeholder(),
+      key: IdempotencyKey::placeholder(),
     };
     let b = Command::EvalDevshell {
       target: "default".to_owned(),
-      key:    IdempotencyKey::from_bytes([0xAA; 32]),
+      key: IdempotencyKey::from_bytes([0xAA; 32]),
     };
     assert_eq!(
       IdempotencyKey::derive_for(&a, "lockhash"),
@@ -450,8 +451,7 @@ mod tests {
     // deterministic key and must differ from the same command against a
     // non-empty hash.
     let no_lock = IdempotencyKey::derive_for(&eval("default"), "");
-    let with_lock =
-      IdempotencyKey::derive_for(&eval("default"), "somehash");
+    let with_lock = IdempotencyKey::derive_for(&eval("default"), "somehash");
     assert_ne!(no_lock, with_lock);
     // Deterministic:
     assert_eq!(no_lock, IdempotencyKey::derive_for(&eval("default"), ""));

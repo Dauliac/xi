@@ -47,7 +47,7 @@ pub enum AuthCommand {
 
 impl AuthCommand {
   #[must_use]
-  pub fn subcommand_name(&self) -> &'static str {
+  pub const fn subcommand_name(&self) -> &'static str {
     match self {
       Self::Login { .. } => "login",
       Self::Status { .. } => "status",

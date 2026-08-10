@@ -39,7 +39,7 @@
 //! matching the shape used on the wire by `protocol_v3::command`. Task 1.3
 //! fills in the blake3 derivation that produces the key value; task 2.2
 //! (this file) only needs the key to be `Copy + Eq + Hash` and to be able to
-//! stand in for the wire type once protocol_v3 lands in this crate. When the
+//! stand in for the wire type once `protocol_v3` lands in this crate. When the
 //! wire type appears, this module's `IdempotencyKey` should be replaced with
 //! a `pub use protocol_v3::command::IdempotencyKey` re-export — the byte
 //! layout is identical.
@@ -104,7 +104,7 @@ impl IdempotencyKey {
 ///
 /// When the wire type ever migrates to a stronger id (e.g. once the daemon
 /// gains persistence in v2 of the change), the switch is local to
-/// [`JobRegistry::new_job_id`].
+/// `JobRegistry::mint_job_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JobId(pub String);
 
@@ -112,7 +112,7 @@ impl JobId {
   /// Borrow the id as a `&str` for use with wire types that expect
   /// `JobId = String` in `protocol_v3::query`.
   #[must_use]
-  pub fn as_str(&self) -> &str {
+  pub const fn as_str(&self) -> &str {
     self.0.as_str()
   }
 }
@@ -194,10 +194,7 @@ impl JobStatus {
   /// commands with the same idempotency key must start a fresh job.
   #[must_use]
   pub const fn is_terminal(&self) -> bool {
-    matches!(
-      self,
-      Self::Succeeded | Self::Failed { .. } | Self::Aborted
-    )
+    matches!(self, Self::Succeeded | Self::Failed { .. } | Self::Aborted)
   }
 }
 
@@ -235,7 +232,7 @@ pub enum Attached {
   Yes,
   /// A fresh job was registered. The caller must spawn the underlying work.
   No,
-  }
+}
 
 /// Authoritative in-memory table of running jobs.
 ///
@@ -269,16 +266,14 @@ impl JobRegistry {
   /// Construct an empty registry.
   #[must_use]
   pub fn new() -> Self {
-    let epoch_ns = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .map(|d| {
+    let epoch_ns =
+      SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| {
         // Truncate to u64. Overflow would require the clock to be set > 500
         // years past the Unix epoch, which we treat as "call it zero".
         u64::try_from(d.as_nanos()).unwrap_or(0)
-      })
-      .unwrap_or(0);
+      });
     Self {
-      inner:      Mutex::new(Inner::default()),
+      inner: Mutex::new(Inner::default()),
       id_counter: AtomicU64::new(0),
       epoch_ns,
     }
@@ -321,14 +316,15 @@ impl JobRegistry {
     }
     let id = self.mint_job_id();
     let entry = JobEntry {
-      id:            id.clone(),
+      id: id.clone(),
       kind,
-      started_at:    SystemTime::now(),
+      started_at: SystemTime::now(),
       last_progress: None,
-      status:        JobStatus::Running,
+      status: JobStatus::Running,
     };
     inner.attach_index.insert(key, id.clone());
     inner.jobs.insert(id.clone(), entry);
+    drop(inner);
     (id, Attached::No)
   }
 
@@ -392,20 +388,23 @@ impl JobRegistry {
       if entry.status.is_terminal() {
         continue;
       }
-      let silent_for = match entry.last_progress {
-        Some(last) => now.saturating_duration_since(last),
-        // No heartbeat yet — fall back to wall-clock age. `elapsed` returns
-        // an error only if the clock jumped backwards; treat that as "not
-        // stuck yet" rather than a panic.
-        None => entry
-          .started_at
-          .elapsed()
-          .unwrap_or(std::time::Duration::ZERO),
-      };
+      // No heartbeat yet — fall back to wall-clock age. `elapsed` returns
+      // an error only if the clock jumped backwards; treat that as "not
+      // stuck yet" rather than a panic.
+      let silent_for = entry.last_progress.map_or_else(
+        || {
+          entry
+            .started_at
+            .elapsed()
+            .unwrap_or(std::time::Duration::ZERO)
+        },
+        |last| now.saturating_duration_since(last),
+      );
       if silent_for >= threshold {
         stuck.push(entry.id.clone());
       }
     }
+    drop(inner);
     stuck
   }
 
@@ -439,7 +438,9 @@ mod tests {
   }
 
   fn eval_kind(target: &str) -> JobKind {
-    JobKind::EvalDevshell { target: target.to_owned() }
+    JobKind::EvalDevshell {
+      target: target.to_owned(),
+    }
   }
 
   #[test]
@@ -462,7 +463,10 @@ mod tests {
     let (second, second_attached) =
       reg.attach_or_start(key(7), eval_kind("default"));
     assert_eq!(second_attached, Attached::Yes);
-    assert_eq!(first, second, "SC-004: identical concurrent commands share id");
+    assert_eq!(
+      first, second,
+      "SC-004: identical concurrent commands share id"
+    );
   }
 
   #[test]
@@ -476,8 +480,7 @@ mod tests {
     assert_eq!(completed.status, JobStatus::Succeeded);
 
     // A new call with the same key allocates a fresh job.
-    let (second, attached) =
-      reg.attach_or_start(key(2), eval_kind("default"));
+    let (second, attached) = reg.attach_or_start(key(2), eval_kind("default"));
     assert_eq!(attached, Attached::No);
     assert_ne!(first, second, "terminal jobs are not attachable");
   }
@@ -485,7 +488,9 @@ mod tests {
   #[test]
   fn failed_and_aborted_are_also_non_attachable() {
     for status in [
-      JobStatus::Failed { error: "boom".to_owned() },
+      JobStatus::Failed {
+        error: "boom".to_owned(),
+      },
       JobStatus::Aborted,
     ] {
       let reg = JobRegistry::new();
@@ -503,8 +508,7 @@ mod tests {
     let reg = JobRegistry::new();
     let (first, _) = reg.attach_or_start(key(3), eval_kind("default"));
     reg.update_status(&first, JobStatus::Stuck { stuck_ms: 45_000 });
-    let (second, attached) =
-      reg.attach_or_start(key(3), eval_kind("default"));
+    let (second, attached) = reg.attach_or_start(key(3), eval_kind("default"));
     assert_eq!(attached, Attached::Yes);
     assert_eq!(first, second, "Stuck is non-terminal");
   }
@@ -530,7 +534,10 @@ mod tests {
     let (id, _) = reg.attach_or_start(key(5), eval_kind("default"));
     reg.update_status(&id, JobStatus::Succeeded);
     let stuck = reg.stuck_scan(0);
-    assert!(!stuck.contains(&id), "terminal jobs are not stuck candidates");
+    assert!(
+      !stuck.contains(&id),
+      "terminal jobs are not stuck candidates"
+    );
   }
 
   #[test]
