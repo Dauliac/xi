@@ -36,3 +36,15 @@ deno-fmt:
 
 test:
     cargo nextest run
+
+# Regenerate .github/workflows/*.yml from the Nix definitions in
+# nix/github-actions.nix. Run after editing that module; commit the
+# resulting YAML. Each generated file has a "Do not edit directly" banner.
+workflows-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(nix build --no-link --print-out-paths .#legacyPackages.x86_64-linux.github-workflows)
+    for f in "$out"/*.yml; do
+      install -m 0644 "$f" ".github/workflows/$(basename "$f")"
+    done
+    echo "Synced $(ls "$out"/*.yml | wc -l) workflow(s) into .github/workflows/"
