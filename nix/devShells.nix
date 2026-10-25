@@ -34,30 +34,35 @@
         wrapper.enable = true;
       };
 
-      devShells.default = craneLib.devShell {
-        checks = config.checks;
+      devShells.default =
+        let
+          rustfmtNightly = pkgs.rustfmt.override { asNightly = true; };
+        in
+        craneLib.devShell {
+          checks = config.checks;
 
-        packages = [
-          (pkgs.rustfmt.override { asNightly = true; })
-          pkgs.rust-analyzer-unwrapped
-          pkgs.clippy
-          pkgs.taplo
-          pkgs.lldb
-          pkgs.yaml-language-server
-          pkgs.cargo-nextest
-          pkgs.cargo-insta
-          pkgs.just
-          pkgs.deno
-        ];
+          packages = [
+            rustfmtNightly
+            pkgs.rust-analyzer-unwrapped
+            pkgs.clippy
+            pkgs.taplo
+            pkgs.lldb
+            pkgs.yaml-language-server
+            pkgs.cargo-nextest
+            pkgs.cargo-insta
+            pkgs.just
+            pkgs.deno
+          ];
 
-        env = {
-          RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-          # rustfmt.override { asNightly = true; } still gates unstable
-          # options unless the bootstrap flag is set at invocation time.
-          RUSTC_BOOTSTRAP = "1";
+          env = {
+            RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+            # cargo fmt uses `<cargo-sysroot>/bin/rustfmt` by default, which
+            # is the stable rustfmt from pkgs.cargo. Point it at the
+            # asNightly binary so unstable rustfmt options take effect.
+            RUSTFMT = "${rustfmtNightly}/bin/rustfmt";
+          };
+
+          shellHook = config.xi.shellHookScript;
         };
-
-        shellHook = config.xi.shellHookScript;
-      };
     };
 }
