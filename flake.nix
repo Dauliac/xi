@@ -31,11 +31,6 @@
       url = "github:numtide/nix-auth";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    github-actions-nix = {
-      url = "github:synapdeck/github-actions-nix";
-      inputs.flake-parts.follows = "flake-parts";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
