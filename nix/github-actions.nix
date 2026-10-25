@@ -23,6 +23,49 @@
         # Lint docs: PR-scoped Vale gate on prose changes. Mirrors the
         # nix-oci lint-docs workflow one-for-one so docs-only PRs still
         # get a Vale pass.
+        # Fallback flake.lock refresher. Opens a single PR with the full
+        # updated `flake.lock` once a week; NOT auto-merged. Mirrors
+        # nix-oci's update-flake-lock workflow.
+        workflows.update-flake-lock = {
+          name = "Update flake.lock";
+
+          on = {
+            schedule = [ { cron = "0 3 * * 0"; } ];
+            workflowDispatch = { };
+          };
+
+          permissions = {
+            contents = "write";
+            "pull-requests" = "write";
+          };
+
+          jobs.update = {
+            runsOn = "ubuntu-latest";
+            steps = [
+              {
+                name = "Checkout";
+                uses = "actions/checkout@v4";
+              }
+              {
+                name = "Install Nix";
+                uses = "DeterminateSystems/nix-installer-action@main";
+              }
+              {
+                name = "Update flake.lock";
+                uses = "DeterminateSystems/update-flake-lock@main";
+                with_ = {
+                  pr-title = "chore(deps): update flake.lock";
+                  pr-labels = "dependencies,nix-flake";
+                  pr-body = ''
+                    Automated `nix flake update` sweep. Merge only after
+                    reviewing per-input changes.
+                  '';
+                };
+              }
+            ];
+          };
+        };
+
         # Deploy docs: build the mdBook site via Nix and upload to Pages.
         # Vale is a hard gate so red prose never ships.
         workflows.deploy-docs = {
