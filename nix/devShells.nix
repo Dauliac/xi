@@ -52,6 +52,9 @@
 
         env = {
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+          # rustfmt.override { asNightly = true; } still gates unstable
+          # options unless the bootstrap flag is set at invocation time.
+          RUSTC_BOOTSTRAP = "1";
         };
 
         shellHook = config.xi.shellHookScript;
