@@ -129,8 +129,7 @@ fn readers_observe_monotonic_snapshots_under_concurrent_writes() {
       thread::spawn(move || {
         b.wait();
         let mut last_seq = 0u64;
-        let mut observed = 0usize;
-        while observed < write_count {
+        while last_seq < write_count as u64 {
           let snap = h.load();
           assert!(
             snap.seq >= last_seq,
@@ -139,11 +138,6 @@ fn readers_observe_monotonic_snapshots_under_concurrent_writes() {
             last_seq
           );
           last_seq = snap.seq;
-          if last_seq >= write_count as u64 {
-            observed = write_count;
-          } else {
-            observed = observed.saturating_add(1);
-          }
         }
         last_seq
       })
