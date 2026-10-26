@@ -3,14 +3,14 @@ provider = "claude"
 
 [providers]
 [providers.claude]
-base = "builtin:claude"
+base           = "builtin:claude"
 ready_delay_ms = 0
 
 [defaults]
 [defaults.rig]
 [defaults.rig.imports]
 [defaults.rig.imports.gc]
-source = "https://github.com/gastownhall/gascity-packs/tree/main/gascity/roles"
+source  = "https://github.com/gastownhall/gascity-packs/tree/main/gascity/roles"
 version = "sha:3b3b89f2011e06d84459aa7bea1552382f13930a"
 
 # [mail]
