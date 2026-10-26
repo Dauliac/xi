@@ -770,11 +770,11 @@ fn test_resolve_or_default_env_takes_priority_over_cwd() {
       reference,
       attribute,
     } => {
-      // Env var should win over CWD
-      assert_eq!(
-        reference,
-        &env_dir.path().canonicalize().unwrap().to_string_lossy()
-      );
+      // Env var should win over CWD. Production uses the XI_OS_FLAKE value
+      // verbatim (no canonicalize), so match on the raw tempdir path. On
+      // macOS /tmp is a symlink to /private/tmp, so canonicalize() would
+      // diverge from what production returns.
+      assert_eq!(reference, &env_dir.path().to_string_lossy());
       assert_eq!(attribute, &vec!["myhost"]);
     },
     _ => panic!("Expected Flake, got {resolved:?}"),
