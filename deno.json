@@ -1,0 +1,15 @@
+{
+  "fmt": {
+    "exclude": [
+      ".github/workflows/lint-docs.yml",
+      ".github/workflows/update-flake-lock.yml",
+      ".github/workflows/deploy-docs.yml",
+      "flake.lock",
+      "docs/flake.lock",
+      "Cargo.lock",
+      "target/",
+      "result*/",
+      ".direnv/"
+    ]
+  }
+}
