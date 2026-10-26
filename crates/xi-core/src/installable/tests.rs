@@ -68,7 +68,7 @@ fn test_resolve_non_unspecified_returns_unchanged() {
   assert_eq!(flake.to_args(), resolved.to_args());
 
   let file = Installable::File {
-    path: PathBuf::from("/path/to/file.nix"),
+    path:      PathBuf::from("/path/to/file.nix"),
     attribute: vec![String::from("config")],
   };
   let resolved = specified(file.clone())
@@ -88,7 +88,7 @@ fn test_resolve_non_unspecified_returns_unchanged() {
 
   let expr = Installable::Expression {
     expression: String::from("{ pkgs }: pkgs.hello"),
-    attribute: vec![],
+    attribute:  vec![],
   };
   let resolved = specified(expr.clone())
     .resolve(CommandContext::Os)
@@ -152,10 +152,10 @@ fn test_resolve_or_default_accepts_existing_local_flake_path() {
     .resolve_or_default(CommandContext::Os)
     .unwrap();
 
-  assert_eq!(
-    resolved.to_args(),
-    vec![format!("{}#", flake_dir.path().display())]
-  );
+  assert_eq!(resolved.to_args(), vec![format!(
+    "{}#",
+    flake_dir.path().display()
+  )]);
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn test_uses_flakes_checks_cli_and_env_inputs() {
   assert!(!InstallableArgs::Unspecified.uses_flakes(CommandContext::Os));
 
   let file = specified(Installable::File {
-    path: PathBuf::from("/path/to/file.nix"),
+    path:      PathBuf::from("/path/to/file.nix"),
     attribute: vec![],
   });
   assert!(!file.uses_flakes(CommandContext::Os));
@@ -406,7 +406,7 @@ fn test_uses_flakes_respects_resolution_precedence() {
   env_guard.set("XI_FLAKE", "github:user/repo");
 
   let file = specified(Installable::File {
-    path: PathBuf::from("/path/to/file.nix"),
+    path:      PathBuf::from("/path/to/file.nix"),
     attribute: vec![],
   });
   assert!(!file.uses_flakes(CommandContext::Os));

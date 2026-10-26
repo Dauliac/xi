@@ -13,7 +13,7 @@ const DEFAULT_CAPACITY: usize = 256;
 /// Notification queue with per-consumer cursors (cimera pattern).
 pub struct NotificationQueue {
   messages: Vec<Notification>,
-  cursors: HashMap<u32, usize>,
+  cursors:  HashMap<u32, usize>,
   capacity: usize,
 }
 
@@ -22,7 +22,7 @@ impl NotificationQueue {
   pub fn new() -> Self {
     Self {
       messages: Vec::new(),
-      cursors: HashMap::new(),
+      cursors:  HashMap::new(),
       capacity: DEFAULT_CAPACITY,
     }
   }
@@ -162,7 +162,7 @@ mod tests {
   fn capacity_overflow_drains_half() {
     let mut q = NotificationQueue {
       messages: Vec::new(),
-      cursors: HashMap::new(),
+      cursors:  HashMap::new(),
       capacity: 4,
     };
 

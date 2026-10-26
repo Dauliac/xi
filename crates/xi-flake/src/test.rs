@@ -1,22 +1,27 @@
-use std::path::Path;
-use std::time::{Duration, Instant, SystemTime};
+use std::{
+  path::Path,
+  time::{Duration, Instant, SystemTime},
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use tracing::{debug, info};
 use yansi::{Color, Paint};
 
-use crate::args::{TestArgs, TestBackend, TestFormat};
-use crate::project_config::{self, CustomTestBackend, ProjectTestConfig};
-use crate::{current_nix_system, ensure_flake_locked, resolve_local_flake_dir};
+use crate::{
+  args::{TestArgs, TestBackend, TestFormat},
+  current_nix_system,
+  ensure_flake_locked,
+  project_config::{self, CustomTestBackend, ProjectTestConfig},
+  resolve_local_flake_dir,
+};
 
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
 
 pub struct TestResult {
-  pub name: String,
+  pub name:   String,
   pub status: TestStatus,
 }
 
@@ -24,15 +29,15 @@ pub enum TestStatus {
   Pass,
   Fail {
     expected: Option<String>,
-    got: Option<String>,
+    got:      Option<String>,
   },
   Error(String),
 }
 
 struct BackendResults {
   backend_name: String,
-  results: Vec<TestResult>,
-  duration: Duration,
+  results:      Vec<TestResult>,
+  duration:     Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -268,13 +273,13 @@ fn run_eval_tests(
     let stderr = String::from_utf8_lossy(&output.stderr);
     return Ok(BackendResults {
       backend_name: "runTests".to_string(),
-      results: vec![TestResult {
-        name: attr.to_string(),
+      results:      vec![TestResult {
+        name:   attr.to_string(),
         status: TestStatus::Error(
           stderr.lines().last().unwrap_or("eval failed").to_string(),
         ),
       }],
-      duration: start.elapsed(),
+      duration:     start.elapsed(),
     });
   }
 
@@ -300,27 +305,31 @@ fn run_eval_tests(
 
       let test_status = match status {
         "pass" => TestStatus::Pass,
-        "fail" => TestStatus::Fail {
-          expected: value
-            .get("expected")
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-          got: value
-            .get("got")
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
+        "fail" => {
+          TestStatus::Fail {
+            expected: value
+              .get("expected")
+              .and_then(serde_json::Value::as_str)
+              .map(String::from),
+            got:      value
+              .get("got")
+              .and_then(serde_json::Value::as_str)
+              .map(String::from),
+          }
         },
-        _ => TestStatus::Error(
-          value
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown error")
-            .to_string(),
-        ),
+        _ => {
+          TestStatus::Error(
+            value
+              .get("message")
+              .and_then(serde_json::Value::as_str)
+              .unwrap_or("unknown error")
+              .to_string(),
+          )
+        },
       };
 
       results.push(TestResult {
-        name: name.clone(),
+        name:   name.clone(),
         status: test_status,
       });
     }
@@ -375,12 +384,14 @@ fn run_check_builds(
 
     let status = match build_result {
       Ok(()) => TestStatus::Pass,
-      Err(e) => TestStatus::Fail {
-        expected: None,
-        got: Some(format!(
-          "build failed: {e} ({:.1}s)",
-          check_duration.as_secs_f64()
-        )),
+      Err(e) => {
+        TestStatus::Fail {
+          expected: None,
+          got:      Some(format!(
+            "build failed: {e} ({:.1}s)",
+            check_duration.as_secs_f64()
+          )),
+        }
       },
     };
 
@@ -416,13 +427,13 @@ fn run_command_backend(
     .map_err(|e| color_eyre::eyre::eyre!("Failed to run {command}: {e}"))?;
 
   let results = vec![TestResult {
-    name: format!("{backend_name} suite"),
+    name:   format!("{backend_name} suite"),
     status: if status.success() {
       TestStatus::Pass
     } else {
       TestStatus::Fail {
         expected: None,
-        got: Some(format!("exited with {status}")),
+        got:      Some(format!("exited with {status}")),
       }
     },
   }];
@@ -507,7 +518,8 @@ fn render_summary(all_results: &[BackendResults]) {
 
   let summary = if failed > 0 || errors > 0 {
     format!(
-      "{passed} passed, {failed} failed, {errors} errors ({total} total, {:.1}s)",
+      "{passed} passed, {failed} failed, {errors} errors ({total} total, \
+       {:.1}s)",
       total_duration.as_secs_f64()
     )
   } else {
@@ -537,31 +549,33 @@ fn render_json(all_results: &[BackendResults]) {
       let tests: Vec<serde_json::Value> = br
         .results
         .iter()
-        .map(|r| match &r.status {
-          TestStatus::Pass => {
-            passed += 1;
-            serde_json::json!({
-              "name": r.name,
-              "status": "pass"
-            })
-          },
-          TestStatus::Fail { expected, got } => {
-            failed += 1;
-            serde_json::json!({
-              "name": r.name,
-              "status": "fail",
-              "expected": expected,
-              "got": got
-            })
-          },
-          TestStatus::Error(msg) => {
-            errors += 1;
-            serde_json::json!({
-              "name": r.name,
-              "status": "error",
-              "message": msg
-            })
-          },
+        .map(|r| {
+          match &r.status {
+            TestStatus::Pass => {
+              passed += 1;
+              serde_json::json!({
+                "name": r.name,
+                "status": "pass"
+              })
+            },
+            TestStatus::Fail { expected, got } => {
+              failed += 1;
+              serde_json::json!({
+                "name": r.name,
+                "status": "fail",
+                "expected": expected,
+                "got": got
+              })
+            },
+            TestStatus::Error(msg) => {
+              errors += 1;
+              serde_json::json!({
+                "name": r.name,
+                "status": "error",
+                "message": msg
+              })
+            },
+          }
         })
         .collect();
 
@@ -695,13 +709,15 @@ impl TestArgs {
           },
           ResolvedBackend::Checks {
             filter: checks_filter,
-          } => run_check_builds(
-            flake_ref,
-            filter.as_deref(),
-            checks_filter,
-            no_nom,
-            &passthrough_args,
-          ),
+          } => {
+            run_check_builds(
+              flake_ref,
+              filter.as_deref(),
+              checks_filter,
+              no_nom,
+              &passthrough_args,
+            )
+          },
           ResolvedBackend::NixUnit { test_dir } => {
             run_command_backend("nix-unit", "nix-unit", &[test_dir])?
           },

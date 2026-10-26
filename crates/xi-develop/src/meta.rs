@@ -10,25 +10,25 @@ use crate::store_path::PackageInfo;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DevShellMeta {
   /// Hash of the devshell environment (for change detection).
-  pub env_hash: String,
+  pub env_hash:         String,
   /// The devshell target attribute.
-  pub target: String,
+  pub target:           String,
   /// Canonical flake root path.
-  pub flake_root: String,
+  pub flake_root:       String,
   /// Store path of the devshell output (for dix diff).
-  pub store_path: Option<String>,
+  pub store_path:       Option<String>,
   /// Parsed packages from PATH (for compact diff).
-  pub packages: Vec<PackageInfo>,
+  pub packages:         Vec<PackageInfo>,
   /// Last successful eval timestamp (unix seconds).
-  pub timestamp: u64,
+  pub timestamp:        u64,
   /// Eval duration in milliseconds.
   pub eval_duration_ms: u64,
   /// SHA256 hash of flake.lock content (cache key for skipping eval).
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub lock_hash: Option<String>,
+  pub lock_hash:        Option<String>,
   /// Composite hash of eval inputs (for eval cache fast-path).
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub input_hash: Option<String>,
+  pub input_hash:       Option<String>,
 }
 
 const META_FILE: &str = "meta.json";

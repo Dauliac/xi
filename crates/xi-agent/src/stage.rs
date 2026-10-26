@@ -9,8 +9,14 @@ use color_eyre::eyre::Result;
 use crate::{
   args::StageArgs,
   schema::{
-    Diagnostic, Envelope, FlakeReference, GitStatus, StageEntry, StagePayload,
-    elapsed_ms, emit,
+    Diagnostic,
+    Envelope,
+    FlakeReference,
+    GitStatus,
+    StageEntry,
+    StagePayload,
+    elapsed_ms,
+    emit,
   },
 };
 
@@ -29,14 +35,11 @@ pub fn run(_args: &StageArgs) -> Result<()> {
     Err(diag) => {
       let payload = StagePayload {
         entries: Vec::new(),
-        clean: true,
+        clean:   true,
       };
-      emit(&Envelope::partial(
-        CMD,
-        payload,
-        elapsed_ms(start),
-        vec![diag],
-      ))?;
+      emit(&Envelope::partial(CMD, payload, elapsed_ms(start), vec![
+        diag,
+      ]))?;
     },
   }
   Ok(())

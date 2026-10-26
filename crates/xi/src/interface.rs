@@ -1,6 +1,5 @@
 use std::io;
 
-use crate::config::{BuildConfig, CacheConfig};
 use anstyle::Style;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::Styles};
 use clap_verbosity_flag::InfoLevel;
@@ -11,7 +10,10 @@ use xi_core::{
 };
 use xi_nixos;
 
-use crate::Result;
+use crate::{
+  Result,
+  config::{BuildConfig, CacheConfig},
+};
 
 const fn make_style() -> Styles {
   Styles::plain().header(Style::new().bold()).literal(
@@ -70,7 +72,8 @@ pub struct Main {
   subcommand_help_heading = "Commands",
   after_help = "\x1b[1mCommand groups:\x1b[0m
   Config mgmt:  os, home, darwin, system
-  Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, doctor, materialize
+  Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
+                doctor, materialize
   Deployment:   deploy
   Development:  develop, search
   Agent:        agent
@@ -189,7 +192,8 @@ impl XiCommand {
   }
 
   /// Apply build defaults from config.toml to all commands that have
-  /// build-related args. Config values are lowest priority (CLI > env > config).
+  /// build-related args. Config values are lowest priority (CLI > env >
+  /// config).
   pub fn apply_build_config(&mut self, build_config: &BuildConfig) {
     let no_nom = !build_config.nom;
     let show_trace = build_config.show_trace;

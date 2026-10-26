@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Parsed package info from a Nix store path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageInfo {
-  pub name: String,
-  pub version: Option<String>,
+  pub name:       String,
+  pub version:    Option<String>,
   pub store_path: String,
 }
 
@@ -13,7 +13,8 @@ pub struct PackageInfo {
 /// Store paths follow the format:
 /// `/nix/store/{32-char-hash}-{name}-{version}/...`
 ///
-/// The version is the rightmost dash-separated segment that starts with a digit.
+/// The version is the rightmost dash-separated segment that starts with a
+/// digit.
 pub fn parse(store_path: &str) -> Option<PackageInfo> {
   // Extract the store entry name (after hash, before any subpath)
   let after_store = store_path.strip_prefix("/nix/store/")?;
@@ -35,8 +36,8 @@ pub fn parse(store_path: &str) -> Option<PackageInfo> {
   let (name, version) = split_name_version(name_ver);
 
   Some(PackageInfo {
-    name: name.to_string(),
-    version: version.map(ToString::to_string),
+    name:       name.to_string(),
+    version:    version.map(ToString::to_string),
     store_path: store_path.to_string(),
   })
 }

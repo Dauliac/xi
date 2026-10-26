@@ -39,7 +39,7 @@ struct Suggestion {
   /// Full attribute path (e.g. `packages.x86_64-linux.hello`)
   full_path: String,
   /// The leaf attribute name used for distance matching
-  leaf: String,
+  leaf:      String,
 }
 
 /// Collect available attributes from parsed flake show JSON.
@@ -77,13 +77,13 @@ fn collect_available_attrs(
         {
           suggestions.push(Suggestion {
             full_path: format!("{cat_name}.{system}"),
-            leaf: "formatter".to_string(),
+            leaf:      "formatter".to_string(),
           });
         } else if let Some(attrs_obj) = system_value.as_object() {
           for attr_name in attrs_obj.keys() {
             suggestions.push(Suggestion {
               full_path: format!("{cat_name}.{system}.{attr_name}"),
-              leaf: attr_name.clone(),
+              leaf:      attr_name.clone(),
             });
           }
         }
@@ -93,7 +93,7 @@ fn collect_available_attrs(
       for attr_name in cat_obj.keys() {
         suggestions.push(Suggestion {
           full_path: format!("{cat_name}.{attr_name}"),
-          leaf: attr_name.clone(),
+          leaf:      attr_name.clone(),
         });
       }
     }

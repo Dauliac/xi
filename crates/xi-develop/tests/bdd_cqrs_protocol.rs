@@ -9,19 +9,30 @@
 //! that spins up the full daemon; this file focuses on the protocol layer
 //! itself so a regression in wire format is caught before any I/O runs.
 
-use xi_develop::daemon::protocol_v3::{
-  Availability, Command, CommandReply, Envelope, Event, EventPayload, Gap,
-  IdempotencyKey, Payload, Query, QueryReply, Reply, Subscribe, Topics,
+use xi_develop::daemon::{
+  protocol_v3::{
+    Availability,
+    Command,
+    CommandReply,
+    Envelope,
+    Event,
+    EventPayload,
+    Gap,
+    IdempotencyKey,
+    Payload,
+    Query,
+    QueryReply,
+    Reply,
+    Subscribe,
+    Topics,
+  },
+  server::is_v3_envelope,
 };
-use xi_develop::daemon::server::is_v3_envelope;
 
 /// A v3 envelope round-trips through JSON and preserves every field.
 #[test]
 fn envelope_roundtrip_query_heartbeat() {
-  let env = Envelope::new(
-    "01H8XG9Z9K",
-    Payload::Query(Query::HeartBeat),
-  );
+  let env = Envelope::new("01H8XG9Z9K", Payload::Query(Query::HeartBeat));
   let json = serde_json::to_string(&env).expect("serialize");
   let back: Envelope = serde_json::from_str(&json).expect("deserialize");
   assert_eq!(back.v, 3);
@@ -45,7 +56,8 @@ fn envelope_carries_v3_discriminator_on_wire() {
 /// does before it decodes the full payload.
 #[test]
 fn v2_envelope_has_no_v_field() {
-  // Approximate a v2 body: DaemonRequest::Status serialises as {"type":"Status"}
+  // Approximate a v2 body: DaemonRequest::Status serialises as
+  // {"type":"Status"}
   let v2_raw = serde_json::json!({ "type": "Status" });
   let v = v2_raw.get("v").and_then(serde_json::Value::as_u64);
   assert_eq!(v, None, "v2 envelopes MUST NOT carry a 'v' field");
@@ -60,7 +72,9 @@ fn every_query_variant_roundtrips() {
     Query::StateCatalog,
     Query::Devshell,
     Query::FlakeOutputs,
-    Query::GetJob { job_id: "abc123".into() },
+    Query::GetJob {
+      job_id: "abc123".into(),
+    },
     Query::Snapshot { seq: 7 },
   ];
   for q in cases {
@@ -204,7 +218,10 @@ fn server_peek_routes_v2_request_to_v2_path() {
   // v2 shape: `{"type":"Status"}` without a `v` field.
   let v2 = serde_json::json!({ "type": "Status" });
   let raw = serde_json::to_vec(&v2).expect("bdd");
-  assert!(!is_v3_envelope(&raw), "v2 envelope must NOT be detected as v3");
+  assert!(
+    !is_v3_envelope(&raw),
+    "v2 envelope must NOT be detected as v3"
+  );
 }
 
 /// Malformed JSON is not routed to v3 (it falls through to v2 decode which

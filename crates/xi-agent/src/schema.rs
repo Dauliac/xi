@@ -73,12 +73,12 @@ impl<T: Serialize> Envelope<T> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
-  pub code:                                                String,
-  pub message:                                             String,
+  pub code:    String,
+  pub message: String,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub source:                                              Option<String>,
+  pub source:  Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub hint:                                                Option<String>,
+  pub hint:    Option<String>,
 }
 
 impl Diagnostic {

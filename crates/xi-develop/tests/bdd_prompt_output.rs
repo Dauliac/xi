@@ -14,28 +14,28 @@ fn make_response(
   spawn: bool,
 ) -> PromptResponse {
   PromptResponse {
-    should_source_env: source_env,
-    env_file_path: if source_env {
+    should_source_env:     source_env,
+    env_file_path:         if source_env {
       Some("/state/env-default.current.sh".into())
     } else {
       None
     },
-    should_source_hook: source_hook,
-    hook_file_path: if source_hook {
+    should_source_hook:    source_hook,
+    hook_file_path:        if source_hook {
       Some("/state/hook-default.current.sh".into())
     } else {
       None
     },
-    should_exit: exit,
+    should_exit:           exit,
     should_spawn_subshell: spawn,
-    spawn_flake_root: if spawn {
+    spawn_flake_root:      if spawn {
       Some("/home/user/project".into())
     } else {
       None
     },
-    notifications: vec![],
-    daemon_state: DaemonState::Ready,
-    is_trusted: true,
+    notifications:         vec![],
+    daemon_state:          DaemonState::Ready,
+    is_trusted:            true,
   }
 }
 

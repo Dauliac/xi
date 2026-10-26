@@ -1,5 +1,6 @@
 use std::{
-  env, fs,
+  env,
+  fs,
   path::{Path, PathBuf},
 };
 
@@ -308,6 +309,6 @@ mod tests {
 
   #[test]
   fn hex_encode_works() {
-    assert_eq!(hex_encode(&[0xab, 0xcd, 0x12]), "abcd12");
+    assert_eq!(hex_encode(&[0xAB, 0xCD, 0x12]), "abcd12");
   }
 }

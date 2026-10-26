@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use clap_complete::engine::ArgValueCompleter;
-use xi_core::complete;
-use xi_core::installable::InstallableArgs;
+use xi_core::{complete, installable::InstallableArgs};
 
 /// Build backend for `--all` / CI builds.
 #[derive(Debug, Clone, Default, clap::ValueEnum)]
@@ -238,10 +237,10 @@ pub struct CheckArgs {
 /// Run a flake app, or a bare command from nixpkgs (comma-style)
 ///
 /// Bare-name arguments walk a three-tier chain:
-///   1. `.#apps.<system>.<name>` / `.#packages.<system>.<name>` in the
-///      current flake (deterministic, project-local).
-///   2. The flake's locked `nixpkgs` input — same nixpkgs the project
-///      builds against; reproducible.
+///   1. `.#apps.<system>.<name>` / `.#packages.<system>.<name>` in the current
+///      flake (deterministic, project-local).
+///   2. The flake's locked `nixpkgs` input — same nixpkgs the project builds
+///      against; reproducible.
 ///   3. System registry `nixpkgs` (comma-style fallback, rolling).
 ///
 /// Pass `--locate` / `-l` to force tier 3 directly. Explicit flake refs
@@ -367,11 +366,13 @@ impl clap::builder::TypedValueParser for FmtBackendParser {
 }
 
 #[derive(Debug, Args)]
-/// Format source code using the flake's formatter (defaults to current directory)
+/// Format source code using the flake's formatter (defaults to current
+/// directory)
 ///
 /// Auto-detects the formatter: uses the flake's formatter output if declared,
 /// otherwise falls back to nixfmt. Override with --backend or .xi.toml \[fmt\].
-/// Any command on PATH can be used as a backend (e.g. pedantix, nixfmt, alejandra).
+/// Any command on PATH can be used as a backend (e.g. pedantix, nixfmt,
+/// alejandra).
 pub struct FmtArgs {
   /// Flake reference (defaults to current directory)
   pub flake_ref: Option<String>,
@@ -547,7 +548,8 @@ pub struct LibArgs {
   /// Flake reference (defaults to current directory)
   pub flake_ref: Option<String>,
 
-  /// Deeply evaluate all lib attrs (catches type errors, missing attrs, infinite recursion)
+  /// Deeply evaluate all lib attrs (catches type errors, missing attrs,
+  /// infinite recursion)
   #[arg(long, short = 'E')]
   pub eval: bool,
 

@@ -10,15 +10,12 @@ pub mod args;
 pub mod backend;
 pub mod target;
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
-use tracing::info;
-
-use crate::args::DeployArgs;
-use crate::backend::DeployBackend;
-
+use color_eyre::{Result, eyre::bail};
 // Re-exports for convenience.
 pub use target::{DeployProfile, DeployTarget, ProfileKind};
+use tracing::info;
+
+use crate::{args::DeployArgs, backend::DeployBackend};
 
 /// Detect the deployment backend from the flake and run the deployment.
 ///
@@ -51,15 +48,19 @@ fn resolve_explicit_backend(
   flake_ref: &str,
 ) -> Result<Box<dyn DeployBackend>> {
   match name {
-    "deploy-rs" => Ok(Box::new(backend::deploy_rs::DeployRsBackend::new(
-      flake_ref,
-    )?)),
+    "deploy-rs" => {
+      Ok(Box::new(backend::deploy_rs::DeployRsBackend::new(
+        flake_ref,
+      )?))
+    },
     "colmena" => Ok(Box::new(backend::colmena::ColmenaBackend::new()?)),
     "builtin" => Ok(Box::new(backend::builtin::BuiltinBackend)),
-    other => bail!(
-      "Unknown deploy backend '{other}'. \
-       Available: deploy-rs, colmena, builtin"
-    ),
+    other => {
+      bail!(
+        "Unknown deploy backend '{other}'. Available: deploy-rs, colmena, \
+         builtin"
+      )
+    },
   }
 }
 

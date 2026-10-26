@@ -5,27 +5,31 @@
 //! `Client — state-query timeout and offline failover`,
 //! `Client — persistent prompt queue with refinement`):
 //!
-//! * **cold** — no daemon reachable (call returns instantly with an error),
-//!   the tick must fall to the offline/silent path under budget.
+//! * **cold** — no daemon reachable (call returns instantly with an error), the
+//!   tick must fall to the offline/silent path under budget.
 //! * **warm** — daemon answers within the budget; live reply flows.
 //! * **evaluating** — daemon returns `Pending` fast; still a live reply.
-//! * **unreachable / slow** — the caller sleeps beyond the budget; the
-//!   tick must bail (returning `None`) and enqueue for the next tick,
-//!   still finishing under budget.
+//! * **unreachable / slow** — the caller sleeps beyond the budget; the tick
+//!   must bail (returning `None`) and enqueue for the next tick, still
+//!   finishing under budget.
 //!
 //! Every scenario asserts a wall-clock ceiling on the tick with a
 //! generous safety margin so the suite is stable on loaded CI.
 
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+  path::PathBuf,
+  sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+  },
+  time::{Duration, Instant},
+};
 
 use color_eyre::Result;
 use tempfile::TempDir;
-use xi_develop::daemon::protocol_v3::{Availability, Query, QueryReply};
-use xi_develop::hook::{
-  Budget, DaemonCaller, Queue, TickCtx, TickOutcome, run_tick,
+use xi_develop::{
+  daemon::protocol_v3::{Availability, Query, QueryReply},
+  hook::{Budget, DaemonCaller, Queue, TickCtx, TickOutcome, run_tick},
 };
 
 /// A caller whose behaviour is scripted per test.
@@ -94,11 +98,11 @@ fn ctx<'a>(
   offline_valid: bool,
 ) -> TickCtx<'a> {
   TickCtx {
-    cwd:            std::path::Path::new("/tmp"),
+    cwd: std::path::Path::new("/tmp"),
     last_lock_hash: None,
-    last_reply_at:  None,
+    last_reply_at: None,
     offline_valid,
-    queue:          sandbox.queue(),
+    queue: sandbox.queue(),
     budget,
   }
 }
@@ -157,7 +161,9 @@ fn evaluating_daemon_tick_returns_pending_under_budget() {
   let elapsed = t0.elapsed();
 
   match out {
-    TickOutcome::Live(QueryReply::Devshell(Availability::Pending { .. })) => {},
+    TickOutcome::Live(QueryReply::Devshell(Availability::Pending {
+      ..
+    })) => {},
     other => unreachable!("expected Pending live reply, got {other:?}"),
   }
   assert!(elapsed < ceiling(budget));
@@ -303,8 +309,7 @@ fn repeated_failing_ticks_collapse_on_refine() {
   }
   assert_eq!(sb.queue().load().expect("load").len(), 6);
 
-  let refined =
-    xi_develop::hook::refine_and_flush(sb.queue()).expect("refine");
+  let refined = xi_develop::hook::refine_and_flush(sb.queue()).expect("refine");
   assert_eq!(
     refined.len(),
     1,

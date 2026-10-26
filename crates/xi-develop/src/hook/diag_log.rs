@@ -12,11 +12,13 @@
 //! Every write is best-effort: I/O errors are dropped with a `tracing::debug!`
 //! so a broken disk never crashes the prompt tick.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+  fs::{self, OpenOptions},
+  io::Write,
+  path::PathBuf,
+  sync::Mutex,
+  time::{SystemTime, UNIX_EPOCH},
+};
 
 use color_eyre::Result;
 use serde_json::json;
@@ -34,7 +36,7 @@ pub const ROTATE_AT_BYTES: u64 = 1024 * 1024;
 /// fresh so concurrent shells don't need to coordinate.
 #[derive(Debug)]
 pub struct DiagLog {
-  path: PathBuf,
+  path:   PathBuf,
   rotate: Mutex<()>,
 }
 
@@ -146,12 +148,14 @@ fn log_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use std::sync::MutexGuard;
+
   use tempfile::TempDir;
 
+  use super::*;
+
   struct StateHomeGuard {
-    _td: TempDir,
+    _td:   TempDir,
     _lock: MutexGuard<'static, ()>,
   }
 
@@ -165,7 +169,7 @@ mod tests {
       std::env::set_var("XDG_STATE_HOME", td.path());
     }
     StateHomeGuard {
-      _td: td,
+      _td:   td,
       _lock: lock,
     }
   }

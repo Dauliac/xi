@@ -1,7 +1,8 @@
 //! Centralized definitions for Nix flake output categories and types.
 //!
 //! This module is the single source of truth for:
-//! - Flake output category names (`packages`, `devShells`, `nixosConfigurations`, …)
+//! - Flake output category names (`packages`, `devShells`,
+//!   `nixosConfigurations`, …)
 //! - Per-system vs flat classification
 //! - Display ordering for `xi show`
 //! - Output kind/type labels (`derivation`, `module`, `overlay`, …)
@@ -339,7 +340,8 @@ pub fn is_hidden_by_default(name: &str) -> bool {
 // System helpers
 // ---------------------------------------------------------------------------
 
-/// Return the current Nix system string (e.g. `x86_64-linux`, `aarch64-darwin`).
+/// Return the current Nix system string (e.g. `x86_64-linux`,
+/// `aarch64-darwin`).
 ///
 /// This is the canonical implementation — other modules should call this
 /// instead of reimplementing the arch/os mapping.

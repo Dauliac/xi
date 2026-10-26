@@ -4,8 +4,10 @@
 //! Tests for the per-consumer notification queue.
 //! Pure unit tests — no daemon, no nix, no shell.
 
-use xi_develop::daemon::notifications::NotificationQueue;
-use xi_develop::daemon::protocol::{NotifKind, Notification};
+use xi_develop::daemon::{
+  notifications::NotificationQueue,
+  protocol::{NotifKind, Notification},
+};
 
 fn notif(msg: &str) -> Notification {
   Notification::info(msg)
@@ -148,7 +150,8 @@ fn error_dedup_same_message() {
   assert_eq!(msgs.len(), 0);
 }
 
-/// BDD: 17_notifications.feature#Notification dedup — different error replaces old
+/// BDD: 17_notifications.feature#Notification dedup — different error replaces
+/// old
 #[test]
 fn error_dedup_different_message() {
   let mut q = NotificationQueue::new();

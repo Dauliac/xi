@@ -8,10 +8,10 @@ use color_eyre::{
   eyre::{Context, bail},
 };
 use tracing::{debug, warn};
-use xi_core::installable::{CommandContext, resolve_toplevel};
 use xi_core::{
   args::DiffType,
   command::{Command, ElevationStrategy, find_real_nix_binary},
+  installable::{CommandContext, resolve_toplevel},
   update::update,
   util::get_hostname,
 };
@@ -56,8 +56,7 @@ impl SystemRebuildArgs {
 
     if nix::unistd::Uid::effective().is_root() && !self.bypass_root_check {
       bail!(
-        "Don't run xi system as root. I will call sudo internally as \
-         needed"
+        "Don't run xi system as root. I will call sudo internally as needed"
       );
     }
 

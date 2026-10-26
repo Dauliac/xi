@@ -9,8 +9,13 @@ use color_eyre::eyre::Result;
 use crate::{
   args::ManifestArgs,
   schema::{
-    Diagnostic, Envelope, ManifestEntry, ManifestKind, ManifestPayload,
-    elapsed_ms, emit,
+    Diagnostic,
+    Envelope,
+    ManifestEntry,
+    ManifestKind,
+    ManifestPayload,
+    elapsed_ms,
+    emit,
   },
 };
 
@@ -27,15 +32,12 @@ pub fn run(_args: &ManifestArgs) -> Result<()> {
     Ok(payload) => emit(&Envelope::ok(CMD, payload, elapsed_ms(start)))?,
     Err(diag) => {
       let payload = ManifestPayload {
-        root: PathBuf::from("flake.nix"),
+        root:  PathBuf::from("flake.nix"),
         files: Vec::new(),
       };
-      emit(&Envelope::partial(
-        CMD,
-        payload,
-        elapsed_ms(start),
-        vec![diag],
-      ))?;
+      emit(&Envelope::partial(CMD, payload, elapsed_ms(start), vec![
+        diag,
+      ]))?;
     },
   }
   Ok(())

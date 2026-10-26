@@ -7,8 +7,7 @@
 //! Functions return `Vec<CompletionCandidate>` for direct use with
 //! `clap_complete::engine::ArgValueCompleter`.
 
-use std::ffi::OsStr;
-use std::process::Command;
+use std::{ffi::OsStr, process::Command};
 
 use clap_complete::engine::CompletionCandidate;
 

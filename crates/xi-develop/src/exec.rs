@@ -8,9 +8,7 @@ use std::path::Path;
 
 use color_eyre::Result;
 
-use crate::args::ExecArgs;
-use crate::daemon::client;
-use crate::{dirs, env_file, trust};
+use crate::{args::ExecArgs, daemon::client, dirs, env_file, trust};
 
 /// Execute a command with the devshell environment.
 ///

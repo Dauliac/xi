@@ -28,7 +28,10 @@ impl Budget {
   /// Start a new budget counting from now with the given total duration.
   #[must_use]
   pub fn start(duration: Duration) -> Self {
-    Self { start: Instant::now(), duration }
+    Self {
+      start: Instant::now(),
+      duration,
+    }
   }
 
   /// True iff the budget has been fully consumed.

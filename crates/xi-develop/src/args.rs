@@ -1,7 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
-use xi_core::args::NixBuildPassthroughArgs;
-use xi_core::complete;
+use xi_core::{args::NixBuildPassthroughArgs, complete};
 
 #[derive(Parser, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -71,10 +70,10 @@ pub struct SwitchArgs {
   pub target: String,
   /// Flake reference (defaults to current directory)
   #[arg(long)]
-  pub flake: Option<String>,
+  pub flake:  Option<String>,
   /// Shell type (for env file selection)
   #[arg(long, short)]
-  pub shell: Option<String>,
+  pub shell:  Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -84,7 +83,7 @@ pub struct TargetArgs {
   pub target: Option<String>,
   /// Flake reference (defaults to current directory)
   #[arg(long)]
-  pub flake: Option<String>,
+  pub flake:  Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -97,10 +96,10 @@ pub struct ActivateArgs {
 pub struct ExecArgs {
   /// Target devShell attribute (defaults to "default")
   #[arg(long, short, default_value = "default")]
-  pub target: String,
+  pub target:  String,
   /// Flake reference (defaults to current directory)
   #[arg(long)]
-  pub flake: Option<String>,
+  pub flake:   Option<String>,
   /// Command and arguments to run
   #[arg(required = true, trailing_var_arg = true)]
   pub command: Vec<String>,
@@ -116,7 +115,7 @@ pub struct ListArgs {
   pub paths: bool,
   /// Output as JSON
   #[arg(long)]
-  pub json: bool,
+  pub json:  bool,
 }
 
 #[derive(Args, Debug)]
@@ -126,26 +125,26 @@ pub struct CleanArgs {
   pub flake: Option<String>,
   /// Remove state for ALL flakes (not just the current one)
   #[arg(long)]
-  pub all: bool,
+  pub all:   bool,
 }
 
 #[derive(Args, Debug)]
 pub struct PromptArgs {
   /// Shell type: bash, zsh, or fish (optional for --exit mode)
   #[arg(long, short, default_value = "bash")]
-  pub shell: String,
+  pub shell:    String,
   /// Run in subshell mode (inside devshell, handles re-source/exit)
   #[arg(long)]
   pub subshell: bool,
   /// Run in exit mode (deregister consumer on subshell EXIT trap)
   #[arg(long)]
-  pub exit: bool,
+  pub exit:     bool,
   /// Shell PID (for per-consumer tracking)
   #[arg(long)]
-  pub pid: Option<u32>,
+  pub pid:      Option<u32>,
   /// Target devShell attribute
   #[arg(long, default_value = "default")]
-  pub target: String,
+  pub target:   String,
 }
 
 #[derive(Args, Debug)]
@@ -168,16 +167,16 @@ pub enum DaemonAction {
 pub struct DaemonStartArgs {
   /// Flake root directory
   #[arg(long)]
-  pub flake: String,
+  pub flake:         String,
   /// Seconds between eval attempts (from config)
   #[arg(long, default_value = "5", env = "XI_EVAL_INTERVAL")]
   pub eval_interval: u64,
   /// Extra file patterns to watch (from config, repeatable)
   #[arg(long, env = "XI_WATCH_EXTRA", value_delimiter = ':')]
-  pub watch_extra: Vec<String>,
+  pub watch_extra:   Vec<String>,
   /// Eval cache mode: none, lock (default), inputs
   #[arg(long, default_value = "lock", env = "XI_EVAL_CACHE")]
-  pub eval_cache: String,
+  pub eval_cache:    String,
 }
 
 #[derive(Args, Debug)]

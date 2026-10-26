@@ -1,8 +1,9 @@
-use crate::installable::Installable;
 use clap::Args;
 use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use tracing::{info, warn};
+
+use crate::installable::Installable;
 
 #[derive(Debug, Args)]
 pub struct UpdateArgs {

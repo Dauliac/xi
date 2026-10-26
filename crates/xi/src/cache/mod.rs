@@ -1,9 +1,12 @@
 pub mod args;
 
 use color_eyre::Result;
-use xi_core::cache_queue::QueueConfig;
-use xi_core::style::{self, Icon};
-use xi_core::{cache, cache_queue};
+use xi_core::{
+  cache,
+  cache_queue,
+  cache_queue::QueueConfig,
+  style::{self, Icon},
+};
 
 use self::args::{CacheCommand, CacheProxy, RetryArgs};
 

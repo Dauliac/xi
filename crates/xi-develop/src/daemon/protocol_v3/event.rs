@@ -20,7 +20,7 @@ use super::query::{JobId, SnapshotSeq};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
   /// Monotonic sequence number for this delivery.
-  pub seq: SnapshotSeq,
+  pub seq:     SnapshotSeq,
   /// The typed payload.
   #[serde(flatten)]
   pub payload: EventPayload,
@@ -36,7 +36,7 @@ pub struct Gap {
   /// First sequence number that was dropped (inclusive).
   pub from_seq: SnapshotSeq,
   /// Last sequence number that was dropped (inclusive).
-  pub to_seq: SnapshotSeq,
+  pub to_seq:   SnapshotSeq,
 }
 
 /// The typed payload of a broadcaster [`Event`].
@@ -51,16 +51,16 @@ pub enum EventPayload {
   /// A state transition. Small delta; embedded in-band.
   StateChanged {
     /// The previous daemon state (opaque here; concrete shape in task 2.x).
-    from: serde_json::Value,
+    from:         serde_json::Value,
     /// The new daemon state.
-    to: serde_json::Value,
+    to:           serde_json::Value,
     /// The snapshot sequence number this transition produced.
     snapshot_seq: SnapshotSeq,
   },
   /// A job was started (new work; not an attach). Small delta.
   JobStarted {
     /// The new job id.
-    job_id: JobId,
+    job_id:  JobId,
     /// The command that spawned it, encoded opaquely.
     command: serde_json::Value,
   },
@@ -69,7 +69,7 @@ pub enum EventPayload {
   /// one per subscriber for that window — SC-013).
   JobProgress {
     /// The job id.
-    job_id: JobId,
+    job_id:   JobId,
     /// Progress payload (task 2.x refines the shape).
     progress: serde_json::Value,
   },

@@ -84,9 +84,8 @@ impl IdempotencyKey {
 ///
 /// The id is a 32-character lowercase hex string encoding a 128-bit value:
 ///
-/// - upper 64 bits: process-start nanoseconds since the Unix epoch, so ids
-///   from two consecutive daemon processes never collide even if the
-///   counter resets;
+/// - upper 64 bits: process-start nanoseconds since the Unix epoch, so ids from
+///   two consecutive daemon processes never collide even if the counter resets;
 /// - lower 64 bits: a monotonic per-process `AtomicU64` counter.
 ///
 /// # Why not ULID or UUID?
@@ -99,8 +98,8 @@ impl IdempotencyKey {
 /// - monotonic ordering within a process (nice for debugging log tails);
 /// - trivial uniqueness across restarts because the timestamp differs;
 /// - zero external dependencies;
-/// - a stable hex-string wire shape compatible with
-///   `protocol_v3::query::JobId` (`pub type JobId = String`).
+/// - a stable hex-string wire shape compatible with `protocol_v3::query::JobId`
+///   (`pub type JobId = String`).
 ///
 /// When the wire type ever migrates to a stronger id (e.g. once the daemon
 /// gains persistence in v2 of the change), the switch is local to
@@ -205,11 +204,11 @@ impl JobStatus {
 #[derive(Debug, Clone)]
 pub struct JobEntry {
   /// The registry-allocated id.
-  pub id: JobId,
+  pub id:            JobId,
   /// What kind of work this job represents.
-  pub kind: JobKind,
+  pub kind:          JobKind,
   /// When the job was first registered (used for logging + stale-scan).
-  pub started_at: SystemTime,
+  pub started_at:    SystemTime,
   /// When the job last emitted a progress heartbeat.
   ///
   /// `None` on freshly-registered jobs — the work executor bumps this on
@@ -217,7 +216,7 @@ pub struct JobEntry {
   /// surface stuck jobs.
   pub last_progress: Option<Instant>,
   /// Current status.
-  pub status: JobStatus,
+  pub status:        JobStatus,
 }
 
 /// Whether an `attach_or_start` call attached to a running job or allocated
@@ -239,11 +238,11 @@ pub enum Attached {
 /// See the module-level docs for the design contract this implements.
 #[derive(Debug)]
 pub struct JobRegistry {
-  inner: Mutex<Inner>,
+  inner:      Mutex<Inner>,
   id_counter: AtomicU64,
   /// Process-start nanoseconds since the Unix epoch, folded into every new
   /// job id so ids from consecutive daemon processes never collide.
-  epoch_ns: u64,
+  epoch_ns:   u64,
 }
 
 #[derive(Debug, Default)]
@@ -253,7 +252,7 @@ struct Inner {
   attach_index: HashMap<IdempotencyKey, JobId>,
   /// Full job table keyed by id. Terminal entries remain queryable via
   /// [`JobRegistry::get`] but are absent from `attach_index`.
-  jobs: HashMap<JobId, JobEntry>,
+  jobs:         HashMap<JobId, JobEntry>,
 }
 
 impl Default for JobRegistry {
@@ -283,10 +282,10 @@ impl JobRegistry {
   ///
   /// # Semantics
   ///
-  /// - If a non-terminal job already exists for `key`, returns that job's
-  ///   id with [`Attached::Yes`].
-  /// - Otherwise allocates a new [`JobId`], stores a fresh [`JobEntry`]
-  ///   with [`JobStatus::Running`], and returns [`Attached::No`].
+  /// - If a non-terminal job already exists for `key`, returns that job's id
+  ///   with [`Attached::Yes`].
+  /// - Otherwise allocates a new [`JobId`], stores a fresh [`JobEntry`] with
+  ///   [`JobStatus::Running`], and returns [`Attached::No`].
   ///
   /// # Status-vs-attach table
   ///

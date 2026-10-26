@@ -1,28 +1,43 @@
 //! Daemon server — listens on Unix socket, handles requests, watches files.
 
-use std::io::{BufReader, BufWriter};
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::{
+  io::{BufReader, BufWriter},
+  os::unix::net::UnixListener,
+  path::{Path, PathBuf},
+  sync::{Arc, Mutex, RwLock},
+  time::{Duration, Instant},
+};
 
 use color_eyre::Result;
 use nix_command::find_real_nix_binary;
 use tracing::{debug, error, info, warn};
 
-use super::notifications::NotificationQueue;
-use super::protocol::{
-  CachePushRequest, CachePushResponse, DaemonRequest, DaemonResponse,
-  DaemonState, DeregisterRequest, DeregisterResponse, EvalRequest,
-  EvalResponse, Notification, PackageChange, PromptRequest, PromptResponse,
-  StatusResponse, read_frame, write_message,
+use super::{
+  notifications::NotificationQueue,
+  protocol::{
+    CachePushRequest,
+    CachePushResponse,
+    DaemonRequest,
+    DaemonResponse,
+    DaemonState,
+    DeregisterRequest,
+    DeregisterResponse,
+    EvalRequest,
+    EvalResponse,
+    Notification,
+    PackageChange,
+    PromptRequest,
+    PromptResponse,
+    StatusResponse,
+    read_frame,
+    write_message,
+  },
+  protocol_v3::Envelope as V3Envelope,
+  shell_registry::ShellRegistry,
+  v3_handlers,
+  watcher::GitWatcher,
 };
-use super::protocol_v3::Envelope as V3Envelope;
-use super::shell_registry::ShellRegistry;
-use super::v3_handlers;
-use super::watcher::GitWatcher;
-use crate::shell::ShellType;
-use crate::{dirs, env_file, meta, trust};
+use crate::{dirs, env_file, meta, shell::ShellType, trust};
 
 /// Default seconds between eval attempts (overridden by config).
 const DEFAULT_EVAL_INTERVAL_SECS: u64 = 5;
@@ -64,42 +79,42 @@ const RETRY_MAX_SECS: u64 = 300;
 
 /// Daemon state.
 pub struct ServerState {
-  pub flake_root: PathBuf,
-  pub state_dir: PathBuf,
-  pub current_env: RwLock<Option<env_file::DevEnv>>,
-  pub current_target: RwLock<String>,
-  pub eval_state: RwLock<DaemonState>,
-  pub last_error: RwLock<Option<String>>,
-  pub last_eval_time: Mutex<Option<Instant>>,
-  pub notifications: Mutex<NotificationQueue>,
-  pub eval_in_progress: Mutex<bool>,
-  pub start_time: Instant,
-  pub last_activity: Mutex<Instant>,
-  pub version: String,
+  pub flake_root:              PathBuf,
+  pub state_dir:               PathBuf,
+  pub current_env:             RwLock<Option<env_file::DevEnv>>,
+  pub current_target:          RwLock<String>,
+  pub eval_state:              RwLock<DaemonState>,
+  pub last_error:              RwLock<Option<String>>,
+  pub last_eval_time:          Mutex<Option<Instant>>,
+  pub notifications:           Mutex<NotificationQueue>,
+  pub eval_in_progress:        Mutex<bool>,
+  pub start_time:              Instant,
+  pub last_activity:           Mutex<Instant>,
+  pub version:                 String,
   /// Whether a file change was detected (set by watcher, cleared by eval).
-  pub change_pending: Mutex<bool>,
+  pub change_pending:          Mutex<bool>,
   /// Configurable eval interval (from xi config.toml \[develop\] section).
-  pub eval_interval_secs: u64,
+  pub eval_interval_secs:      u64,
   /// Extra watch patterns (from xi config.toml \[develop\] section).
-  pub watch_extra: Vec<String>,
+  pub watch_extra:             Vec<String>,
   /// Consecutive error count for exponential backoff.
-  pub error_count: Mutex<u32>,
+  pub error_count:             Mutex<u32>,
   /// Timestamp of last eval error (for backoff timing).
-  pub last_error_time: Mutex<Option<Instant>>,
+  pub last_error_time:         Mutex<Option<Instant>>,
   /// Store paths currently being pushed to cache.
-  pub active_cache_pushes: Mutex<Vec<String>>,
+  pub active_cache_pushes:     Mutex<Vec<String>>,
   /// Last time the cache queue was drained.
-  pub last_queue_drain: Mutex<Option<Instant>>,
+  pub last_queue_drain:        Mutex<Option<Instant>>,
   /// Whether a queue drain is currently running.
   pub queue_drain_in_progress: Mutex<bool>,
   /// Cache queue configuration.
-  pub queue_config: xi_core::cache_queue::QueueConfig,
+  pub queue_config:            xi_core::cache_queue::QueueConfig,
   /// Per-PID shell instance tracking.
-  pub shell_registry: Mutex<ShellRegistry>,
+  pub shell_registry:          Mutex<ShellRegistry>,
   /// Eval cache mode (from config.toml \[develop\] `eval_cache`).
-  pub eval_cache_mode: EvalCacheMode,
+  pub eval_cache_mode:         EvalCacheMode,
   /// Cached hash of eval inputs (for eval cache fast-path).
-  pub eval_input_hash: RwLock<Option<String>>,
+  pub eval_input_hash:         RwLock<Option<String>>,
 }
 
 impl ServerState {
@@ -114,12 +129,14 @@ impl ServerState {
   ) -> Self {
     // Warm-start: load previous state from meta.json
     let loaded_meta = meta::load(&state_dir).ok();
-    let cached_env = loaded_meta.as_ref().map(|m| env_file::DevEnv {
-      nix_paths: vec![],
-      env_vars: std::collections::HashMap::new(),
-      shell_hook: None,
-      env_hash: m.env_hash.clone(),
-      packages: m.packages.clone(),
+    let cached_env = loaded_meta.as_ref().map(|m| {
+      env_file::DevEnv {
+        nix_paths:  vec![],
+        env_vars:   std::collections::HashMap::new(),
+        shell_hook: None,
+        env_hash:   m.env_hash.clone(),
+        packages:   m.packages.clone(),
+      }
     });
     let cached_input_hash = loaded_meta.and_then(|m| m.input_hash);
 
@@ -296,7 +313,8 @@ pub fn run(socket_path: &Path, state: &Arc<ServerState>) -> Result<()> {
       state.mark_change_pending();
     }
 
-    // Maybe trigger eval (change pending + cooldown expired + not already running)
+    // Maybe trigger eval (change pending + cooldown expired + not already
+    // running)
     if state.should_eval() && !state.is_evaluating() {
       spawn_eval(Arc::clone(state));
     }
@@ -455,15 +473,15 @@ fn handle_cache_push(
   std::thread::spawn(move || {
     let store_path = std::path::Path::new(&req.store_path);
     let cache = xi_core::args::CacheArgs {
-      push_to: if req.cache_url.is_empty() {
+      push_to:        if req.cache_url.is_empty() {
         None
       } else {
         Some(req.cache_url)
       },
-      push_command: req.push_command,
-      sign_key: req.sign_key,
-      no_push: false,
-      async_push: false,
+      push_command:   req.push_command,
+      sign_key:       req.sign_key,
+      no_push:        false,
+      async_push:     false,
       config_targets: Vec::new(),
     };
 
@@ -742,8 +760,8 @@ fn handle_eval(req: &EvalRequest, state: &ServerState) -> EvalResponse {
     {
       #[allow(clippy::cast_possible_truncation)]
       EvalResponse {
-        env_file_path: String::new(),
-        changes: vec![],
+        env_file_path:    String::new(),
+        changes:          vec![],
         eval_duration_ms: duration.as_millis() as u64,
       }
     },
@@ -781,12 +799,12 @@ fn handle_status(state: &ServerState) -> StatusResponse {
     .clone();
 
   StatusResponse {
-    state: eval_state,
-    uptime_secs: state.start_time.elapsed().as_secs(),
-    consumer_count: consumers,
-    current_target: target,
-    package_count: pkg_count,
-    version: state.version.clone(),
+    state:               eval_state,
+    uptime_secs:         state.start_time.elapsed().as_secs(),
+    consumer_count:      consumers,
+    current_target:      target,
+    package_count:       pkg_count,
+    version:             state.version.clone(),
     active_cache_pushes: active_pushes,
   }
 }
@@ -885,7 +903,7 @@ fn spawn_eval(state: Arc<ServerState>) {
           .write()
           .unwrap_or_else(std::sync::PoisonError::into_inner) =
           DaemonState::BuildFailed {
-            error: error_summary.clone(),
+            error:       error_summary.clone(),
             retry_count: count,
           };
         *state
@@ -1031,39 +1049,38 @@ fn run_full_eval(
 
   if env_unchanged {
     debug!(
-      "Eval completed in {:.1}s — env unchanged (hash: {}), skipping file writes",
+      "Eval completed in {:.1}s — env unchanged (hash: {}), skipping file \
+       writes",
       duration.as_secs_f64(),
       &dev_env.env_hash[..16.min(dev_env.env_hash.len())]
     );
 
-    // Still update meta timestamp and state, but skip file writes + generation bump
-    let _ = meta::save(
-      &state.state_dir,
-      &meta::DevShellMeta {
-        env_hash: dev_env.env_hash.clone(),
-        target: target.to_string(),
-        flake_root: state.flake_root.display().to_string(),
-        store_path: state
-          .current_env
-          .read()
-          .unwrap_or_else(std::sync::PoisonError::into_inner)
-          .as_ref()
-          .and_then(|_| {
-            // Preserve existing store path
-            meta::load(&state.state_dir).ok().and_then(|m| m.store_path)
-          }),
-        packages: dev_env.packages,
-        timestamp: meta::now_secs(),
-        eval_duration_ms: {
-          #[allow(clippy::cast_possible_truncation)]
-          {
-            duration.as_millis() as u64
-          }
-        },
-        lock_hash: None,
-        input_hash: current_input_hash.clone(),
+    // Still update meta timestamp and state, but skip file writes + generation
+    // bump
+    let _ = meta::save(&state.state_dir, &meta::DevShellMeta {
+      env_hash:         dev_env.env_hash.clone(),
+      target:           target.to_string(),
+      flake_root:       state.flake_root.display().to_string(),
+      store_path:       state
+        .current_env
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|_| {
+          // Preserve existing store path
+          meta::load(&state.state_dir).ok().and_then(|m| m.store_path)
+        }),
+      packages:         dev_env.packages,
+      timestamp:        meta::now_secs(),
+      eval_duration_ms: {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+          duration.as_millis() as u64
+        }
       },
-    );
+      lock_hash:        None,
+      input_hash:       current_input_hash.clone(),
+    });
 
     // Update cached input hash
     if current_input_hash.is_some() {
@@ -1109,17 +1126,17 @@ fn run_full_eval(
   dirs::bump_env_generation(&state.state_dir);
 
   // Step 4: Write shellHook script file (sourced directly by the user's shell)
-  // NOT executed by the daemon — aliases, functions, completions need the real shell.
-  // Uses a separate hook-generation counter so the shell can detect hook-only changes
-  // and re-source just the hook (without re-sourcing the full env file).
+  // NOT executed by the daemon — aliases, functions, completions need the real
+  // shell. Uses a separate hook-generation counter so the shell can detect
+  // hook-only changes and re-source just the hook (without re-sourcing the
+  // full env file).
   if let Some(ref hook_script) = dev_env.shell_hook
     && !hook_script.trim().is_empty()
   {
     let hook_content = format!(
-      "# Generated by xi develop — shellHook from nix devshell\n\
-       # Sourced in the user's shell process.\n\
-       # Aliases, functions, and completions work.\n\
-       {hook_script}\n"
+      "# Generated by xi develop — shellHook from nix devshell\n# Sourced in \
+       the user's shell process.\n# Aliases, functions, and completions \
+       work.\n{hook_script}\n"
     );
     dirs::write_and_switch(
       &state.state_dir,
@@ -1183,25 +1200,22 @@ fn run_full_eval(
   }
 
   // Step 6: Save meta + update eval cache
-  let _ = meta::save(
-    &state.state_dir,
-    &meta::DevShellMeta {
-      env_hash: dev_env.env_hash.clone(),
-      target: target.to_string(),
-      flake_root: state.flake_root.display().to_string(),
-      store_path: new_store_path,
-      packages: dev_env.packages.clone(),
-      timestamp: meta::now_secs(),
-      eval_duration_ms: {
-        #[allow(clippy::cast_possible_truncation)]
-        {
-          duration.as_millis() as u64
-        }
-      },
-      lock_hash: None,
-      input_hash: current_input_hash.clone(),
+  let _ = meta::save(&state.state_dir, &meta::DevShellMeta {
+    env_hash:         dev_env.env_hash.clone(),
+    target:           target.to_string(),
+    flake_root:       state.flake_root.display().to_string(),
+    store_path:       new_store_path,
+    packages:         dev_env.packages.clone(),
+    timestamp:        meta::now_secs(),
+    eval_duration_ms: {
+      #[allow(clippy::cast_possible_truncation)]
+      {
+        duration.as_millis() as u64
+      }
     },
-  );
+    lock_hash:        None,
+    input_hash:       current_input_hash.clone(),
+  });
 
   // Update cached input hash for future fast-path checks
   if current_input_hash.is_some() {

@@ -3,20 +3,20 @@
 //! The subshell model is simple:
 //! 1. Parent spawns a child shell with `__XI_IN_DEVSHELL=1` set
 //! 2. Child loads user's rc normally (.zshrc, .bashrc, config.fish)
-//! 3. User's rc has the activation hook, which detects `__XI_IN_DEVSHELL`
-//!    and redirects to subshell mode (sources env.sh + hook.sh)
+//! 3. User's rc has the activation hook, which detects `__XI_IN_DEVSHELL` and
+//!    redirects to subshell mode (sources env.sh + hook.sh)
 //! 4. env.sh PREPENDS nix paths to `$PATH` (doesn't replace it)
 //! 5. Exit → child dies, parent resumes with original clean env
 //!
 //! Exit code convention:
 //! - 200: "left flake directory" → parent stays alive (cd-out)
-//! - Any other: user explicitly exited → parent sets suppress flag
-//!   (prevents re-entry loop without killing the terminal)
+//! - Any other: user explicitly exited → parent sets suppress flag (prevents
+//!   re-entry loop without killing the terminal)
 //!
 //! Nesting:
 //! - `__XI_DEPTH` increments per level (parent=1, child=2, …)
-//! - Each level's env uses `__XI_INJECTED_VARS_<depth>` so cleanup
-//!   only affects its own vars, preserving parent devshell env
+//! - Each level's env uses `__XI_INJECTED_VARS_<depth>` so cleanup only affects
+//!   its own vars, preserving parent devshell env
 //! - Process isolation restores parent env when child shell exits
 
 use std::path::Path;
@@ -51,7 +51,7 @@ pub fn generate_spawn_command(
 __xi_cwd_save=\"$PWD\"
 cd '{cwd}'
 __XI_IN_DEVSHELL=1 __XI_FLAKE_ROOT='{root}' __XI_BIN='{xi_bin}' \
-__XI_DEPTH=$((${{__XI_DEPTH:-0}}+1)) {shell_name}
+         __XI_DEPTH=$((${{__XI_DEPTH:-0}}+1)) {shell_name}
 __xi_status=$?
 cd \"$__xi_cwd_save\"
 if [ $__xi_status -ne {sentinel} ]; then export __XI_SUPPRESS='{root}'; fi
@@ -64,7 +64,8 @@ if [ $__xi_status -ne {sentinel} ]; then export __XI_SUPPRESS='{root}'; fi
 set -l __xi_cwd_save $PWD
 cd '{cwd}'
 __XI_IN_DEVSHELL=1 __XI_FLAKE_ROOT='{root}' __XI_BIN='{xi_bin}' \
-__XI_DEPTH=(math (set -q __XI_DEPTH; and echo $__XI_DEPTH; or echo 0) + 1) fish
+         __XI_DEPTH=(math (set -q __XI_DEPTH; and echo $__XI_DEPTH; or echo \
+         0) + 1) fish
 set -l __xi_status $status
 cd $__xi_cwd_save
 if test $__xi_status -ne {sentinel}; set -gx __XI_SUPPRESS '{root}'; end

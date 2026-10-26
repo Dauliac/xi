@@ -5,11 +5,11 @@ use tracing::{debug, warn};
 /// Project-level configuration from `.xi.toml`.
 #[derive(Debug, Default)]
 pub struct ProjectConfig {
-  pub ci: ProjectCiConfig,
-  pub consumer: ProjectConsumerConfig,
-  pub doctor: ProjectDoctorConfig,
-  pub test: ProjectTestConfig,
-  pub fmt: ProjectFmtConfig,
+  pub ci:          ProjectCiConfig,
+  pub consumer:    ProjectConsumerConfig,
+  pub doctor:      ProjectDoctorConfig,
+  pub test:        ProjectTestConfig,
+  pub fmt:         ProjectFmtConfig,
   pub materialize: ProjectMaterializeConfig,
 }
 
@@ -24,7 +24,7 @@ pub struct ProjectFmtConfig {
 #[derive(Debug, Default)]
 pub struct ProjectCiConfig {
   /// Build backend preference (auto, devour-flake, nix-fast-build).
-  pub backend: crate::args::CiBackend,
+  pub backend:       crate::args::CiBackend,
   /// Extra flake output paths to discover and build/eval.
   pub extra_outputs: Vec<String>,
 }
@@ -33,36 +33,36 @@ pub struct ProjectCiConfig {
 #[derive(Debug)]
 pub struct ProjectTestConfig {
   /// Which backends to run. Empty = auto-detect all.
-  pub backends: Vec<String>,
+  pub backends:          Vec<String>,
   /// Flake attribute for `runTests` backend (per-system).
-  pub run_tests_attr: String,
+  pub run_tests_attr:    String,
   /// Glob filter on check derivation names.
-  pub checks_filter: String,
+  pub checks_filter:     String,
   /// Test directory for nix-unit standalone CLI.
   pub nix_unit_test_dir: String,
   /// Test directory for nixt.
-  pub nixt_test_dir: String,
+  pub nixt_test_dir:     String,
   /// Custom command-based backends.
-  pub custom: Vec<CustomTestBackend>,
+  pub custom:            Vec<CustomTestBackend>,
 }
 
 /// A user-defined test backend that shells out to a command.
 #[derive(Debug, Clone)]
 pub struct CustomTestBackend {
-  pub name: String,
+  pub name:    String,
   pub command: String,
-  pub args: Vec<String>,
+  pub args:    Vec<String>,
 }
 
 impl Default for ProjectTestConfig {
   fn default() -> Self {
     Self {
-      backends: Vec::new(),
-      run_tests_attr: "tests".to_string(),
-      checks_filter: String::new(),
+      backends:          Vec::new(),
+      run_tests_attr:    "tests".to_string(),
+      checks_filter:     String::new(),
       nix_unit_test_dir: "tests/".to_string(),
-      nixt_test_dir: "tests/".to_string(),
-      custom: Vec::new(),
+      nixt_test_dir:     "tests/".to_string(),
+      custom:            Vec::new(),
     }
   }
 }
@@ -71,11 +71,11 @@ impl Default for ProjectTestConfig {
 #[derive(Debug, Default)]
 pub struct ProjectDoctorConfig {
   /// Maximum input age in days before warning. Default: 30.
-  pub max_input_age_days: Option<u64>,
+  pub max_input_age_days:       Option<u64>,
   /// Whether to warn on nixpkgs forks. Default: true.
   pub require_official_nixpkgs: bool,
   /// Override the list of supported nixpkgs branches.
-  pub supported_branches: Vec<String>,
+  pub supported_branches:       Vec<String>,
 }
 
 /// Consumer flake configuration.
@@ -110,34 +110,34 @@ impl Default for ProjectConsumerConfig {
 pub struct ProjectMaterializeConfig {
   /// Base path for committed materialized files (AOT mode).
   /// Default: `"nix/materialized"`.
-  pub commit_path: String,
+  pub commit_path:         String,
   /// Verify freshness in CI (`xi ci`).
-  pub check_in_ci: bool,
+  pub check_in_ci:         bool,
   /// Apply skip-worktree to committed materialized files so they
   /// don't appear in `git status`. Default: true.
-  pub git_hide: bool,
+  pub git_hide:            bool,
   /// Automatically run `xi materialize` before build/ci commands.
   /// Only re-runs stale targets. Default: false.
-  pub pre_build: bool,
+  pub pre_build:           bool,
   /// After `--commit`, automatically `git add` the materialized files.
   /// Default: false.
-  pub auto_stage: bool,
+  pub auto_stage:          bool,
   /// Restrict auto-stage to specific branches. Empty = all branches.
   pub auto_stage_branches: Vec<String>,
   /// Individual materialization targets.
-  pub targets: Vec<MaterializeTarget>,
+  pub targets:             Vec<MaterializeTarget>,
 }
 
 impl Default for ProjectMaterializeConfig {
   fn default() -> Self {
     Self {
-      commit_path: "nix/materialized".to_string(),
-      check_in_ci: false,
-      git_hide: true,
-      pre_build: false,
-      auto_stage: false,
+      commit_path:         "nix/materialized".to_string(),
+      check_in_ci:         false,
+      git_hide:            true,
+      pre_build:           false,
+      auto_stage:          false,
       auto_stage_branches: Vec::new(),
-      targets: Vec::new(),
+      targets:             Vec::new(),
     }
   }
 }
@@ -146,14 +146,14 @@ impl Default for ProjectMaterializeConfig {
 #[derive(Debug, Clone)]
 pub struct MaterializeTarget {
   /// Human-readable name (e.g. "cargo-hash").
-  pub name: String,
+  pub name:    String,
   /// Shell command to produce the output. Runs in project root.
   /// Stdout is captured and written to the output file.
   pub command: String,
   /// Output path relative to the materialization base directory.
   /// Trailing `/` means directory output (command writes to
   /// `$XI_MATERIALIZE_OUT`).
-  pub output: String,
+  pub output:  String,
   /// Glob patterns of files whose content determines cache validity.
   /// Hash of these files is compared to decide if re-materialization
   /// is needed.
@@ -386,15 +386,15 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
 
 fn default_config() -> ProjectConfig {
   ProjectConfig {
-    ci: ProjectCiConfig::default(),
-    consumer: ProjectConsumerConfig::default(),
-    doctor: ProjectDoctorConfig {
-      max_input_age_days: None,
+    ci:          ProjectCiConfig::default(),
+    consumer:    ProjectConsumerConfig::default(),
+    doctor:      ProjectDoctorConfig {
+      max_input_age_days:       None,
       require_official_nixpkgs: true,
-      supported_branches: vec![],
+      supported_branches:       vec![],
     },
-    test: ProjectTestConfig::default(),
-    fmt: ProjectFmtConfig::default(),
+    test:        ProjectTestConfig::default(),
+    fmt:         ProjectFmtConfig::default(),
     materialize: ProjectMaterializeConfig::default(),
   }
 }

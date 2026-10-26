@@ -10,21 +10,28 @@ pub(crate) mod test;
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use subprocess::{Exec, Redirection};
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
-use xi_core::command::ExitError;
-use xi_core::installable::Installable;
-
-use crate::args::{
-  BuildArgs, CheckArgs, CiBackend, FmtArgs, FmtBackend, InitArgs, RunArgs,
-  ShowArgs, UpdateArgs,
+use xi_core::{
+  command::ExitError,
+  flake_output::FlakeOutput,
+  installable::Installable,
 };
 
-use xi_core::flake_output::FlakeOutput;
+use crate::args::{
+  BuildArgs,
+  CheckArgs,
+  CiBackend,
+  FmtArgs,
+  FmtBackend,
+  InitArgs,
+  RunArgs,
+  ShowArgs,
+  UpdateArgs,
+};
 
 // ---------------------------------------------------------------------------
 // Suggestion helpers
@@ -37,15 +44,17 @@ fn suggestion_flake_ref(
 ) -> String {
   match installable {
     xi_core::installable::InstallableArgs::Unspecified => ".".to_string(),
-    xi_core::installable::InstallableArgs::Specified(inst) => match inst {
-      xi_core::installable::Installable::Flake { reference, .. } => {
-        if is_flake_ref(reference) {
-          reference.clone()
-        } else {
-          ".".to_string()
-        }
-      },
-      _ => String::new(),
+    xi_core::installable::InstallableArgs::Specified(inst) => {
+      match inst {
+        xi_core::installable::Installable::Flake { reference, .. } => {
+          if is_flake_ref(reference) {
+            reference.clone()
+          } else {
+            ".".to_string()
+          }
+        },
+        _ => String::new(),
+      }
     },
   }
 }
@@ -56,19 +65,21 @@ fn suggestion_attr(
 ) -> Option<String> {
   match installable {
     xi_core::installable::InstallableArgs::Unspecified => None,
-    xi_core::installable::InstallableArgs::Specified(inst) => match inst {
-      xi_core::installable::Installable::Flake {
-        reference,
-        attribute,
-      } => {
-        if attribute.is_empty() && !is_flake_ref(reference) {
-          // Bare name treated as attribute
-          Some(reference.clone())
-        } else {
-          attribute.last().cloned()
-        }
-      },
-      _ => None,
+    xi_core::installable::InstallableArgs::Specified(inst) => {
+      match inst {
+        xi_core::installable::Installable::Flake {
+          reference,
+          attribute,
+        } => {
+          if attribute.is_empty() && !is_flake_ref(reference) {
+            // Bare name treated as attribute
+            Some(reference.clone())
+          } else {
+            attribute.last().cloned()
+          }
+        },
+        _ => None,
+      }
     },
   }
 }
@@ -82,7 +93,8 @@ pub(crate) const DEVOUR_FLAKE_REV: &str =
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Return the current nix system string (e.g. `x86_64-linux`, `aarch64-darwin`).
+/// Return the current nix system string (e.g. `x86_64-linux`,
+/// `aarch64-darwin`).
 pub(crate) fn current_nix_system() -> String {
   xi_core::flake_output::current_nix_system()
 }
@@ -274,8 +286,8 @@ impl BuildArgs {
     let local_dir = resolve_local_flake_dir(Some(root_ref));
     let Some(ref base_dir) = local_dir else {
       bail!(
-        "--recursive requires a local flake reference, \
-         got remote ref: {root_ref}"
+        "--recursive requires a local flake reference, got remote ref: \
+         {root_ref}"
       );
     };
 
@@ -448,9 +460,10 @@ impl RunArgs {
   /// Run the run command.
   ///
   /// Routing chain for a bare-name argument (e.g. `xi run hello`):
-  /// 1. `.#apps.<system>.<name>` or `.#packages.<system>.<name>` — the
-  ///    local flake, if present.
-  /// 2. The flake's locked `nixpkgs` input — reproducible, still project-scoped.
+  /// 1. `.#apps.<system>.<name>` or `.#packages.<system>.<name>` — the local
+  ///    flake, if present.
+  /// 2. The flake's locked `nixpkgs` input — reproducible, still
+  ///    project-scoped.
   /// 3. System registry `nixpkgs` — rolling, comma-style fallback.
   ///
   /// An explicit `--locate` skips straight to tier 3. Explicit flake refs
@@ -546,26 +559,28 @@ impl RunArgs {
   /// registry or a locked flake input).
   fn run_locate_via(self, source: &locate::LocateSource) -> Result<()> {
     let command = match &self.installable {
-      xi_core::installable::InstallableArgs::Specified(inst) => match inst {
-        xi_core::installable::Installable::Flake {
-          reference,
-          attribute,
-        } => {
-          if attribute.is_empty() {
-            reference.clone()
-          } else {
-            attribute
-              .last()
-              .cloned()
-              .unwrap_or_else(|| reference.clone())
-          }
-        },
-        _ => {
-          bail!(
-            "locate mode expects a bare command name, not a file/expr/store \
-             path"
-          );
-        },
+      xi_core::installable::InstallableArgs::Specified(inst) => {
+        match inst {
+          xi_core::installable::Installable::Flake {
+            reference,
+            attribute,
+          } => {
+            if attribute.is_empty() {
+              reference.clone()
+            } else {
+              attribute
+                .last()
+                .cloned()
+                .unwrap_or_else(|| reference.clone())
+            }
+          },
+          _ => {
+            bail!(
+              "locate mode expects a bare command name, not a file/expr/store \
+               path"
+            );
+          },
+        }
       },
       xi_core::installable::InstallableArgs::Unspecified => {
         bail!("locate mode requires a command name: xi run <command>");
@@ -981,18 +996,20 @@ fn extract_bare_name(
 ) -> Option<String> {
   match installable {
     xi_core::installable::InstallableArgs::Unspecified => None,
-    xi_core::installable::InstallableArgs::Specified(inst) => match inst {
-      xi_core::installable::Installable::Flake {
-        reference,
-        attribute,
-      } => {
-        if attribute.is_empty() && !is_flake_ref(reference) {
-          Some(reference.clone())
-        } else {
-          None
-        }
-      },
-      _ => None,
+    xi_core::installable::InstallableArgs::Specified(inst) => {
+      match inst {
+        xi_core::installable::Installable::Flake {
+          reference,
+          attribute,
+        } => {
+          if attribute.is_empty() && !is_flake_ref(reference) {
+            Some(reference.clone())
+          } else {
+            None
+          }
+        },
+        _ => None,
+      }
     },
   }
 }
@@ -1164,8 +1181,10 @@ pub(crate) fn ensure_flake_locked(flake_dir: Option<PathBuf>) -> Result<()> {
 /// When nom is disabled, stderr is filtered to suppress the noisy
 /// "incompatible systems" warning that nix emits.
 fn execute_flake_check(cmd: &NixCommand, no_nom: bool) -> Result<()> {
-  use std::io::{BufRead, BufReader, Write};
-  use std::process::Stdio;
+  use std::{
+    io::{BufRead, BufReader, Write},
+    process::Stdio,
+  };
 
   if !no_nom {
     return run_with_nom(cmd.to_exec());
@@ -1321,17 +1340,19 @@ fn extract_flake_ref(
   installable: &xi_core::installable::InstallableArgs,
 ) -> Result<String> {
   match installable {
-    xi_core::installable::InstallableArgs::Specified(inst) => match inst {
-      xi_core::installable::Installable::Flake {
-        reference,
-        attribute,
-      } => {
-        if !attribute.is_empty() {
-          warn!("Ignoring attribute path with --all (building all outputs)");
-        }
-        Ok(reference.clone())
-      },
-      _ => bail!("--all requires a flake reference"),
+    xi_core::installable::InstallableArgs::Specified(inst) => {
+      match inst {
+        xi_core::installable::Installable::Flake {
+          reference,
+          attribute,
+        } => {
+          if !attribute.is_empty() {
+            warn!("Ignoring attribute path with --all (building all outputs)");
+          }
+          Ok(reference.clone())
+        },
+        _ => bail!("--all requires a flake reference"),
+      }
     },
     xi_core::installable::InstallableArgs::Unspecified => Ok(".".to_string()),
   }
@@ -1417,8 +1438,8 @@ pub(crate) fn verify_flake_lock_in_sync(flake_ref: &str) -> Result<()> {
 
   if !status.success() {
     bail!(
-      "flake.lock is out of sync with flake.nix inputs. \
-       Run `nix flake lock` to update it."
+      "flake.lock is out of sync with flake.nix inputs. Run `nix flake lock` \
+       to update it."
     );
   }
 
@@ -1460,15 +1481,17 @@ pub(crate) fn resolve_backend(
 ) -> CiBackend {
   match cli {
     CiBackend::DevourFlake | CiBackend::NixFastBuild => cli.clone(),
-    CiBackend::Auto => match config {
-      CiBackend::DevourFlake | CiBackend::NixFastBuild => config.clone(),
-      CiBackend::Auto => {
-        if detect_nix_fast_build() {
-          CiBackend::NixFastBuild
-        } else {
-          CiBackend::DevourFlake
-        }
-      },
+    CiBackend::Auto => {
+      match config {
+        CiBackend::DevourFlake | CiBackend::NixFastBuild => config.clone(),
+        CiBackend::Auto => {
+          if detect_nix_fast_build() {
+            CiBackend::NixFastBuild
+          } else {
+            CiBackend::DevourFlake
+          }
+        },
+      }
     },
   }
 }
@@ -1631,14 +1654,11 @@ mod tests {
       "nixpkgs".to_string(),
       "github:NixOS/nixpkgs/unstable".to_string(),
     ];
-    assert_eq!(
-      transform_override_inputs(&args),
-      vec![
-        "--override-input",
-        "flake/nixpkgs",
-        "github:NixOS/nixpkgs/unstable",
-      ]
-    );
+    assert_eq!(transform_override_inputs(&args), vec![
+      "--override-input",
+      "flake/nixpkgs",
+      "github:NixOS/nixpkgs/unstable",
+    ]);
   }
 
   #[test]
@@ -1651,17 +1671,14 @@ mod tests {
       "crane".to_string(),
       "github:ipetkov/crane".to_string(),
     ];
-    assert_eq!(
-      transform_override_inputs(&args),
-      vec![
-        "--override-input",
-        "flake/nixpkgs",
-        "github:NixOS/nixpkgs/unstable",
-        "--override-input",
-        "flake/crane",
-        "github:ipetkov/crane",
-      ]
-    );
+    assert_eq!(transform_override_inputs(&args), vec![
+      "--override-input",
+      "flake/nixpkgs",
+      "github:NixOS/nixpkgs/unstable",
+      "--override-input",
+      "flake/crane",
+      "github:ipetkov/crane",
+    ]);
   }
 
   #[test]
@@ -1673,16 +1690,13 @@ mod tests {
       "github:NixOS/nixpkgs".to_string(),
       "--keep-going".to_string(),
     ];
-    assert_eq!(
-      transform_override_inputs(&args),
-      vec![
-        "--verbose",
-        "--override-input",
-        "flake/nixpkgs",
-        "github:NixOS/nixpkgs",
-        "--keep-going",
-      ]
-    );
+    assert_eq!(transform_override_inputs(&args), vec![
+      "--verbose",
+      "--override-input",
+      "flake/nixpkgs",
+      "github:NixOS/nixpkgs",
+      "--keep-going",
+    ]);
   }
 
   #[test]

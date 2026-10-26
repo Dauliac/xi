@@ -1,5 +1,6 @@
 pub mod schema;
 
+#[cfg(unix)] use std::os::unix::fs::PermissionsExt;
 use std::{
   ffi::{OsStr, OsString},
   io::{self, Read, Write},
@@ -9,9 +10,6 @@ use std::{
   thread,
   time::{Duration, Instant},
 };
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 use subprocess::Exec;
 use thiserror::Error;
@@ -23,7 +21,10 @@ pub enum Error {
   #[error("command '{command}' failed")]
   CommandFailed { command: String },
   #[error("nix {command} timed out after {} seconds", duration.as_secs())]
-  Timeout { command: String, duration: Duration },
+  Timeout {
+    command:  String,
+    duration: Duration,
+  },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -47,76 +48,76 @@ pub enum CommandKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandSpec {
-  pub name: &'static str,
+  pub name:             &'static str,
   pub print_build_logs: bool,
-  pub interactive: bool,
+  pub interactive:      bool,
 }
 
 pub const COMMAND_SPECS: &[CommandSpec] = &[
   CommandSpec {
-    name: "build",
+    name:             "build",
     print_build_logs: true,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "config",
+    name:             "config",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "copy",
+    name:             "copy",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "develop",
+    name:             "develop",
     print_build_logs: true,
-    interactive: true,
+    interactive:      true,
   },
   CommandSpec {
-    name: "eval",
+    name:             "eval",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "flake",
+    name:             "flake",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "fmt",
+    name:             "fmt",
     print_build_logs: true,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "path-info",
+    name:             "path-info",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "print-dev-env",
+    name:             "print-dev-env",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
   CommandSpec {
-    name: "repl",
+    name:             "repl",
     print_build_logs: false,
-    interactive: true,
+    interactive:      true,
   },
   CommandSpec {
-    name: "run",
+    name:             "run",
     print_build_logs: true,
-    interactive: true,
+    interactive:      true,
   },
   CommandSpec {
-    name: "shell",
+    name:             "shell",
     print_build_logs: true,
-    interactive: true,
+    interactive:      true,
   },
   CommandSpec {
-    name: "store",
+    name:             "store",
     print_build_logs: false,
-    interactive: false,
+    interactive:      false,
   },
 ];
 
@@ -164,9 +165,11 @@ impl TryFrom<&str> for CommandKind {
       "run" => Ok(Self::Run),
       "shell" => Ok(Self::Shell),
       "store" => Ok(Self::Store),
-      command => Err(UnknownCommand {
-        command: command.to_string(),
-      }),
+      command => {
+        Err(UnknownCommand {
+          command: command.to_string(),
+        })
+      },
     }
   }
 }
@@ -257,7 +260,8 @@ fn find_real_nix_binary_uncached() -> Option<OsString> {
       continue;
     }
 
-    // Read the first 2 bytes to distinguish ELF/binary from shell-script wrapper
+    // Read the first 2 bytes to distinguish ELF/binary from shell-script
+    // wrapper
     if let Ok(file) = std::fs::File::open(&candidate) {
       let mut buf = [0u8; 2];
       if io::Read::read_exact(&mut io::BufReader::new(file), &mut buf).is_ok()
@@ -275,18 +279,18 @@ fn find_real_nix_binary_uncached() -> Option<OsString> {
 }
 
 pub struct NixCommand {
-  kind: Option<CommandKind>,
-  binary: OsString,
-  global_args: Vec<OsString>,
-  args: Vec<OsString>,
-  env: Vec<(OsString, OsString)>,
-  impure: bool,
-  print_build_logs: bool,
-  interactive: bool,
-  timeout: Option<Duration>,
-  eval_profiler_mode: Option<String>,
+  kind:                    Option<CommandKind>,
+  binary:                  OsString,
+  global_args:             Vec<OsString>,
+  args:                    Vec<OsString>,
+  env:                     Vec<(OsString, OsString)>,
+  impure:                  bool,
+  print_build_logs:        bool,
+  interactive:             bool,
+  timeout:                 Option<Duration>,
+  eval_profiler_mode:      Option<String>,
   eval_profiler_frequency: Option<u32>,
-  eval_profile_file: Option<String>,
+  eval_profile_file:       Option<String>,
 }
 
 impl NixCommand {
@@ -294,36 +298,36 @@ impl NixCommand {
   pub fn new(kind: CommandKind) -> Self {
     let spec = kind.spec();
     Self {
-      kind: Some(kind),
-      binary: find_real_nix_binary(),
-      global_args: Vec::new(),
-      args: Vec::new(),
-      env: Vec::new(),
-      impure: false,
-      print_build_logs: spec.print_build_logs,
-      interactive: spec.interactive,
-      timeout: None,
-      eval_profiler_mode: None,
+      kind:                    Some(kind),
+      binary:                  find_real_nix_binary(),
+      global_args:             Vec::new(),
+      args:                    Vec::new(),
+      env:                     Vec::new(),
+      impure:                  false,
+      print_build_logs:        spec.print_build_logs,
+      interactive:             spec.interactive,
+      timeout:                 None,
+      eval_profiler_mode:      None,
       eval_profiler_frequency: None,
-      eval_profile_file: None,
+      eval_profile_file:       None,
     }
   }
 
   #[must_use]
   pub fn raw() -> Self {
     Self {
-      kind: None,
-      binary: find_real_nix_binary(),
-      global_args: Vec::new(),
-      args: Vec::new(),
-      env: Vec::new(),
-      impure: false,
-      print_build_logs: false,
-      interactive: false,
-      timeout: None,
-      eval_profiler_mode: None,
+      kind:                    None,
+      binary:                  find_real_nix_binary(),
+      global_args:             Vec::new(),
+      args:                    Vec::new(),
+      env:                     Vec::new(),
+      impure:                  false,
+      print_build_logs:        false,
+      interactive:             false,
+      timeout:                 None,
+      eval_profiler_mode:      None,
       eval_profiler_frequency: None,
-      eval_profile_file: None,
+      eval_profile_file:       None,
     }
   }
 
@@ -717,10 +721,12 @@ mod tests {
       .arg("nixpkgs#hello")
       .impure(true);
     assert_nix_binary(&cmd);
-    assert_eq!(
-      argv_args(&cmd),
-      ["build", "--print-build-logs", "--impure", "nixpkgs#hello"]
-    );
+    assert_eq!(argv_args(&cmd), [
+      "build",
+      "--print-build-logs",
+      "--impure",
+      "nixpkgs#hello"
+    ]);
   }
 
   #[test]
@@ -770,20 +776,17 @@ mod tests {
       .eval_profiler_frequency(9999)
       .eval_profile_file("/tmp/nix.profile");
     assert_nix_binary(&cmd);
-    assert_eq!(
-      argv_args(&cmd),
-      [
-        "eval",
-        "--impure",
-        "--eval-profiler",
-        "flamegraph",
-        "--eval-profiler-frequency",
-        "9999",
-        "--eval-profile-file",
-        "/tmp/nix.profile",
-        "nixpkgs#hello"
-      ]
-    );
+    assert_eq!(argv_args(&cmd), [
+      "eval",
+      "--impure",
+      "--eval-profiler",
+      "flamegraph",
+      "--eval-profiler-frequency",
+      "9999",
+      "--eval-profile-file",
+      "/tmp/nix.profile",
+      "nixpkgs#hello"
+    ]);
   }
 
   #[test]
@@ -793,16 +796,13 @@ mod tests {
       .arg("--raw")
       .arg("nixpkgs#hello");
     assert_nix_binary(&cmd);
-    assert_eq!(
-      argv_args(&cmd),
-      [
-        "--extra-experimental-features",
-        "nix-command flakes",
-        "eval",
-        "--raw",
-        "nixpkgs#hello"
-      ]
-    );
+    assert_eq!(argv_args(&cmd), [
+      "--extra-experimental-features",
+      "nix-command flakes",
+      "eval",
+      "--raw",
+      "nixpkgs#hello"
+    ]);
   }
 
   #[test]

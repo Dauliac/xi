@@ -5,13 +5,13 @@
 //! daemon health. This module orchestrates the pieces `hook::` already
 //! ships:
 //!
-//! 1. **Shortcut check** — if `should_shortcut` says the shell is still in
-//!    a trusted subshell with a matching lock hash, return
+//! 1. **Shortcut check** — if `should_shortcut` says the shell is still in a
+//!    trusted subshell with a matching lock hash, return
 //!    [`TickOutcome::Shortcut`] with no I/O.
-//! 2. **Daemon call** — hand the [`Query`] to the injected
-//!    [`DaemonCaller`], respecting the remaining budget.
-//! 3. **Fallback** — on daemon error or budget exhaustion, enqueue the
-//!    query for the next tick and return [`TickOutcome::Deferred`] (or
+//! 2. **Daemon call** — hand the [`Query`] to the injected [`DaemonCaller`],
+//!    respecting the remaining budget.
+//! 3. **Fallback** — on daemon error or budget exhaustion, enqueue the query
+//!    for the next tick and return [`TickOutcome::Deferred`] (or
 //!    [`TickOutcome::Offline`] if the cache is still valid).
 //!
 //! `prompt.rs` plugs a real socket-backed caller in; the BDD tests
@@ -20,14 +20,15 @@
 //! interactive migration is intentionally decoupled from the
 //! testability of the orchestrator.
 
-use std::path::Path;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use color_eyre::Result;
 
-use super::budget::Budget;
-use super::queue::{Queue, QueueEntry, QueuePayload};
-use super::shortcut::should_shortcut;
+use super::{
+  budget::Budget,
+  queue::{Queue, QueueEntry, QueuePayload},
+  shortcut::should_shortcut,
+};
 use crate::daemon::protocol_v3::{Query, QueryReply};
 
 /// One-shot daemon call surface used by [`run_tick`].
@@ -73,12 +74,12 @@ pub enum TickOutcome {
 /// Context passed into [`run_tick`] — the caller assembles this once per
 /// prompt and re-uses the [`Queue`] handle across ticks.
 pub struct TickCtx<'a> {
-  pub cwd: &'a Path,
+  pub cwd:            &'a Path,
   pub last_lock_hash: Option<&'a str>,
-  pub last_reply_at: Option<std::time::SystemTime>,
-  pub offline_valid: bool,
-  pub queue: &'a Queue,
-  pub budget: Budget,
+  pub last_reply_at:  Option<std::time::SystemTime>,
+  pub offline_valid:  bool,
+  pub queue:          &'a Queue,
+  pub budget:         Budget,
 }
 
 /// Run one tick.

@@ -4,25 +4,31 @@ use std::{
   io::Read,
   path::{Path, PathBuf},
   sync::{
-    Arc, OnceLock,
+    Arc,
+    OnceLock,
     atomic::{AtomicBool, Ordering},
   },
   time::Duration,
 };
 
 use color_eyre::{
-  Report, Result,
+  Report,
+  Result,
   eyre::{Context, bail, eyre},
 };
 use secrecy::{ExposeSecret, SecretString};
 use subprocess::{Exec, Redirection};
 use tracing::{debug, error, info, warn};
-use xi_core::installable::Installable;
 use xi_core::{
   command::{
-    CommandKind, ElevationStrategy, NixCommand, cache_password,
-    get_cached_password, get_sudo_opts,
+    CommandKind,
+    ElevationStrategy,
+    NixCommand,
+    cache_password,
+    get_cached_password,
+    get_sudo_opts,
   },
+  installable::Installable,
   util::NixVariant,
 };
 
@@ -477,7 +483,7 @@ impl NixStoreScheme {
 #[derive(Debug, Clone)]
 pub struct RemoteHost {
   /// The host string (may include user@)
-  host: String,
+  host:         String,
   store_scheme: NixStoreScheme,
 }
 
@@ -1370,7 +1376,7 @@ fn eval_drv_path(installable: &Installable) -> Result<PathBuf> {
       let mut drv_attr = attribute.clone();
       drv_attr.push("drvPath".to_string());
       Installable::File {
-        path: path.clone(),
+        path:      path.clone(),
         attribute: drv_attr,
       }
     },
@@ -1382,7 +1388,7 @@ fn eval_drv_path(installable: &Installable) -> Result<PathBuf> {
       drv_attr.push("drvPath".to_string());
       Installable::Expression {
         expression: expression.clone(),
-        attribute: drv_attr,
+        attribute:  drv_attr,
       }
     },
     Installable::Store { path } => {
@@ -1862,14 +1868,14 @@ mod tests {
   use serial_test::serial;
 
   struct SshOptsEnvGuard {
-    xi_sshopts: Option<OsString>,
+    xi_sshopts:  Option<OsString>,
     nix_sshopts: Option<OsString>,
   }
 
   impl SshOptsEnvGuard {
     fn new() -> Self {
       Self {
-        xi_sshopts: env::var_os("XI_SSHOPTS"),
+        xi_sshopts:  env::var_os("XI_SSHOPTS"),
         nix_sshopts: env::var_os("NIX_SSHOPTS"),
       }
     }

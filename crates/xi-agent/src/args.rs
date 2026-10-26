@@ -32,7 +32,7 @@ pub enum AgentCommand {
 pub struct ContextArgs {
   /// Override the current system (defaults to running system).
   #[arg(long)]
-  pub system: Option<String>,
+  pub system:    Option<String>,
   /// Do not open the daemon socket; devshell.state will be `not-running`.
   #[arg(long)]
   pub no_daemon: bool,
@@ -42,10 +42,10 @@ pub struct ContextArgs {
 pub struct OutputsArgs {
   /// Enumerate outputs for every system declared by the flake.
   #[arg(long)]
-  pub all_systems: bool,
+  pub all_systems:    bool,
   /// Restrict enumeration to this system.
   #[arg(long)]
-  pub system: Option<String>,
+  pub system:         Option<String>,
   /// Include categories normally hidden from `xi flake show`.
   #[arg(long)]
   pub include_hidden: bool,
@@ -68,7 +68,7 @@ pub struct ManifestArgs {}
 pub struct ValidateArgs {
   /// Execute the plan instead of emitting it.
   #[arg(long)]
-  pub run: bool,
+  pub run:       bool,
   /// Stop at the first blocking failure when running.
   #[arg(long)]
   pub fail_fast: bool,
@@ -78,13 +78,13 @@ pub struct ValidateArgs {
 pub struct InstallArgs {
   /// Scope of install.
   #[arg(long, value_enum, default_value = "user")]
-  pub scope: InstallScope,
+  pub scope:   InstallScope,
   /// Agent runtimes to target.
   #[arg(long, value_enum, default_value = "all")]
-  pub target: InstallTarget,
+  pub target:  InstallTarget,
   /// Rewrite files even when their SHA-256 already matches.
   #[arg(long)]
-  pub force: bool,
+  pub force:   bool,
   /// Print the plan without writing anything.
   #[arg(long)]
   pub dry_run: bool,

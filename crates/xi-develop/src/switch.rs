@@ -1,9 +1,14 @@
 use color_eyre::Result;
 
-use crate::args::SwitchArgs;
-use crate::diff::PackageDiff;
-use crate::shell::ShellType;
-use crate::{dirs, env_file, meta, ui};
+use crate::{
+  args::SwitchArgs,
+  diff::PackageDiff,
+  dirs,
+  env_file,
+  meta,
+  shell::ShellType,
+  ui,
+};
 
 /// Handle the `xi develop switch <TARGET>` command.
 /// Outputs shell-eval-able code to switch the active devshell.
@@ -40,7 +45,8 @@ pub fn switch(args: &SwitchArgs) -> Result<()> {
   let env_path = state_dir.join(ShellType::Bash.env_file_name(target));
   let new_packages = if env_path.exists() {
     // Already cached — load its meta
-    // (meta.json only stores the last eval'd target, so re-eval to get packages)
+    // (meta.json only stores the last eval'd target, so re-eval to get
+    // packages)
     let dev_env =
       env_file::eval_devshell_niced(flake_ref, target, Some(&profile_path))?;
     dev_env.packages
@@ -55,20 +61,17 @@ pub fn switch(args: &SwitchArgs) -> Result<()> {
     }
 
     // Save meta
-    meta::save(
-      &state_dir,
-      &meta::DevShellMeta {
-        env_hash: dev_env.env_hash.clone(),
-        target: target.clone(),
-        flake_root: flake_ref.to_string(),
-        store_path: None,
-        packages: dev_env.packages.clone(),
-        timestamp: meta::now_secs(),
-        eval_duration_ms: 0,
-        lock_hash: None,
-        input_hash: None,
-      },
-    )?;
+    meta::save(&state_dir, &meta::DevShellMeta {
+      env_hash:         dev_env.env_hash.clone(),
+      target:           target.clone(),
+      flake_root:       flake_ref.to_string(),
+      store_path:       None,
+      packages:         dev_env.packages.clone(),
+      timestamp:        meta::now_secs(),
+      eval_duration_ms: 0,
+      lock_hash:        None,
+      input_hash:       None,
+    })?;
 
     dev_env.packages
   };

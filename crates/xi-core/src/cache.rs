@@ -10,16 +10,16 @@ use crate::args::{CacheArgs, CacheTarget};
 /// Notification written by background cache push processes.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheNotification {
-  pub success: bool,
-  pub label: String,
+  pub success:      bool,
+  pub label:        String,
   #[serde(default)]
-  pub stderr: String,
+  pub stderr:       String,
   #[serde(default)]
-  pub store_path: String,
+  pub store_path:   String,
   #[serde(default)]
-  pub push_url: Option<String>,
+  pub push_url:     Option<String>,
   #[serde(default)]
-  pub signing_key: Option<String>,
+  pub signing_key:  Option<String>,
   #[serde(default)]
   pub push_command: Vec<String>,
 }
@@ -112,16 +112,19 @@ fn push_to_cache_async(targets: &[CacheTarget], out_path: &Path) {
         },
         Err(e) => {
           debug!(
-            "[cache] daemon not available ({e}), falling back to detached process"
+            "[cache] daemon not available ({e}), falling back to detached \
+             process"
           );
         },
       }
       // Fallback for this target
       match spawn_detached_push(target, out_path) {
-        Ok(pid) => info!(
-          "[cache] push '{}' running in background (pid {pid})",
-          target.name
-        ),
+        Ok(pid) => {
+          info!(
+            "[cache] push '{}' running in background (pid {pid})",
+            target.name
+          )
+        },
         Err(e) => warn!("[cache] push '{}' failed to spawn: {e}", target.name),
       }
     }
@@ -131,10 +134,12 @@ fn push_to_cache_async(targets: &[CacheTarget], out_path: &Path) {
   // Fallback: detached process for each target
   for target in targets {
     match spawn_detached_push(target, out_path) {
-      Ok(pid) => info!(
-        "[cache] push '{}' running in background (pid {pid})",
-        target.name
-      ),
+      Ok(pid) => {
+        info!(
+          "[cache] push '{}' running in background (pid {pid})",
+          target.name
+        )
+      },
       Err(e) => warn!("[cache] push '{}' failed to spawn: {e}", target.name),
     }
   }
@@ -158,9 +163,11 @@ fn send_daemon_cache_push(
   push_command: &[String],
   sign_key: Option<&str>,
 ) -> Result<bool> {
-  use std::io::{Read, Write};
-  use std::os::unix::net::UnixStream;
-  use std::time::Duration;
+  use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+    time::Duration,
+  };
 
   let mut stream = UnixStream::connect(socket_path)?;
   stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -256,9 +263,9 @@ pub fn drain_notification() -> Option<String> {
           // Enqueue for retry so async failures aren't silently lost
           if !notif.store_path.is_empty() {
             let target = CacheTarget {
-              name: notif.label.clone(),
-              push_url: notif.push_url.clone(),
-              signing_key: notif.signing_key.clone(),
+              name:         notif.label.clone(),
+              push_url:     notif.push_url.clone(),
+              signing_key:  notif.signing_key.clone(),
               push_command: notif.push_command.clone(),
             };
             crate::cache_queue::enqueue(
@@ -342,8 +349,8 @@ fn spawn_detached_push(target: &CacheTarget, out_path: &Path) -> Result<u32> {
       });
 
     format!(
-      "{sign_part}AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
-       nix copy --to {} --quiet --quiet {}",
+      "{sign_part}AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED nix copy \
+       --to {} --quiet --quiet {}",
       shell_escape(&optimized_url),
       shell_escape(out_path_str),
     )
@@ -354,12 +361,12 @@ fn spawn_detached_push(target: &CacheTarget, out_path: &Path) -> Result<u32> {
   // Pre-build the full JSON from Rust so the shell only needs to splice in
   // stderr. Include target info so drain_notification() can enqueue failures.
   let success_notif = CacheNotification {
-    success: true,
-    label: target.name.clone(),
-    stderr: String::new(),
-    store_path: out_path_str.to_string(),
-    push_url: None,
-    signing_key: None,
+    success:      true,
+    label:        target.name.clone(),
+    stderr:       String::new(),
+    store_path:   out_path_str.to_string(),
+    push_url:     None,
+    signing_key:  None,
     push_command: vec![],
   };
   let success_json =

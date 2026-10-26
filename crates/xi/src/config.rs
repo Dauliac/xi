@@ -1,5 +1,6 @@
 use std::{
-  env, fs,
+  env,
+  fs,
   io::{self, Write},
   os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
   path::{Path, PathBuf},
@@ -16,17 +17,17 @@ const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug)]
 pub struct ConfigStore {
-  path: PathBuf,
+  path:     PathBuf,
   document: DocumentMut,
 }
 
 /// Typed configuration loaded from `config.toml`.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-  pub cache: CacheConfig,
+  pub cache:   CacheConfig,
   pub develop: DevelopConfig,
-  pub build: BuildConfig,
-  pub locate: LocateConfig,
+  pub build:   BuildConfig,
+  pub locate:  LocateConfig,
 }
 
 /// Development shell settings from the `[develop]` section.
@@ -36,14 +37,14 @@ pub struct DevelopConfig {
   pub eval_interval: u64,
   /// Extra file patterns to watch beyond `*.nix` and `flake.lock`.
   /// Example: `["*.yaml", "version.txt"]`
-  pub watch_extra: Vec<String>,
+  pub watch_extra:   Vec<String>,
 }
 
 impl Default for DevelopConfig {
   fn default() -> Self {
     Self {
       eval_interval: 5,
-      watch_extra: Vec::new(),
+      watch_extra:   Vec::new(),
     }
   }
 }
@@ -52,44 +53,46 @@ impl Default for DevelopConfig {
 #[derive(Debug, Clone)]
 pub struct BuildConfig {
   /// Use nix-output-monitor (default: true).
-  /// Set to false to globally disable nom (same as `--no-nom` / `XI_NO_NOM=1`).
-  pub nom: bool,
+  /// Set to false to globally disable nom (same as `--no-nom` /
+  /// `XI_NO_NOM=1`).
+  pub nom:                 bool,
   /// CI/build-all backend: "auto", "devour-flake", or "nix-fast-build".
   /// Defaults to devour-flake (always available). The xi Nix modules
   /// override this to "nix-fast-build" when `nixFastBuild.enable = true`.
   /// Same as `--backend` / `XI_CI_BACKEND`.
-  pub ci_backend: String,
+  pub ci_backend:          String,
   /// Display tracebacks on errors (same as `--show-trace` / `XI_SHOW_TRACE`).
-  pub show_trace: bool,
-  /// Continue building despite errors (same as `--keep-going` / `XI_KEEP_GOING`).
-  pub keep_going: bool,
+  pub show_trace:          bool,
+  /// Continue building despite errors (same as `--keep-going` /
+  /// `XI_KEEP_GOING`).
+  pub keep_going:          bool,
   /// Allow impure builds (same as `--impure` / `XI_IMPURE`).
-  pub impure: bool,
+  pub impure:              bool,
   /// Accept configuration from flakes (same as `--accept-flake-config` /
   /// `XI_ACCEPT_FLAKE_CONFIG`).
   pub accept_flake_config: bool,
   /// Build without internet access (same as `--offline` / `XI_OFFLINE`).
-  pub offline: bool,
+  pub offline:             bool,
   /// Number of concurrent Nix jobs (same as `--max-jobs` / `XI_MAX_JOBS`).
-  pub max_jobs: Option<usize>,
-  /// Timeout in seconds for substituter connections (same as nix `connect-timeout`
-  /// option). Prevents long hangs when substituters are unreachable.
-  /// Default: 5. Set to 0 to use nix's default (no timeout).
-  pub connect_timeout: Option<u64>,
+  pub max_jobs:            Option<usize>,
+  /// Timeout in seconds for substituter connections (same as nix
+  /// `connect-timeout` option). Prevents long hangs when substituters are
+  /// unreachable. Default: 5. Set to 0 to use nix's default (no timeout).
+  pub connect_timeout:     Option<u64>,
 }
 
 impl Default for BuildConfig {
   fn default() -> Self {
     Self {
-      nom: true,
-      ci_backend: "devour-flake".to_string(),
-      show_trace: false,
-      keep_going: false,
-      impure: false,
+      nom:                 true,
+      ci_backend:          "devour-flake".to_string(),
+      show_trace:          false,
+      keep_going:          false,
+      impure:              false,
       accept_flake_config: false,
-      offline: false,
-      max_jobs: None,
-      connect_timeout: Some(5),
+      offline:             false,
+      max_jobs:            None,
+      connect_timeout:     Some(5),
     }
   }
 }
@@ -131,11 +134,11 @@ impl Default for LocateConfig {
 #[derive(Debug, Clone, Default)]
 pub struct CacheConfig {
   /// Named cache targets from `[cache.<name>]` sub-tables.
-  pub targets: Vec<xi_core::args::CacheTarget>,
+  pub targets:    Vec<xi_core::args::CacheTarget>,
   /// Whether to push asynchronously in the background.
   pub async_push: bool,
   /// Queue configuration.
-  pub queue: xi_core::cache_queue::QueueConfig,
+  pub queue:      xi_core::cache_queue::QueueConfig,
 }
 
 impl ConfigStore {
@@ -236,8 +239,8 @@ impl ConfigStore {
         .collect();
       if !unknown.is_empty() {
         bail!(
-          "unknown key(s) in [cache]: {}.\n\
-           Hint: cache targets must be sub-tables, e.g. [cache.my-s3]",
+          "unknown key(s) in [cache]: {}.\nHint: cache targets must be \
+           sub-tables, e.g. [cache.my-s3]",
           unknown.join(", ")
         );
       }
@@ -436,8 +439,8 @@ impl ConfigStore {
       targets,
       async_push,
       queue: xi_core::cache_queue::QueueConfig {
-        max_size: queue_max_size,
-        expiry_secs: queue_expiry_secs,
+        max_size:            queue_max_size,
+        expiry_secs:         queue_expiry_secs,
         drain_interval_secs: queue_drain_interval,
       },
     }
@@ -595,7 +598,7 @@ mod tests {
   use super::{ConfigStore, default_config_path};
 
   struct EnvGuard {
-    key: &'static str,
+    key:   &'static str,
     value: Option<std::ffi::OsString>,
   }
 
@@ -725,15 +728,9 @@ mod tests {
     let path = dir.path().join("config.toml");
     fs::write(
       &path,
-      "[build]\n\
-       nom = false\n\
-       show_trace = true\n\
-       keep_going = true\n\
-       impure = true\n\
-       accept_flake_config = true\n\
-       offline = true\n\
-       max_jobs = 8\n\
-       connect_timeout = 10\n",
+      "[build]\nnom = false\nshow_trace = true\nkeep_going = true\nimpure = \
+       true\naccept_flake_config = true\noffline = true\nmax_jobs = \
+       8\nconnect_timeout = 10\n",
     )?;
 
     let store = ConfigStore::load_from(&path)?;
@@ -853,18 +850,9 @@ mod tests {
     let path = dir.path().join("config.toml");
     fs::write(
       &path,
-      "[cache]\n\
-       async_push = true\n\
-       \n\
-       [cache.my-s3]\n\
-       push_url = \"s3://bucket\"\n\
-       signing_key = \"/path/to/key\"\n\
-       \n\
-       [build]\n\
-       nom = false\n\
-       \n\
-       [develop]\n\
-       eval_interval = 10\n",
+      "[cache]\nasync_push = true\n\n[cache.my-s3]\npush_url = \
+       \"s3://bucket\"\nsigning_key = \"/path/to/key\"\n\n[build]\nnom = \
+       false\n\n[develop]\neval_interval = 10\n",
     )?;
 
     let store = ConfigStore::load_from(&path)?;

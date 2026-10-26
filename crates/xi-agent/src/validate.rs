@@ -10,8 +10,13 @@ use color_eyre::eyre::Result;
 use crate::{
   args::ValidateArgs,
   schema::{
-    Envelope, ValidationEvent, ValidationPlan, ValidationStatus,
-    ValidationStep, elapsed_ms, emit,
+    Envelope,
+    ValidationEvent,
+    ValidationPlan,
+    ValidationStatus,
+    ValidationStep,
+    elapsed_ms,
+    emit,
   },
 };
 
@@ -44,44 +49,44 @@ pub fn derive_plan() -> ValidationPlan {
 
   if cwd.join("flake.nix").exists() {
     steps.push(ValidationStep {
-      id: "fmt-check".to_owned(),
-      command: vec!["xi".into(), "fmt".into(), "--check".into()],
-      purpose: "verify formatting is stable".to_owned(),
-      blocking: true,
+      id:         "fmt-check".to_owned(),
+      command:    vec!["xi".into(), "fmt".into(), "--check".into()],
+      purpose:    "verify formatting is stable".to_owned(),
+      blocking:   true,
       depends_on: Vec::new(),
     });
     steps.push(ValidationStep {
-      id: "doctor".to_owned(),
-      command: vec!["xi".into(), "doctor".into()],
-      purpose: "run xi's flake sanity checks".to_owned(),
-      blocking: true,
+      id:         "doctor".to_owned(),
+      command:    vec!["xi".into(), "doctor".into()],
+      purpose:    "run xi's flake sanity checks".to_owned(),
+      blocking:   true,
       depends_on: Vec::new(),
     });
     steps.push(ValidationStep {
-      id: "flake-check".to_owned(),
-      command: vec!["xi".into(), "check".into()],
-      purpose: "evaluate `nix flake check` outputs".to_owned(),
-      blocking: true,
+      id:         "flake-check".to_owned(),
+      command:    vec!["xi".into(), "check".into()],
+      purpose:    "evaluate `nix flake check` outputs".to_owned(),
+      blocking:   true,
       depends_on: vec!["doctor".into()],
     });
   }
 
   if cwd.join("Cargo.toml").exists() {
     steps.push(ValidationStep {
-      id: "cargo-test".to_owned(),
-      command: vec!["cargo".into(), "test".into(), "--workspace".into()],
-      purpose: "run the Rust test suite".to_owned(),
-      blocking: true,
+      id:         "cargo-test".to_owned(),
+      command:    vec!["cargo".into(), "test".into(), "--workspace".into()],
+      purpose:    "run the Rust test suite".to_owned(),
+      blocking:   true,
       depends_on: Vec::new(),
     });
   }
 
   if xi_toml_has_section(&cwd, "ci") {
     steps.push(ValidationStep {
-      id: "ci".to_owned(),
-      command: vec!["xi".into(), "ci".into()],
-      purpose: "run the same pipeline as CI".to_owned(),
-      blocking: true,
+      id:         "ci".to_owned(),
+      command:    vec!["xi".into(), "ci".into()],
+      purpose:    "run the same pipeline as CI".to_owned(),
+      blocking:   true,
       depends_on: vec!["flake-check".into()],
     });
   }
@@ -120,10 +125,10 @@ fn execute(
       .any(|d| failed.contains(d) || !by_id.contains_key(d));
     if blocked {
       let ev = ValidationEvent::Finished {
-        id: step.id.clone(),
-        status: ValidationStatus::Blocked,
+        id:          step.id.clone(),
+        status:      ValidationStatus::Blocked,
         duration_ms: 0,
-        error: Some("dependency failed".to_owned()),
+        error:       Some("dependency failed".to_owned()),
       };
       emit(&Envelope::ok(CMD, ev, 0))?;
       if step.blocking {
@@ -192,17 +197,19 @@ fn run_step(argv: &[String]) -> (ValidationStatus, Option<String>) {
     .output();
   match output {
     Ok(o) if o.status.success() => (ValidationStatus::Passed, None),
-    Ok(o) => (
-      ValidationStatus::Failed,
-      Some(
-        String::from_utf8_lossy(&o.stderr)
-          .lines()
-          .rev()
-          .take(3)
-          .collect::<Vec<_>>()
-          .join(" | "),
-      ),
-    ),
+    Ok(o) => {
+      (
+        ValidationStatus::Failed,
+        Some(
+          String::from_utf8_lossy(&o.stderr)
+            .lines()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        ),
+      )
+    },
     Err(e) => (ValidationStatus::Failed, Some(e.to_string())),
   }
 }

@@ -8,12 +8,16 @@ use color_eyre::{
   eyre::{Context, bail},
 };
 use tracing::{debug, info, warn};
-use xi_core::installable::{CommandContext, Installable, resolve_toplevel};
 use xi_core::{
   args::DiffType,
   command::{
-    Command, CommandKind, ElevationStrategy, NixCommand, find_real_nix_binary,
+    Command,
+    CommandKind,
+    ElevationStrategy,
+    NixCommand,
+    find_real_nix_binary,
   },
+  installable::{CommandContext, Installable, resolve_toplevel},
   update::update,
   util::get_hostname,
 };

@@ -2,10 +2,10 @@
 //! BDD: tests/features/15_version_upgrade.feature (cache version)
 //! BDD: tests/features/11_daemon_lifecycle.feature (state dirs)
 //!
-//! Tests for directory layout, flake ID, A/B slot switching, and cache versioning.
+//! Tests for directory layout, flake ID, A/B slot switching, and cache
+//! versioning.
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use xi_develop::dirs;
 

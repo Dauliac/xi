@@ -114,26 +114,32 @@ fn activation_has_no_shell_side_logic() {
 /// These are the expected outputs — tests validate the contract.
 fn generate_test_activation(shell: &str) -> String {
   match shell {
-    "bash" => r#"# xi develop activation for bash
+    "bash" => {
+      r#"# xi develop activation for bash
 __XI_BIN="$(command -v xi)"
 _xi_hook() { eval "$("$__XI_BIN" develop prompt -s bash --pid $$)"; }
 PROMPT_COMMAND="_xi_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 "#
-    .to_string(),
-    "zsh" => r#"# xi develop activation for zsh
+      .to_string()
+    },
+    "zsh" => {
+      r#"# xi develop activation for zsh
 __XI_BIN="$(command -v xi)"
 _xi_hook() { eval "$("$__XI_BIN" develop prompt -s zsh --pid $$)"; }
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd _xi_hook
 "#
-    .to_string(),
-    "fish" => r#"# xi develop activation for fish
+      .to_string()
+    },
+    "fish" => {
+      r#"# xi develop activation for fish
 set -g __XI_BIN (command -v xi)
 function _xi_hook --on-event fish_prompt
     eval ($__XI_BIN develop prompt -s fish --pid %self)
 end
 "#
-    .to_string(),
+      .to_string()
+    },
     _ => String::new(),
   }
 }

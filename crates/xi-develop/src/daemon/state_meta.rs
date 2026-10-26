@@ -122,9 +122,11 @@ pub enum Phase {
   Working,
   /// Steady, healthy (`Ready`).
   Steady,
-  /// Serving with reduced guarantees (`WatcherDegraded`, `Degraded`, `Missing`).
+  /// Serving with reduced guarantees (`WatcherDegraded`, `Degraded`,
+  /// `Missing`).
   Degraded,
-  /// Non-recoverable without user or restart (`BuildFailed`, `ConfigError`, `Stuck`).
+  /// Non-recoverable without user or restart (`BuildFailed`, `ConfigError`,
+  /// `Stuck`).
   Failed,
   /// Lifecycle wind-down (`ShuttingDown`, `SelfHealing`).
   Shutdown,
@@ -149,13 +151,13 @@ pub enum Category {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateMeta {
   /// Human-facing short name.
-  pub display: &'static str,
+  pub display:  &'static str,
   /// Palette hint (`"green"`, `"yellow"`, `"red"`, `"grey"`).
-  pub color: &'static str,
+  pub color:    &'static str,
   /// Broad category grouping.
   pub category: Category,
   /// Lifecycle phase.
-  pub phase: Phase,
+  pub phase:    Phase,
   /// Whether the state is terminal from the daemon's own lifecycle POV.
   pub terminal: bool,
 }
@@ -166,126 +168,90 @@ pub struct StateMeta {
 /// `DaemonStateKind::ALL`. [`assert_parity`] verifies at startup that every
 /// `DaemonStateKind` variant appears exactly once here.
 pub static CATALOG: &[(DaemonStateKind, StateMeta)] = &[
-  (
-    DaemonStateKind::Starting,
-    StateMeta {
-      display: "Starting",
-      color: "grey",
-      category: Category::Neutral,
-      phase: Phase::Startup,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::Evaluating,
-    StateMeta {
-      display: "Evaluating",
-      color: "yellow",
-      category: Category::Busy,
-      phase: Phase::Working,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::Ready,
-    StateMeta {
-      display: "Ready",
-      color: "green",
-      category: Category::Ok,
-      phase: Phase::Steady,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::BuildFailed,
-    StateMeta {
-      display: "Build failed",
-      color: "red",
-      category: Category::Error,
-      phase: Phase::Failed,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::WatcherDegraded,
-    StateMeta {
-      display: "Watcher degraded",
-      color: "yellow",
-      category: Category::Warn,
-      phase: Phase::Degraded,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::ConfigError,
-    StateMeta {
-      display: "Config error",
-      color: "red",
-      category: Category::Error,
-      phase: Phase::Failed,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::ShuttingDown,
-    StateMeta {
-      display: "Shutting down",
-      color: "grey",
-      category: Category::Neutral,
-      phase: Phase::Shutdown,
-      terminal: true,
-    },
-  ),
-  (
-    DaemonStateKind::Pending,
-    StateMeta {
-      display: "Pending",
-      color: "yellow",
-      category: Category::Busy,
-      phase: Phase::Working,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::Missing,
-    StateMeta {
-      display: "Missing",
-      color: "grey",
-      category: Category::Warn,
-      phase: Phase::Degraded,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::Degraded,
-    StateMeta {
-      display: "Degraded",
-      color: "yellow",
-      category: Category::Warn,
-      phase: Phase::Degraded,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::Stuck,
-    StateMeta {
-      display: "Stuck",
-      color: "red",
-      category: Category::Error,
-      phase: Phase::Failed,
-      terminal: false,
-    },
-  ),
-  (
-    DaemonStateKind::SelfHealing,
-    StateMeta {
-      display: "Self-healing",
-      color: "yellow",
-      category: Category::Busy,
-      phase: Phase::Shutdown,
-      terminal: false,
-    },
-  ),
+  (DaemonStateKind::Starting, StateMeta {
+    display:  "Starting",
+    color:    "grey",
+    category: Category::Neutral,
+    phase:    Phase::Startup,
+    terminal: false,
+  }),
+  (DaemonStateKind::Evaluating, StateMeta {
+    display:  "Evaluating",
+    color:    "yellow",
+    category: Category::Busy,
+    phase:    Phase::Working,
+    terminal: false,
+  }),
+  (DaemonStateKind::Ready, StateMeta {
+    display:  "Ready",
+    color:    "green",
+    category: Category::Ok,
+    phase:    Phase::Steady,
+    terminal: false,
+  }),
+  (DaemonStateKind::BuildFailed, StateMeta {
+    display:  "Build failed",
+    color:    "red",
+    category: Category::Error,
+    phase:    Phase::Failed,
+    terminal: false,
+  }),
+  (DaemonStateKind::WatcherDegraded, StateMeta {
+    display:  "Watcher degraded",
+    color:    "yellow",
+    category: Category::Warn,
+    phase:    Phase::Degraded,
+    terminal: false,
+  }),
+  (DaemonStateKind::ConfigError, StateMeta {
+    display:  "Config error",
+    color:    "red",
+    category: Category::Error,
+    phase:    Phase::Failed,
+    terminal: false,
+  }),
+  (DaemonStateKind::ShuttingDown, StateMeta {
+    display:  "Shutting down",
+    color:    "grey",
+    category: Category::Neutral,
+    phase:    Phase::Shutdown,
+    terminal: true,
+  }),
+  (DaemonStateKind::Pending, StateMeta {
+    display:  "Pending",
+    color:    "yellow",
+    category: Category::Busy,
+    phase:    Phase::Working,
+    terminal: false,
+  }),
+  (DaemonStateKind::Missing, StateMeta {
+    display:  "Missing",
+    color:    "grey",
+    category: Category::Warn,
+    phase:    Phase::Degraded,
+    terminal: false,
+  }),
+  (DaemonStateKind::Degraded, StateMeta {
+    display:  "Degraded",
+    color:    "yellow",
+    category: Category::Warn,
+    phase:    Phase::Degraded,
+    terminal: false,
+  }),
+  (DaemonStateKind::Stuck, StateMeta {
+    display:  "Stuck",
+    color:    "red",
+    category: Category::Error,
+    phase:    Phase::Failed,
+    terminal: false,
+  }),
+  (DaemonStateKind::SelfHealing, StateMeta {
+    display:  "Self-healing",
+    color:    "yellow",
+    category: Category::Busy,
+    phase:    Phase::Shutdown,
+    terminal: false,
+  }),
 ];
 
 /// Look up the metadata for a state kind.
@@ -319,8 +285,8 @@ pub fn assert_parity() {
   for kind in DaemonStateKind::ALL {
     assert!(
       CATALOG.iter().any(|(k, _)| k == kind),
-      "state_meta parity failure: DaemonStateKind::{kind:?} is missing from CATALOG. \
-       Add an entry in state_meta.rs.",
+      "state_meta parity failure: DaemonStateKind::{kind:?} is missing from \
+       CATALOG. Add an entry in state_meta.rs.",
     );
   }
 
@@ -339,8 +305,8 @@ pub fn assert_parity() {
     let occurrences = CATALOG.iter().filter(|(k, _)| k == kind).count();
     assert_eq!(
       occurrences, 1,
-      "state_meta parity failure: DaemonStateKind::{kind:?} appears {occurrences} times in \
-       CATALOG (expected exactly 1).",
+      "state_meta parity failure: DaemonStateKind::{kind:?} appears \
+       {occurrences} times in CATALOG (expected exactly 1).",
     );
   }
 }
@@ -376,7 +342,7 @@ mod tests {
       (DaemonState::Ready, DaemonStateKind::Ready),
       (
         DaemonState::BuildFailed {
-          error: String::new(),
+          error:       String::new(),
           retry_count: 0,
         },
         DaemonStateKind::BuildFailed,
@@ -407,7 +373,7 @@ mod tests {
       ),
       (
         DaemonState::Stuck {
-          job_id: String::new(),
+          job_id:   String::new(),
           stuck_ms: 0,
         },
         DaemonStateKind::Stuck,

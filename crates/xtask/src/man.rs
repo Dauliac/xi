@@ -107,14 +107,14 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
     ),
     (
       "XI_NO_NOM",
-      "Disable nix-output-monitor (nom) for build processes. Set to \
-       \"1\" or \"true\" to disable nom. Equivalent of --no-nom. \
-       Can also be set via config.toml [build] nom = false.",
+      "Disable nix-output-monitor (nom) for build processes. Set to \"1\" or \
+       \"true\" to disable nom. Equivalent of --no-nom. Can also be set via \
+       config.toml [build] nom = false.",
     ),
     (
       "XI_MAX_JOBS",
-      "Number of concurrent jobs Nix should run. Equivalent of \
-       --max-jobs / -j. Can also be set via config.toml [build] max_jobs.",
+      "Number of concurrent jobs Nix should run. Equivalent of --max-jobs / \
+       -j. Can also be set via config.toml [build] max_jobs.",
     ),
     (
       "XI_KEEP_GOING",
@@ -124,32 +124,32 @@ pub fn generate(out_dir: &str) -> Result<(), String> {
     ),
     (
       "XI_SHOW_TRACE",
-      "Display tracebacks on errors. Set to \"1\" or \"true\". Equivalent \
-       of --show-trace / -t. Can also be set via config.toml [build] \
-       show_trace = true.",
+      "Display tracebacks on errors. Set to \"1\" or \"true\". Equivalent of \
+       --show-trace / -t. Can also be set via config.toml [build] show_trace \
+       = true.",
     ),
     (
       "XI_IMPURE",
-      "Allow impure builds. Set to \"1\" or \"true\". Equivalent of \
-       --impure. Can also be set via config.toml [build] impure = true.",
+      "Allow impure builds. Set to \"1\" or \"true\". Equivalent of --impure. \
+       Can also be set via config.toml [build] impure = true.",
     ),
     (
       "XI_ACCEPT_FLAKE_CONFIG",
-      "Accept configuration from flakes. Set to \"1\" or \"true\". \
-       Equivalent of --accept-flake-config. Can also be set via \
-       config.toml [build] accept_flake_config = true.",
+      "Accept configuration from flakes. Set to \"1\" or \"true\". Equivalent \
+       of --accept-flake-config. Can also be set via config.toml [build] \
+       accept_flake_config = true.",
     ),
     (
       "XI_OFFLINE",
-      "Build without internet access. Set to \"1\" or \"true\". Equivalent \
-       of --offline. Can also be set via config.toml [build] offline = true.",
+      "Build without internet access. Set to \"1\" or \"true\". Equivalent of \
+       --offline. Can also be set via config.toml [build] offline = true.",
     ),
     (
       "XI_CONNECT_TIMEOUT",
       "Substituter connection timeout in seconds. Prevents long hangs when \
-       binary caches are unreachable. Default: 5. Set to 0 to disable \
-       (use nix's default of no timeout). Can also be set via \
-       config.toml [build] connect_timeout = 5.",
+       binary caches are unreachable. Default: 5. Set to 0 to disable (use \
+       nix's default of no timeout). Can also be set via config.toml [build] \
+       connect_timeout = 5.",
     ),
     (
       "XI_DIFF",

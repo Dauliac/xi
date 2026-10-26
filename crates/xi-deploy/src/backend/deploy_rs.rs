@@ -4,15 +4,16 @@
 //! deploys using xi's SSH infrastructure.  This is a native Rust
 //! implementation that does not shell out to the `deploy` CLI.
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use tracing::{debug, info};
 use yansi::{Color, Paint};
 
 use super::DeployBackend;
-use crate::args::DeployArgs;
-use crate::target::{DeployRsConfig, DeployTarget};
+use crate::{
+  args::DeployArgs,
+  target::{DeployRsConfig, DeployTarget},
+};
 
 /// Native deploy-rs backend.
 pub struct DeployRsBackend {
@@ -53,8 +54,8 @@ impl DeployBackend for DeployRsBackend {
 
     if all_targets.is_empty() {
       bail!(
-        "No deployment nodes found in {flake_ref}#deploy. \
-         Add nodes to your deploy configuration."
+        "No deployment nodes found in {flake_ref}#deploy. Add nodes to your \
+         deploy configuration."
       );
     }
 

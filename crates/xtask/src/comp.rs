@@ -1,5 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+  path::{Path, PathBuf},
+  process::Command,
+};
 
 use clap::{CommandFactory, ValueEnum};
 use clap_complete::generate_to;

@@ -231,7 +231,7 @@ pub enum ReplVariant {
 #[derive(Debug)]
 pub struct ReplFeatures {
   pub is_flake: bool,
-  pub variant: ReplVariant,
+  pub variant:  ReplVariant,
 }
 
 impl FeatureRequirements for ReplFeatures {

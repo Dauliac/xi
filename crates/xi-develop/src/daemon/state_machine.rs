@@ -1,31 +1,31 @@
 //! Single-writer state machine for the devshell daemon.
 //!
-//! Every mutation to [`DaemonState`] flows through [`StateMachine::transition`].
-//! Illegal transitions are rejected explicitly with [`TransitionRejected`] — never
-//! silently ignored — so upstream logic can log or alert.
+//! Every mutation to [`DaemonState`] flows through
+//! [`StateMachine::transition`]. Illegal transitions are rejected explicitly
+//! with [`TransitionRejected`] — never silently ignored — so upstream logic can
+//! log or alert.
 //!
 //! The current snapshot is published lock-free via
-//! [`arc_swap::ArcSwap<StateSnapshot>`]. Reader threads (e.g. the state-responder
-//! from task 2.1) clone the [`StateHandle`] once at startup and call `.load()` on
-//! every read to get the latest snapshot in one atomic op — they never contend
-//! with the writer.
+//! [`arc_swap::ArcSwap<StateSnapshot>`]. Reader threads (e.g. the
+//! state-responder from task 2.1) clone the [`StateHandle`] once at startup and
+//! call `.load()` on every read to get the latest snapshot in one atomic op —
+//! they never contend with the writer.
 //!
 //! # Design invariants
 //!
 //! * Single writer: only [`StateMachine::transition`] mutates state.
 //! * `seq` is monotonic and increases **only** on accepted transitions.
-//! * `emitted_at` is stamped at accept time and captures the moment the snapshot
-//!   became visible to readers.
+//! * `emitted_at` is stamped at accept time and captures the moment the
+//!   snapshot became visible to readers.
 //! * Rejected transitions do **not** publish a new snapshot and do **not** bump
 //!   `seq` — they return a typed error the caller must handle.
 //!
 //! [`StateSnapshot`] is intentionally minimal in this task (state + seq +
-//! `emitted_at`). Sibling tasks will extend it with `current_env`, `pending_env`,
-//! `active_jobs`, `subscribers`, etc. — extend as sibling tasks wire in.
+//! `emitted_at`). Sibling tasks will extend it with `current_env`,
+//! `pending_env`, `active_jobs`, `subscribers`, etc. — extend as sibling tasks
+//! wire in.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
 use arc_swap::ArcSwap;
 
@@ -40,14 +40,14 @@ pub type JobId = u64;
 /// Publishing works by swapping a fresh `Arc<StateSnapshot>` into the
 /// [`StateHandle`]. Readers get a wait-free view of a consistent past state.
 ///
-/// Extend as sibling tasks wire in (`current_env`, `pending_env`, `active_jobs`,
-/// `subscribers`, …).
+/// Extend as sibling tasks wire in (`current_env`, `pending_env`,
+/// `active_jobs`, `subscribers`, …).
 #[derive(Debug, Clone)]
 pub struct StateSnapshot {
   /// The current daemon state.
-  pub state: DaemonState,
+  pub state:      DaemonState,
   /// Monotonic sequence number — bumped once per accepted transition.
-  pub seq: u64,
+  pub seq:        u64,
   /// Wall-clock time the snapshot became visible to readers.
   pub emitted_at: SystemTime,
 }
@@ -57,8 +57,8 @@ impl StateSnapshot {
   #[must_use]
   pub fn initial() -> Self {
     Self {
-      state: DaemonState::Starting,
-      seq: 0,
+      state:      DaemonState::Starting,
+      seq:        0,
       emitted_at: SystemTime::now(),
     }
   }
@@ -90,7 +90,7 @@ pub enum TransitionEvent {
   /// Evaluation failed with a captured error.
   EvalFailed {
     /// Human-readable error rendered in `BuildFailed`.
-    error: String,
+    error:       String,
     /// Retry count carried by `BuildFailed`.
     retry_count: u32,
   },
@@ -110,7 +110,7 @@ pub enum TransitionEvent {
   /// doesn't have a home for `Stuck`.
   Stuck {
     /// The stuck job.
-    job_id: JobId,
+    job_id:   JobId,
     /// Time in milliseconds the job has been stuck.
     stuck_ms: u64,
   },
@@ -151,11 +151,11 @@ pub use super::state_meta::{DaemonStateKind, kind_of};
 #[error("illegal transition: {event_kind} from {from:?} rejected ({reason})")]
 pub struct TransitionRejected {
   /// Coarse kind of the state the machine was in when the event arrived.
-  pub from: DaemonStateKind,
+  pub from:       DaemonStateKind,
   /// Static tag of the offending event (see [`TransitionEvent::kind`]).
   pub event_kind: &'static str,
   /// Static, human-readable reason for the rejection.
-  pub reason: &'static str,
+  pub reason:     &'static str,
 }
 
 /// Single-writer state machine.
@@ -166,7 +166,7 @@ pub struct TransitionRejected {
 pub struct StateMachine {
   handle: StateHandle,
   /// The last accepted seq — writer-local counter, cheap to bump.
-  seq: u64,
+  seq:    u64,
 }
 
 impl StateMachine {
@@ -210,16 +210,16 @@ impl StateMachine {
     let from_kind = kind_of(&current.state);
     let next = Self::next_state(&current.state, event).ok_or_else(|| {
       TransitionRejected {
-        from: from_kind,
+        from:       from_kind,
         event_kind: event.kind(),
-        reason: reason_for(&current.state, event),
+        reason:     reason_for(&current.state, event),
       }
     })?;
 
     self.seq = self.seq.saturating_add(1);
     let snapshot = StateSnapshot {
-      state: next,
-      seq: self.seq,
+      state:      next,
+      seq:        self.seq,
       emitted_at: SystemTime::now(),
     };
     self.handle.store(Arc::new(snapshot.clone()));
@@ -267,7 +267,7 @@ impl StateMachine {
       // Evaluating → BuildFailed
       (S::Evaluating, E::EvalFailed { error, retry_count }) => {
         Some(S::BuildFailed {
-          error: error.clone(),
+          error:       error.clone(),
           retry_count: *retry_count,
         })
       },
@@ -276,9 +276,11 @@ impl StateMachine {
       (
         S::Evaluating | S::Ready | S::BuildFailed { .. } | S::WatcherDegraded,
         E::ConfigError { error },
-      ) => Some(S::ConfigError {
-        error: error.clone(),
-      }),
+      ) => {
+        Some(S::ConfigError {
+          error: error.clone(),
+        })
+      },
 
       // → WatcherDegraded: watcher failure observed from a live state.
       (S::Evaluating | S::Ready, E::WatcherDegraded) => {
@@ -392,7 +394,8 @@ mod tests {
 
   #[test]
   fn illegal_starting_to_ready_is_rejected() {
-    // Directly Starting → Ready via EvalSucceeded (skipping Evaluating) illegal.
+    // Directly Starting → Ready via EvalSucceeded (skipping Evaluating)
+    // illegal.
     let mut sm = StateMachine::new();
     let err = sm
       .transition(&TransitionEvent::EvalSucceeded {

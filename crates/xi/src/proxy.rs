@@ -150,8 +150,10 @@ fn analyze_args(args: &[String]) -> Route {
       "fmt" => Route::Fmt { args: combined },
       "run" => Route::Run { args: combined },
       "flake" => analyze_flake_subcommand(&global_prefix, &rest),
-      _ => Route::Passthrough {
-        args: args.to_vec(),
+      _ => {
+        Route::Passthrough {
+          args: args.to_vec(),
+        }
       },
     };
   }
@@ -426,10 +428,11 @@ mod tests {
       analyze_args(&args("--extra-experimental-features flakes build .#hello"));
     assert!(matches!(route, Route::Build { .. }));
     if let Route::Build { args: a } = route {
-      assert_eq!(
-        a,
-        vec!["--extra-experimental-features", "flakes", ".#hello"]
-      );
+      assert_eq!(a, vec![
+        "--extra-experimental-features",
+        "flakes",
+        ".#hello"
+      ]);
     }
   }
 
@@ -466,10 +469,13 @@ mod tests {
       analyze_args(&args("--offline --max-jobs 4 --show-trace build .#hello"));
     assert!(matches!(route, Route::Build { .. }));
     if let Route::Build { args: a } = route {
-      assert_eq!(
-        a,
-        vec!["--offline", "--max-jobs", "4", "--show-trace", ".#hello"]
-      );
+      assert_eq!(a, vec![
+        "--offline",
+        "--max-jobs",
+        "4",
+        "--show-trace",
+        ".#hello"
+      ]);
     }
   }
 
@@ -645,10 +651,11 @@ mod tests {
     let a = expect_build(analyze_args(&args(
       "--extra-substituters https://cache.example.com build .",
     )));
-    assert_eq!(
-      a,
-      vec!["--extra-substituters", "https://cache.example.com", "."]
-    );
+    assert_eq!(a, vec![
+      "--extra-substituters",
+      "https://cache.example.com",
+      "."
+    ]);
   }
 
   #[test]
@@ -687,12 +694,9 @@ mod tests {
     let a = expect_build(analyze_args(&args(
       "--option sandbox false --option cores 4 build .",
     )));
-    assert_eq!(
-      a,
-      vec![
-        "--option", "sandbox", "false", "--option", "cores", "4", "."
-      ]
-    );
+    assert_eq!(a, vec![
+      "--option", "sandbox", "false", "--option", "cores", "4", "."
+    ]);
   }
 
   // ── Mixed arities ──────────────────────────────────────────────
@@ -700,21 +704,19 @@ mod tests {
   #[test]
   fn e2e_mixed_arities_before_build() {
     let a = expect_build(analyze_args(&args(
-      "--offline --max-jobs 4 --option sandbox false --show-trace build .#hello",
+      "--offline --max-jobs 4 --option sandbox false --show-trace build \
+       .#hello",
     )));
-    assert_eq!(
-      a,
-      vec![
-        "--offline",
-        "--max-jobs",
-        "4",
-        "--option",
-        "sandbox",
-        "false",
-        "--show-trace",
-        ".#hello"
-      ]
-    );
+    assert_eq!(a, vec![
+      "--offline",
+      "--max-jobs",
+      "4",
+      "--option",
+      "sandbox",
+      "false",
+      "--show-trace",
+      ".#hello"
+    ]);
   }
 
   #[test]
@@ -722,15 +724,12 @@ mod tests {
     let a = expect_develop(analyze_args(&args(
       "--show-trace --max-jobs 2 develop .#devShells.x86_64-linux.default",
     )));
-    assert_eq!(
-      a,
-      vec![
-        "--show-trace",
-        "--max-jobs",
-        "2",
-        ".#devShells.x86_64-linux.default"
-      ]
-    );
+    assert_eq!(a, vec![
+      "--show-trace",
+      "--max-jobs",
+      "2",
+      ".#devShells.x86_64-linux.default"
+    ]);
   }
 
   // ── Flake subcommand routing with globals ──────────────────────
@@ -837,17 +836,14 @@ mod tests {
     let a = expect_build(analyze_args(&args(
       "--offline --max-jobs 4 build .#hello --no-link --json",
     )));
-    assert_eq!(
-      a,
-      vec![
-        "--offline",
-        "--max-jobs",
-        "4",
-        ".#hello",
-        "--no-link",
-        "--json"
-      ]
-    );
+    assert_eq!(a, vec![
+      "--offline",
+      "--max-jobs",
+      "4",
+      ".#hello",
+      "--no-link",
+      "--json"
+    ]);
   }
 
   #[test]

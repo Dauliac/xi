@@ -12,7 +12,12 @@ use xi_core::flake_output::{FlakeOutput, FlakeOutputKind, current_nix_system};
 use crate::{
   args::OutputsArgs,
   schema::{
-    Diagnostic, Envelope, OutputEntry, OutputsPayload, elapsed_ms, emit,
+    Diagnostic,
+    Envelope,
+    OutputEntry,
+    OutputsPayload,
+    elapsed_ms,
+    emit,
   },
 };
 
@@ -31,16 +36,13 @@ pub fn run(args: &OutputsArgs) -> Result<()> {
     Ok(payload) => emit(&Envelope::ok(CMD, payload, elapsed_ms(start)))?,
     Err(diag) => {
       let payload = OutputsPayload {
-        system: system.clone(),
+        system:  system.clone(),
         outputs: Vec::new(),
-        hidden: Vec::new(),
+        hidden:  Vec::new(),
       };
-      emit(&Envelope::partial(
-        CMD,
-        payload,
-        elapsed_ms(start),
-        vec![diag],
-      ))?;
+      emit(&Envelope::partial(CMD, payload, elapsed_ms(start), vec![
+        diag,
+      ]))?;
     },
   }
   Ok(())

@@ -1,19 +1,22 @@
-use std::path::Path;
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use tracing::{debug, info};
 use xi_core::progress;
 use yansi::{Color, Paint};
 
-use crate::args::{CiArgs, CiBackend, NixPassthroughArgs};
-use crate::project_config;
-use crate::test;
 use crate::{
-  build_all_for_flake_ref, build_all_nix_fast_build, discover_subflakes,
-  ensure_flake_locked, execute_build, resolve_backend, resolve_local_flake_dir,
+  args::{CiArgs, CiBackend, NixPassthroughArgs},
+  build_all_for_flake_ref,
+  build_all_nix_fast_build,
+  discover_subflakes,
+  ensure_flake_locked,
+  execute_build,
+  project_config,
+  resolve_backend,
+  resolve_local_flake_dir,
+  test,
 };
 
 // ---------------------------------------------------------------------------
@@ -21,10 +24,10 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 struct StepResult {
-  name: &'static str,
-  status: StepStatus,
+  name:     &'static str,
+  status:   StepStatus,
   duration: std::time::Duration,
-  detail: Option<String>,
+  detail:   Option<String>,
 }
 
 #[allow(dead_code)]
@@ -58,30 +61,32 @@ fn step_lock_check(flake_ref: &str) -> StepResult {
     Ok(output) => {
       if output.status.success() {
         StepResult {
-          name: "Lock check",
-          status: StepStatus::Ok,
+          name:     "Lock check",
+          status:   StepStatus::Ok,
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         }
       } else {
         StepResult {
-          name: "Lock check",
-          status: StepStatus::Fail(
+          name:     "Lock check",
+          status:   StepStatus::Fail(
             "flake.lock is out of sync. Run `nix flake lock` to update."
               .to_string(),
           ),
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         }
       }
     },
-    Err(e) => StepResult {
-      name: "Lock check",
-      status: StepStatus::Fail(format!(
-        "nix flake lock --no-update-lock-file failed: {e}"
-      )),
-      duration: start.elapsed(),
-      detail: None,
+    Err(e) => {
+      StepResult {
+        name:     "Lock check",
+        status:   StepStatus::Fail(format!(
+          "nix flake lock --no-update-lock-file failed: {e}"
+        )),
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
   }
 }
@@ -99,10 +104,10 @@ fn step_health_check(
 
   let Some(dir) = flake_dir else {
     return StepResult {
-      name: "Health check",
-      status: StepStatus::Skipped,
+      name:     "Health check",
+      status:   StepStatus::Skipped,
       duration: start.elapsed(),
-      detail: Some("remote flake, skipping health check".to_string()),
+      detail:   Some("remote flake, skipping health check".to_string()),
     };
   };
 
@@ -113,36 +118,39 @@ fn step_health_check(
 
       if failures > 0 {
         StepResult {
-          name: "Health check",
-          status: StepStatus::Warn(format!(
-            "{failures} issue(s), {warnings} warning(s). Run `xi doctor` for details."
+          name:     "Health check",
+          status:   StepStatus::Warn(format!(
+            "{failures} issue(s), {warnings} warning(s). Run `xi doctor` for \
+             details."
           )),
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         }
       } else if warnings > 0 {
         StepResult {
-          name: "Health check",
-          status: StepStatus::Warn(format!(
+          name:     "Health check",
+          status:   StepStatus::Warn(format!(
             "{warnings} warning(s). Run `xi doctor` for details."
           )),
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         }
       } else {
         StepResult {
-          name: "Health check",
-          status: StepStatus::Ok,
+          name:     "Health check",
+          status:   StepStatus::Ok,
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         }
       }
     },
-    Err(e) => StepResult {
-      name: "Health check",
-      status: StepStatus::Warn(format!("Could not run health checks: {e}")),
-      duration: start.elapsed(),
-      detail: None,
+    Err(e) => {
+      StepResult {
+        name:     "Health check",
+        status:   StepStatus::Warn(format!("Could not run health checks: {e}")),
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
   }
 }
@@ -153,33 +161,35 @@ fn step_eval_tests(flake_ref: &str, test_attr: &str) -> StepResult {
   let start = Instant::now();
 
   match test::run_ci_eval_tests(flake_ref, test_attr) {
-    None => StepResult {
-      name: "Eval tests",
-      status: StepStatus::Skipped,
-      duration: start.elapsed(),
-      detail: Some("no runTests attribute detected".to_string()),
+    None => {
+      StepResult {
+        name:     "Eval tests",
+        status:   StepStatus::Skipped,
+        duration: start.elapsed(),
+        detail:   Some("no runTests attribute detected".to_string()),
+      }
     },
     Some(ci_result) => {
       let total = ci_result.passed + ci_result.failed + ci_result.errors;
 
       if ci_result.failed > 0 || ci_result.errors > 0 {
         StepResult {
-          name: "Eval tests",
-          status: StepStatus::Fail(format!(
+          name:     "Eval tests",
+          status:   StepStatus::Fail(format!(
             "{} passed, {} failed, {} errors ({total} total)",
             ci_result.passed, ci_result.failed, ci_result.errors
           )),
           duration: start.elapsed(),
-          detail: Some(
+          detail:   Some(
             "Run `xi test --backend run-tests` for details".to_string(),
           ),
         }
       } else {
         StepResult {
-          name: "Eval tests",
-          status: StepStatus::Ok,
+          name:     "Eval tests",
+          status:   StepStatus::Ok,
           duration: start.elapsed(),
-          detail: Some(format!("{total} test(s) passed")),
+          detail:   Some(format!("{total} test(s) passed")),
         }
       }
     },
@@ -227,12 +237,12 @@ fn step_eval_all_systems(
     Err(e) => {
       return (
         StepResult {
-          name: label,
-          status: StepStatus::Fail(format!(
+          name:     label,
+          status:   StepStatus::Fail(format!(
             "Failed to run nix flake show: {e}"
           )),
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         },
         None,
         vec![],
@@ -255,10 +265,10 @@ fn step_eval_all_systems(
 
     return (
       StepResult {
-        name: label,
-        status: StepStatus::Fail(error_msg),
+        name:     label,
+        status:   StepStatus::Fail(error_msg),
         duration: start.elapsed(),
-        detail: None,
+        detail:   None,
       },
       None,
       vec![],
@@ -270,12 +280,12 @@ fn step_eval_all_systems(
     Err(e) => {
       return (
         StepResult {
-          name: label,
-          status: StepStatus::Fail(format!(
+          name:     label,
+          status:   StepStatus::Fail(format!(
             "Failed to parse flake show output: {e}"
           )),
           duration: start.elapsed(),
-          detail: None,
+          detail:   None,
         },
         None,
         vec![],
@@ -313,39 +323,49 @@ fn step_materialize_check(flake_dir: Option<&Path>) -> StepResult {
 
   let Some(dir) = flake_dir else {
     return StepResult {
-      name: "Materialize",
-      status: StepStatus::Skipped,
+      name:     "Materialize",
+      status:   StepStatus::Skipped,
       duration: start.elapsed(),
-      detail: None,
+      detail:   None,
     };
   };
 
   match crate::materialize::check_materialize_freshness(dir) {
-    Ok(None) => StepResult {
-      name: "Materialize",
-      status: StepStatus::Skipped,
-      duration: start.elapsed(),
-      detail: None,
+    Ok(None) => {
+      StepResult {
+        name:     "Materialize",
+        status:   StepStatus::Skipped,
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
-    Ok(Some((0, total))) => StepResult {
-      name: "Materialize",
-      status: StepStatus::Ok,
-      duration: start.elapsed(),
-      detail: Some(format!("{total} target(s) fresh")),
+    Ok(Some((0, total))) => {
+      StepResult {
+        name:     "Materialize",
+        status:   StepStatus::Ok,
+        duration: start.elapsed(),
+        detail:   Some(format!("{total} target(s) fresh")),
+      }
     },
-    Ok(Some((stale, total))) => StepResult {
-      name: "Materialize",
-      status: StepStatus::Fail(format!(
-        "{stale} of {total} target(s) are stale. Run `xi materialize`."
-      )),
-      duration: start.elapsed(),
-      detail: None,
+    Ok(Some((stale, total))) => {
+      StepResult {
+        name:     "Materialize",
+        status:   StepStatus::Fail(format!(
+          "{stale} of {total} target(s) are stale. Run `xi materialize`."
+        )),
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
-    Err(e) => StepResult {
-      name: "Materialize",
-      status: StepStatus::Warn(format!("Could not check materialization: {e}")),
-      duration: start.elapsed(),
-      detail: None,
+    Err(e) => {
+      StepResult {
+        name:     "Materialize",
+        status:   StepStatus::Warn(format!(
+          "Could not check materialization: {e}"
+        )),
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
   }
 }
@@ -419,25 +439,29 @@ fn step_eval_lib(flake_ref: &str) -> StepResult {
   // Quick check: does this flake even have a lib output?
   if !crate::flake_lib::has_lib_output(flake_ref) {
     return StepResult {
-      name: "Eval lib",
-      status: StepStatus::Skipped,
+      name:     "Eval lib",
+      status:   StepStatus::Skipped,
       duration: start.elapsed(),
-      detail: None,
+      detail:   None,
     };
   }
 
   match crate::flake_lib::eval_lib(flake_ref, false) {
-    Ok(duration) => StepResult {
-      name: "Eval lib",
-      status: StepStatus::Ok,
-      duration,
-      detail: None,
+    Ok(duration) => {
+      StepResult {
+        name: "Eval lib",
+        status: StepStatus::Ok,
+        duration,
+        detail: None,
+      }
     },
-    Err(e) => StepResult {
-      name: "Eval lib",
-      status: StepStatus::Fail(format!("{e}")),
-      duration: start.elapsed(),
-      detail: None,
+    Err(e) => {
+      StepResult {
+        name:     "Eval lib",
+        status:   StepStatus::Fail(format!("{e}")),
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
   }
 }
@@ -455,10 +479,10 @@ fn build_extra_outputs(
 ) -> StepResult {
   if extra_paths.is_empty() {
     return StepResult {
-      name: "Extra outputs",
-      status: StepStatus::Skipped,
+      name:     "Extra outputs",
+      status:   StepStatus::Skipped,
       duration: std::time::Duration::ZERO,
-      detail: None,
+      detail:   None,
     };
   }
 
@@ -477,17 +501,21 @@ fn build_extra_outputs(
   }
 
   match execute_build(&cmd, no_nom, dry) {
-    Ok(()) => StepResult {
-      name: "Extra outputs",
-      status: StepStatus::Ok,
-      duration: start.elapsed(),
-      detail: Some(format!("Built {} output(s)", extra_paths.len())),
+    Ok(()) => {
+      StepResult {
+        name:     "Extra outputs",
+        status:   StepStatus::Ok,
+        duration: start.elapsed(),
+        detail:   Some(format!("Built {} output(s)", extra_paths.len())),
+      }
     },
-    Err(e) => StepResult {
-      name: "Extra outputs",
-      status: StepStatus::Fail(format!("{e}")),
-      duration: start.elapsed(),
-      detail: None,
+    Err(e) => {
+      StepResult {
+        name:     "Extra outputs",
+        status:   StepStatus::Fail(format!("{e}")),
+        duration: start.elapsed(),
+        detail:   None,
+      }
     },
   }
 }
@@ -606,11 +634,13 @@ impl CiArgs {
 
         // Collect results
         let lock_result = lock_handle.map(|h| {
-          h.join().unwrap_or_else(|_| StepResult {
-            name: "Lock check",
-            status: StepStatus::Fail("Thread panicked".to_string()),
-            duration: std::time::Duration::ZERO,
-            detail: None,
+          h.join().unwrap_or_else(|_| {
+            StepResult {
+              name:     "Lock check",
+              status:   StepStatus::Fail("Thread panicked".to_string()),
+              duration: std::time::Duration::ZERO,
+              detail:   None,
+            }
           })
         });
 
@@ -619,54 +649,64 @@ impl CiArgs {
           if let Some(h) = eval_handle {
             match h.join() {
               Ok((result, json, paths)) => (Some(result), json, paths),
-              Err(_) => (
-                Some(StepResult {
-                  name: "Eval all systems",
-                  status: StepStatus::Fail("Thread panicked".to_string()),
-                  duration: std::time::Duration::ZERO,
-                  detail: None,
-                }),
-                None,
-                vec![],
-              ),
+              Err(_) => {
+                (
+                  Some(StepResult {
+                    name:     "Eval all systems",
+                    status:   StepStatus::Fail("Thread panicked".to_string()),
+                    duration: std::time::Duration::ZERO,
+                    detail:   None,
+                  }),
+                  None,
+                  vec![],
+                )
+              },
             }
           } else {
             (None, None, vec![])
           };
 
         let health_result = health_handle.map(|h| {
-          h.join().unwrap_or_else(|_| StepResult {
-            name: "Health check",
-            status: StepStatus::Fail("Thread panicked".to_string()),
-            duration: std::time::Duration::ZERO,
-            detail: None,
+          h.join().unwrap_or_else(|_| {
+            StepResult {
+              name:     "Health check",
+              status:   StepStatus::Fail("Thread panicked".to_string()),
+              duration: std::time::Duration::ZERO,
+              detail:   None,
+            }
           })
         });
 
         let test_result = test_handle.map(|h| {
-          h.join().unwrap_or_else(|_| StepResult {
-            name: "Eval tests",
-            status: StepStatus::Fail("Thread panicked".to_string()),
-            duration: std::time::Duration::ZERO,
-            detail: None,
+          h.join().unwrap_or_else(|_| {
+            StepResult {
+              name:     "Eval tests",
+              status:   StepStatus::Fail("Thread panicked".to_string()),
+              duration: std::time::Duration::ZERO,
+              detail:   None,
+            }
           })
         });
 
         let lib_result = lib_handle.map(|h| {
-          h.join().unwrap_or_else(|_| StepResult {
-            name: "Eval lib",
-            status: StepStatus::Fail("Thread panicked".to_string()),
-            duration: std::time::Duration::ZERO,
-            detail: None,
+          h.join().unwrap_or_else(|_| {
+            StepResult {
+              name:     "Eval lib",
+              status:   StepStatus::Fail("Thread panicked".to_string()),
+              duration: std::time::Duration::ZERO,
+              detail:   None,
+            }
           })
         });
 
         let mat_result = mat_handle.map(|h| {
-          h.join().unwrap_or_else(|_| StepResult {
-            name: "Materialize",
-            status: StepStatus::Fail("Thread panicked".to_string()),
-            duration: std::time::Duration::ZERO,
-            detail: None,
+          h.join().unwrap_or_else(|_| {
+            StepResult {
+              name:     "Materialize",
+              status:   StepStatus::Fail("Thread panicked".to_string()),
+              duration: std::time::Duration::ZERO,
+              detail:   None,
+            }
           })
         });
 
@@ -729,8 +769,7 @@ impl CiArgs {
       println!(
         "  {}",
         Paint::new(format!(
-          "Validation failed ({phase1_failures} step(s)). \
-           Skipping build."
+          "Validation failed ({phase1_failures} step(s)). Skipping build."
         ))
         .fg(Color::Red)
         .bold()
@@ -765,30 +804,36 @@ impl CiArgs {
             ),
           )
         },
-        _ => (
-          "Build all (devour-flake)",
-          build_all_for_flake_ref(
-            flake_ref,
-            &passthrough_args,
-            &self.extra_args,
-            self.no_nom,
-            self.dry,
-          ),
-        ),
+        _ => {
+          (
+            "Build all (devour-flake)",
+            build_all_for_flake_ref(
+              flake_ref,
+              &passthrough_args,
+              &self.extra_args,
+              self.no_nom,
+              self.dry,
+            ),
+          )
+        },
       };
 
       let build_step = match build_result {
-        Ok(()) => StepResult {
-          name: step_name,
-          status: StepStatus::Ok,
-          duration: build_start.elapsed(),
-          detail: None,
+        Ok(()) => {
+          StepResult {
+            name:     step_name,
+            status:   StepStatus::Ok,
+            duration: build_start.elapsed(),
+            detail:   None,
+          }
         },
-        Err(e) => StepResult {
-          name: step_name,
-          status: StepStatus::Fail(format!("{e}")),
-          duration: build_start.elapsed(),
-          detail: None,
+        Err(e) => {
+          StepResult {
+            name:     step_name,
+            status:   StepStatus::Fail(format!("{e}")),
+            duration: build_start.elapsed(),
+            detail:   None,
+          }
         },
       };
 
@@ -860,8 +905,8 @@ impl CiArgs {
     let local_dir = resolve_local_flake_dir(Some(root_ref));
     let Some(ref base_dir) = local_dir else {
       bail!(
-        "--recursive requires a local flake reference, \
-         got remote ref: {root_ref}"
+        "--recursive requires a local flake reference, got remote ref: \
+         {root_ref}"
       );
     };
 
@@ -893,22 +938,22 @@ impl CiArgs {
       );
 
       let sub_args = Self {
-        flake_ref: Some(flake_ref.clone()),
-        no_lock_check: self.no_lock_check,
-        no_eval: self.no_eval,
-        no_build: self.no_build,
-        no_ifd: self.no_ifd,
-        no_health_check: self.no_health_check,
-        no_test: self.no_test,
-        no_lib_eval: self.no_lib_eval,
+        flake_ref:           Some(flake_ref.clone()),
+        no_lock_check:       self.no_lock_check,
+        no_eval:             self.no_eval,
+        no_build:            self.no_build,
+        no_ifd:              self.no_ifd,
+        no_health_check:     self.no_health_check,
+        no_test:             self.no_test,
+        no_lib_eval:         self.no_lib_eval,
         current_system_only: self.current_system_only,
-        recursive: false,
-        no_nom: self.no_nom,
-        dry: self.dry,
-        continue_on_error: self.continue_on_error,
-        backend: self.backend.clone(),
-        passthrough: NixPassthroughArgs::default(),
-        extra_args: self.extra_args.clone(),
+        recursive:           false,
+        no_nom:              self.no_nom,
+        dry:                 self.dry,
+        continue_on_error:   self.continue_on_error,
+        backend:             self.backend.clone(),
+        passthrough:         NixPassthroughArgs::default(),
+        extra_args:          self.extra_args.clone(),
       };
 
       if let Err(e) = sub_args.run() {

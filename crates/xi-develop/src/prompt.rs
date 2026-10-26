@@ -2,8 +2,8 @@
 //!
 //! This replaces the old `hook.rs` with a cleaner architecture:
 //! - All shell logic is in Rust (no bash-side flake detection or trust checks)
-//! - Three modes: parent (detect flake → spawn subshell),
-//!   subshell (re-source / exit), exit (deregister consumer)
+//! - Three modes: parent (detect flake → spawn subshell), subshell (re-source /
+//!   exit), exit (deregister consumer)
 //! - Communicates with daemon via Unix socket for all state
 //! - Outputs shell commands to stdout (eval'd by shell)
 //! - Outputs notifications to stderr (rendered with colors)
@@ -11,11 +11,19 @@
 use color_eyre::Result;
 use tracing::debug;
 
-use crate::args::PromptArgs;
-use crate::daemon::protocol::{Notification, PromptResponse};
-use crate::daemon::{client, lifecycle};
-use crate::shell::ShellType;
-use crate::{dirs, flake_detect, subshell, trust};
+use crate::{
+  args::PromptArgs,
+  daemon::{
+    client,
+    lifecycle,
+    protocol::{Notification, PromptResponse},
+  },
+  dirs,
+  flake_detect,
+  shell::ShellType,
+  subshell,
+  trust,
+};
 
 /// Handle the `xi develop prompt` command.
 ///
@@ -372,14 +380,14 @@ fn generate_subshell_output(
     match shell {
       ShellType::Fish => {
         lines.push(format!(
-          "function __xi_exit --on-event fish_exit; \
-           $__XI_BIN develop prompt --exit -s {shell_name} --pid {pid}; \
-           end"
+          "function __xi_exit --on-event fish_exit; $__XI_BIN develop prompt \
+           --exit -s {shell_name} --pid {pid}; end"
         ));
       },
       ShellType::Bash | ShellType::Zsh => {
         lines.push(format!(
-          "trap '$__XI_BIN develop prompt --exit -s {shell_name} --pid {pid}' EXIT"
+          "trap '$__XI_BIN develop prompt --exit -s {shell_name} --pid {pid}' \
+           EXIT"
         ));
       },
     }

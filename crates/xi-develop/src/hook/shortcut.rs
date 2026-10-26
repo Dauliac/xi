@@ -14,8 +14,10 @@
 //! module returns a boolean; the caller decides between "answer locally"
 //! and "send heartbeat" based on the age.
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::{
+  path::{Path, PathBuf},
+  time::{Duration, SystemTime},
+};
 
 /// Freshness ceiling for the local shortcut path.
 ///
@@ -84,8 +86,9 @@ pub fn should_shortcut(
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use std::sync::Mutex;
+
+  use super::*;
 
   // Env is process-global; serialise these tests to avoid cross-test races.
   static ENV_LOCK: Mutex<()> = Mutex::new(());

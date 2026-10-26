@@ -13,20 +13,20 @@ pub struct EvalRequest {
 /// Eval response with package changes.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EvalResponse {
-  pub env_file_path: String,
-  pub changes: Vec<PackageChange>,
+  pub env_file_path:    String,
+  pub changes:          Vec<PackageChange>,
   pub eval_duration_ms: u64,
 }
 
 /// Status request/response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StatusResponse {
-  pub state: DaemonState,
-  pub uptime_secs: u64,
-  pub consumer_count: u32,
-  pub current_target: String,
-  pub package_count: u32,
-  pub version: String,
+  pub state:               DaemonState,
+  pub uptime_secs:         u64,
+  pub consumer_count:      u32,
+  pub current_target:      String,
+  pub package_count:       u32,
+  pub version:             String,
   /// Store paths currently being pushed to cache.
   pub active_cache_pushes: Vec<String>,
 }
@@ -54,7 +54,7 @@ pub enum NotifKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
   pub message: String,
-  pub kind: NotifKind,
+  pub kind:    NotifKind,
 }
 
 impl Notification {
@@ -62,7 +62,7 @@ impl Notification {
   pub fn loading(msg: impl Into<String>) -> Self {
     Self {
       message: msg.into(),
-      kind: NotifKind::Loading,
+      kind:    NotifKind::Loading,
     }
   }
 
@@ -70,7 +70,7 @@ impl Notification {
   pub fn success(msg: impl Into<String>) -> Self {
     Self {
       message: msg.into(),
-      kind: NotifKind::Success,
+      kind:    NotifKind::Success,
     }
   }
 
@@ -78,7 +78,7 @@ impl Notification {
   pub fn info(msg: impl Into<String>) -> Self {
     Self {
       message: msg.into(),
-      kind: NotifKind::Info,
+      kind:    NotifKind::Info,
     }
   }
 
@@ -86,7 +86,7 @@ impl Notification {
   pub fn warn(msg: impl Into<String>) -> Self {
     Self {
       message: msg.into(),
-      kind: NotifKind::Warn,
+      kind:    NotifKind::Warn,
     }
   }
 
@@ -94,7 +94,7 @@ impl Notification {
   pub fn error(msg: impl Into<String>) -> Self {
     Self {
       message: msg.into(),
-      kind: NotifKind::Error,
+      kind:    NotifKind::Error,
     }
   }
 
@@ -116,8 +116,8 @@ impl Notification {
 /// Package change entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageChange {
-  pub kind: ChangeKind,
-  pub name: String,
+  pub kind:        ChangeKind,
+  pub name:        String,
   pub old_version: String,
   pub new_version: String,
 }
@@ -133,13 +133,13 @@ pub enum ChangeKind {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CachePushRequest {
   /// Nix store path to push.
-  pub store_path: String,
+  pub store_path:   String,
   /// Cache URL (s3://, ssh://, etc.) — if empty, uses `push_command`.
-  pub cache_url: String,
+  pub cache_url:    String,
   /// External push command (e.g. `["cachix", "push", "mycache"]`).
   pub push_command: Vec<String>,
   /// Signing key path (optional).
-  pub sign_key: Option<String>,
+  pub sign_key:     Option<String>,
 }
 
 /// Response to a cache push request.
@@ -159,15 +159,22 @@ pub enum DaemonState {
   Starting,
   Evaluating,
   Ready,
-  BuildFailed { error: String, retry_count: u32 },
+  BuildFailed {
+    error:       String,
+    retry_count: u32,
+  },
   WatcherDegraded,
-  ConfigError { error: String },
+  ConfigError {
+    error: String,
+  },
   ShuttingDown,
   /// v3: A read-only query has an in-flight job producing the value.
   ///
   /// Emitted by `Query::*` reads when the value is not yet materialised
   /// but a job is running. Carries the running job id.
-  Pending { job_id: String },
+  Pending {
+    job_id: String,
+  },
   /// v3: The requested value has no producer and no job is running.
   ///
   /// Emitted by `Query::*` reads for values that never existed and are
@@ -175,9 +182,14 @@ pub enum DaemonState {
   Missing,
   /// v3: The daemon is serving from a degraded source (offline cache,
   /// stale watcher, partial results).
-  Degraded { reason: String },
+  Degraded {
+    reason: String,
+  },
   /// v3: A job has made no progress for longer than the stuck threshold.
-  Stuck { job_id: String, stuck_ms: u64 },
+  Stuck {
+    job_id:   String,
+    stuck_ms: u64,
+  },
   /// v3: The daemon is aborting a stuck job and restarting itself.
   SelfHealing,
 }
@@ -186,26 +198,26 @@ pub enum DaemonState {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PromptRequest {
   pub consumer_pid: u32,
-  pub target: String,
-  pub cwd: String,
-  pub is_subshell: bool,
-  pub parent_pid: Option<u32>,
+  pub target:       String,
+  pub cwd:          String,
+  pub is_subshell:  bool,
+  pub parent_pid:   Option<u32>,
 }
 
 /// Structured response from daemon to prompt command.
 /// The Rust binary generates shell code from this.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptResponse {
-  pub should_source_env: bool,
-  pub env_file_path: Option<String>,
-  pub should_source_hook: bool,
-  pub hook_file_path: Option<String>,
-  pub should_exit: bool,
+  pub should_source_env:     bool,
+  pub env_file_path:         Option<String>,
+  pub should_source_hook:    bool,
+  pub hook_file_path:        Option<String>,
+  pub should_exit:           bool,
   pub should_spawn_subshell: bool,
-  pub spawn_flake_root: Option<String>,
-  pub notifications: Vec<Notification>,
-  pub daemon_state: DaemonState,
-  pub is_trusted: bool,
+  pub spawn_flake_root:      Option<String>,
+  pub notifications:         Vec<Notification>,
+  pub daemon_state:          DaemonState,
+  pub is_trusted:            bool,
 }
 
 /// Request sent on subshell EXIT to deregister a consumer.
@@ -217,7 +229,7 @@ pub struct DeregisterRequest {
 /// Response to a deregister request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeregisterResponse {
-  pub was_registered: bool,
+  pub was_registered:      bool,
   pub remaining_consumers: u32,
 }
 
@@ -274,7 +286,9 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 ///
 /// Returns an error on short reads or when the announced length exceeds
 /// [`MAX_FRAME_BYTES`].
-pub fn read_frame<R: std::io::Read>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+pub fn read_frame<R: std::io::Read>(
+  reader: &mut R,
+) -> std::io::Result<Vec<u8>> {
   let mut len_buf = [0u8; 4];
   reader.read_exact(&mut len_buf)?;
   let len = u32::from_le_bytes(len_buf) as usize;

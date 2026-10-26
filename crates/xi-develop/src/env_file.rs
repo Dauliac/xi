@@ -52,22 +52,23 @@ const SKIP_VARS: &[&str] = &[
 /// Base name for the depth-scoped registry env var that tracks xi-injected
 /// variable names. The actual var is `__XI_INJECTED_VARS_<depth>` where depth
 /// comes from `$__XI_DEPTH` at runtime (defaults to 1).
-/// Each nesting level only cleans up its own vars, preserving parent devshell env.
+/// Each nesting level only cleans up its own vars, preserving parent devshell
+/// env.
 const INJECTED_VARS_BASE: &str = "__XI_INJECTED_VARS";
 
 /// Parsed development environment from `nix print-dev-env --json`.
 #[derive(Debug)]
 pub struct DevEnv {
   /// Nix store paths to prepend to PATH.
-  pub nix_paths: Vec<String>,
+  pub nix_paths:  Vec<String>,
   /// Environment variables to export.
-  pub env_vars: HashMap<String, String>,
+  pub env_vars:   HashMap<String, String>,
   /// Shell hook (run once per session).
   pub shell_hook: Option<String>,
   /// Hash of the full environment (for change detection).
-  pub env_hash: String,
+  pub env_hash:   String,
   /// Parsed packages from nix store paths.
-  pub packages: Vec<store_path::PackageInfo>,
+  pub packages:   Vec<store_path::PackageInfo>,
 }
 
 #[derive(Deserialize)]
@@ -79,7 +80,7 @@ struct PrintDevEnv {
 struct Variable {
   #[serde(rename = "type")]
   var_type: String,
-  value: serde_json::Value,
+  value:    serde_json::Value,
 }
 
 impl DevEnv {
@@ -383,11 +384,11 @@ mod tests {
   #[test]
   fn generate_bash_content() {
     let dev_env = DevEnv {
-      nix_paths: vec!["/nix/store/xxx-cargo-1.95.0/bin".into()],
-      env_vars: HashMap::from([("FOO".into(), "bar".into())]),
+      nix_paths:  vec!["/nix/store/xxx-cargo-1.95.0/bin".into()],
+      env_vars:   HashMap::from([("FOO".into(), "bar".into())]),
       shell_hook: Some("echo hello".into()),
-      env_hash: "test".into(),
-      packages: vec![],
+      env_hash:   "test".into(),
+      packages:   vec![],
     };
 
     let content = generate_content(&dev_env, ShellType::Bash);
@@ -403,11 +404,11 @@ mod tests {
   #[test]
   fn generate_bash_content_has_depth_scoped_cleanup() {
     let dev_env = DevEnv {
-      nix_paths: vec![],
-      env_vars: HashMap::from([("FOO".into(), "bar".into())]),
+      nix_paths:  vec![],
+      env_vars:   HashMap::from([("FOO".into(), "bar".into())]),
       shell_hook: None,
-      env_hash: "test".into(),
-      packages: vec![],
+      env_hash:   "test".into(),
+      packages:   vec![],
     };
 
     let content = generate_content(&dev_env, ShellType::Bash);
@@ -428,11 +429,11 @@ mod tests {
   #[test]
   fn generate_fish_content_has_depth_scoped_cleanup() {
     let dev_env = DevEnv {
-      nix_paths: vec![],
-      env_vars: HashMap::from([("BAR".into(), "baz".into())]),
+      nix_paths:  vec![],
+      env_vars:   HashMap::from([("BAR".into(), "baz".into())]),
       shell_hook: None,
-      env_hash: "test".into(),
-      packages: vec![],
+      env_hash:   "test".into(),
+      packages:   vec![],
     };
 
     let content = generate_content(&dev_env, ShellType::Fish);
@@ -447,11 +448,11 @@ mod tests {
   #[test]
   fn generate_fish_content() {
     let dev_env = DevEnv {
-      nix_paths: vec!["/nix/store/xxx/bin".into()],
-      env_vars: HashMap::new(),
+      nix_paths:  vec!["/nix/store/xxx/bin".into()],
+      env_vars:   HashMap::new(),
       shell_hook: None,
-      env_hash: "test".into(),
-      packages: vec![],
+      env_hash:   "test".into(),
+      packages:   vec![],
     };
 
     let content = generate_content(&dev_env, ShellType::Fish);
@@ -472,13 +473,10 @@ mod tests {
     let dev_env =
       DevEnv::from_nix_json(serde_json::to_vec(&json).unwrap().as_slice())
         .unwrap();
-    assert_eq!(
-      dev_env.nix_paths,
-      vec![
-        "/nix/store/xxx-cargo/bin",
-        "/home/user/.nix-profile/bin",
-        "/nix/var/nix/profiles/default/bin",
-      ]
-    );
+    assert_eq!(dev_env.nix_paths, vec![
+      "/nix/store/xxx-cargo/bin",
+      "/home/user/.nix-profile/bin",
+      "/nix/var/nix/profiles/default/bin",
+    ]);
   }
 }

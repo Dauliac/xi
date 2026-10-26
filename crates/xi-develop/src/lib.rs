@@ -103,7 +103,8 @@ fn run_daemon(args: &args::DaemonArgs) -> Result<()> {
       match daemon::client::status(&socket_path) {
         Ok(s) => {
           ui::info(format!(
-            "daemon {:?} | uptime {}s | target {} | {} packages | {} consumers | v{}",
+            "daemon {:?} | uptime {}s | target {} | {} packages | {} \
+             consumers | v{}",
             s.state,
             s.uptime_secs,
             s.current_target,
@@ -152,11 +153,13 @@ fn clean(args: &args::CleanArgs) -> Result<()> {
       ui::success("devshell cache cleared — will re-evaluate on next prompt");
     } else if is_trusted {
       ui::success(
-        "devshell cache cleared — run eval \"$(xi develop activate zsh)\" to enable auto-reload",
+        "devshell cache cleared — run eval \"$(xi develop activate zsh)\" to \
+         enable auto-reload",
       );
     } else {
       ui::success(
-        "devshell cache cleared — run \"xi develop trust\" to enable auto-activation",
+        "devshell cache cleared — run \"xi develop trust\" to enable \
+         auto-activation",
       );
     }
   } else {
@@ -176,7 +179,8 @@ fn list(args: &args::ListArgs) -> Result<()> {
 
   let m = meta::load(&state_dir).map_err(|_| {
     color_eyre::eyre::eyre!(
-      "No cached devshell. Run 'xi develop' or enter the flake directory first."
+      "No cached devshell. Run 'xi develop' or enter the flake directory \
+       first."
     )
   })?;
 
@@ -241,8 +245,9 @@ fn list(args: &args::ListArgs) -> Result<()> {
 }
 
 fn status() -> Result<()> {
-  use crate::daemon::protocol::DaemonState;
   use xi_core::style::{self, Icon, color};
+
+  use crate::daemon::protocol::DaemonState;
 
   // Current flake context
   let cwd = std::env::current_dir()?;

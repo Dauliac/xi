@@ -1,5 +1,6 @@
 use std::{
-  fmt, io,
+  fmt,
+  io,
   path::{Path, PathBuf},
   thread,
 };
@@ -22,7 +23,7 @@ impl<W: io::Write> fmt::Write for WriteFmt<W> {
 struct QueriedDiff {
   old_label: PathBuf,
   new_label: PathBuf,
-  report: dix::DiffReport,
+  report:    dix::DiffReport,
 }
 
 enum DiffEndpoint {
@@ -204,7 +205,7 @@ fn query_endpoint_diff(
     Ok(QueriedDiff {
       old_label: old.label(),
       new_label: new.label(),
-      report: dix::diff_store_snapshots(&old_snapshot, &new_snapshot),
+      report:    dix::diff_store_snapshots(&old_snapshot, &new_snapshot),
     })
   })
 }

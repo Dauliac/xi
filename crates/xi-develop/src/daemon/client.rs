@@ -1,17 +1,25 @@
 //! Daemon client — connects to Unix socket, sends requests.
 
-use std::io::{BufReader, BufWriter};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::time::Duration;
+use std::{
+  io::{BufReader, BufWriter},
+  os::unix::net::UnixStream,
+  path::Path,
+  time::Duration,
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 
 use super::protocol::{
-  CachePushRequest, DaemonRequest, DaemonResponse, DeregisterRequest,
-  DeregisterResponse, PromptRequest, PromptResponse, StatusResponse,
-  read_message, write_message,
+  CachePushRequest,
+  DaemonRequest,
+  DaemonResponse,
+  DeregisterRequest,
+  DeregisterResponse,
+  PromptRequest,
+  PromptResponse,
+  StatusResponse,
+  read_message,
+  write_message,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
@@ -85,10 +93,10 @@ pub fn cache_push(
 ) -> Result<bool> {
   let stream = connect(socket_path)?;
   let request = DaemonRequest::CachePush(CachePushRequest {
-    store_path: store_path.to_string(),
-    cache_url: cache_url.to_string(),
+    store_path:   store_path.to_string(),
+    cache_url:    cache_url.to_string(),
     push_command: push_command.to_vec(),
-    sign_key: sign_key.map(String::from),
+    sign_key:     sign_key.map(String::from),
   });
   match call(&stream, &request)? {
     DaemonResponse::CachePush(resp) => Ok(resp.accepted),

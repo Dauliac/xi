@@ -6,15 +6,16 @@
 //!
 //! This is the fallback backend when no deployment tool is detected.
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use tracing::{debug, info};
 use yansi::{Color, Paint};
 
 use super::DeployBackend;
-use crate::args::DeployArgs;
-use crate::target::{DeployProfile, DeployTarget, ProfileKind};
+use crate::{
+  args::DeployArgs,
+  target::{DeployProfile, DeployTarget, ProfileKind},
+};
 
 /// Built-in deployment backend using xi's SSH remote rebuild.
 pub struct BuiltinBackend;
@@ -33,9 +34,9 @@ impl DeployBackend for BuiltinBackend {
 
     if targets.is_empty() {
       bail!(
-        "No nixosConfigurations found in {flake_ref}. \
-         The builtin backend requires nixosConfigurations with \
-         deployment.targetHost set, or use --target-host."
+        "No nixosConfigurations found in {flake_ref}. The builtin backend \
+         requires nixosConfigurations with deployment.targetHost set, or use \
+         --target-host."
       );
     }
 
@@ -81,7 +82,8 @@ impl DeployBackend for BuiltinBackend {
     for target in deploy_targets {
       info!("Deploying to {} ({})", target.name, target.hostname);
 
-      // Build: nix build .#nixosConfigurations.<name>.config.system.build.toplevel
+      // Build: nix build
+      // .#nixosConfigurations.<name>.config.system.build.toplevel
       let toplevel_attr = format!(
         "{flake_ref}#nixosConfigurations.{}.config.system.build.toplevel",
         target.name
@@ -212,12 +214,13 @@ fn discover_nixos_configurations(flake_ref: &str) -> Result<Vec<DeployTarget>> {
           name: name.clone(),
           hostname,
           profiles: vec![DeployProfile {
-            name: "system".to_string(),
-            path: format!(
-              "{flake_ref}#nixosConfigurations.{name}.config.system.build.toplevel"
+            name:         "system".to_string(),
+            path:         format!(
+              "{flake_ref}#nixosConfigurations.{name}.config.system.build.\
+               toplevel"
             ),
-            user: Some("root".to_string()),
-            kind: ProfileKind::NixOS,
+            user:         Some("root".to_string()),
+            kind:         ProfileKind::NixOS,
             profile_path: None,
           }],
           ssh_user: Some("root".to_string()),

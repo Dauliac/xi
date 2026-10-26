@@ -95,16 +95,18 @@ pub fn main() -> Result<()> {
 
   // Load config.toml and apply cache defaults to command args
   match crate::config::ConfigStore::load_default() {
-    Ok(store) => match store.config() {
-      Ok(config) => {
-        tracing::debug!("Loaded config from {}", store.path().display());
-        args.command.apply_cache_config(&config.cache);
-        args.command.apply_build_config(&config.build);
-        args.command.apply_locate_config(&config.locate);
-      },
-      Err(e) => {
-        tracing::warn!("Failed to parse config: {e}");
-      },
+    Ok(store) => {
+      match store.config() {
+        Ok(config) => {
+          tracing::debug!("Loaded config from {}", store.path().display());
+          args.command.apply_cache_config(&config.cache);
+          args.command.apply_build_config(&config.build);
+          args.command.apply_locate_config(&config.locate);
+        },
+        Err(e) => {
+          tracing::warn!("Failed to parse config: {e}");
+        },
+      }
     },
     Err(e) => {
       tracing::debug!("No config loaded: {e}");
@@ -115,13 +117,15 @@ pub fn main() -> Result<()> {
     args
       .elevation_strategy
       .as_ref()
-      .map_or(ElevationStrategy::Auto, |arg| match arg {
-        ElevationStrategyArg::Auto => ElevationStrategy::Auto,
-        ElevationStrategyArg::None => ElevationStrategy::None,
-        ElevationStrategyArg::Passwordless => ElevationStrategy::Passwordless,
-        ElevationStrategyArg::Program(path) => {
-          ElevationStrategy::Prefer(path.clone())
-        },
+      .map_or(ElevationStrategy::Auto, |arg| {
+        match arg {
+          ElevationStrategyArg::Auto => ElevationStrategy::Auto,
+          ElevationStrategyArg::None => ElevationStrategy::None,
+          ElevationStrategyArg::Passwordless => ElevationStrategy::Passwordless,
+          ElevationStrategyArg::Program(path) => {
+            ElevationStrategy::Prefer(path.clone())
+          },
+        }
       });
 
   args.command.run(elevation)

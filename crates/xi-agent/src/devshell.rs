@@ -6,7 +6,12 @@ use xi_develop::{compute_flake_id, daemon::client, dirs};
 use crate::{
   args::DevshellArgs,
   schema::{
-    DevshellPayload, DevshellState, Diagnostic, Envelope, elapsed_ms, emit,
+    DevshellPayload,
+    DevshellState,
+    Diagnostic,
+    Envelope,
+    elapsed_ms,
+    emit,
   },
 };
 
@@ -43,12 +48,12 @@ pub fn collect_at(args: &DevshellArgs, cwd: &Path) -> DevshellPayload {
 
   if !client::is_alive(&socket) {
     return DevshellPayload {
-      state: DevshellState::NotRunning,
-      target: None,
-      package_count: 0,
-      daemon_state: None,
+      state:               DevshellState::NotRunning,
+      target:              None,
+      package_count:       0,
+      daemon_state:        None,
       active_cache_pushes: Vec::new(),
-      entered_command: "xi develop".to_owned(),
+      entered_command:     "xi develop".to_owned(),
     };
   }
 
@@ -74,13 +79,15 @@ pub fn collect_at(args: &DevshellArgs, cwd: &Path) -> DevshellPayload {
         entered_command: "xi develop".to_owned(),
       }
     },
-    Err(_) => DevshellPayload {
-      state: DevshellState::Degraded,
-      target: None,
-      package_count: 0,
-      daemon_state: None,
-      active_cache_pushes: Vec::new(),
-      entered_command: "xi develop".to_owned(),
+    Err(_) => {
+      DevshellPayload {
+        state:               DevshellState::Degraded,
+        target:              None,
+        package_count:       0,
+        daemon_state:        None,
+        active_cache_pushes: Vec::new(),
+        entered_command:     "xi develop".to_owned(),
+      }
     },
   }
 }

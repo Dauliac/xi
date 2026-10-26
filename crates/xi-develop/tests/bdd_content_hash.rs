@@ -8,23 +8,24 @@ use std::collections::HashMap;
 
 use xi_develop::env_file::DevEnv;
 
-/// BDD: 05_live_update_noop.feature#Nix eval produces identical output (content-hash dedup)
+/// BDD: 05_live_update_noop.feature#Nix eval produces identical output
+/// (content-hash dedup)
 #[test]
 fn identical_env_produces_same_hash() {
   let env1 = DevEnv {
-    nix_paths: vec!["/nix/store/xxx-cargo-1.95.0/bin".into()],
-    env_vars: HashMap::from([("FOO".into(), "bar".into())]),
+    nix_paths:  vec!["/nix/store/xxx-cargo-1.95.0/bin".into()],
+    env_vars:   HashMap::from([("FOO".into(), "bar".into())]),
     shell_hook: Some("echo hello".into()),
-    env_hash: String::new(), // will be computed
-    packages: vec![],
+    env_hash:   String::new(), // will be computed
+    packages:   vec![],
   };
 
   let env2 = DevEnv {
-    nix_paths: vec!["/nix/store/xxx-cargo-1.95.0/bin".into()],
-    env_vars: HashMap::from([("FOO".into(), "bar".into())]),
+    nix_paths:  vec!["/nix/store/xxx-cargo-1.95.0/bin".into()],
+    env_vars:   HashMap::from([("FOO".into(), "bar".into())]),
     shell_hook: Some("echo hello".into()),
-    env_hash: String::new(),
-    packages: vec![],
+    env_hash:   String::new(),
+    packages:   vec![],
   };
 
   // Hash is computed during from_nix_json, but we can verify the logic

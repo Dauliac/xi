@@ -1,18 +1,19 @@
 use std::{env, path::PathBuf};
 
-use crate::installable::InstallableArgs;
 use clap::{Args, ValueEnum};
 use tracing::warn;
+
+use crate::installable::InstallableArgs;
 
 /// A single named cache push target.
 #[derive(Debug, Clone)]
 pub struct CacheTarget {
   /// Display name for this cache (TOML key or derived from URL).
-  pub name: String,
+  pub name:         String,
   /// Nix store URI for push (s3://, ssh://, file://, etc.)
-  pub push_url: Option<String>,
+  pub push_url:     Option<String>,
   /// Path to secret signing key.
-  pub signing_key: Option<String>,
+  pub signing_key:  Option<String>,
   /// External push command (e.g. `["cachix", "push", "mycache"]`).
   pub push_command: Vec<String>,
 }
@@ -494,10 +495,9 @@ mod tests {
       ..Default::default()
     };
 
-    assert_eq!(
-      args.generate_passthrough_args(),
-      ["--option", "sandbox", "false", "--option", "cores", "4"]
-    );
+    assert_eq!(args.generate_passthrough_args(), [
+      "--option", "sandbox", "false", "--option", "cores", "4"
+    ]);
   }
 
   #[test]
@@ -540,13 +540,10 @@ mod tests {
       ..Default::default()
     };
 
-    assert_eq!(
-      args.generate_passthrough_args(),
-      [
-        "--override-input",
-        "nixpkgs",
-        "github:NixOS/nixpkgs/nixos-unstable"
-      ]
-    );
+    assert_eq!(args.generate_passthrough_args(), [
+      "--override-input",
+      "nixpkgs",
+      "github:NixOS/nixpkgs/nixos-unstable"
+    ]);
   }
 }

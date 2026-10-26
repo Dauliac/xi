@@ -11,22 +11,33 @@
 //! its own socket. Long-lived consumers (status bars, `xi develop events`)
 //! use [`subscribe`] which returns the open stream for streaming reads.
 
-use std::io::{BufReader, BufWriter};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::time::Duration;
+use std::{
+  io::{BufReader, BufWriter},
+  os::unix::net::UnixStream,
+  path::Path,
+  time::Duration,
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::{bail, eyre};
+use color_eyre::{
+  Result,
+  eyre::{bail, eyre},
+};
 use ulid::Ulid;
 
-use super::client as v2_client;
-use super::protocol::{
-  DaemonResponse, StatusResponse, read_frame, write_message,
-};
-use super::protocol_v3::{
-  Command, CommandReply, Envelope, Payload, Query, QueryReply, Reply,
-  Subscribe, Topics,
+use super::{
+  client as v2_client,
+  protocol::{DaemonResponse, StatusResponse, read_frame, write_message},
+  protocol_v3::{
+    Command,
+    CommandReply,
+    Envelope,
+    Payload,
+    Query,
+    QueryReply,
+    Reply,
+    Subscribe,
+    Topics,
+  },
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
@@ -264,9 +275,11 @@ fn status_from_availability(
 ) -> Result<StatusResponse> {
   use super::protocol_v3::Availability;
   match avail {
-    Availability::Ready { value } => serde_json::from_value(value.clone())
-      .or_else(|_| synth_status_from_v3(&value))
-      .map_err(|e| eyre!("could not decode v3 status: {e}")),
+    Availability::Ready { value } => {
+      serde_json::from_value(value.clone())
+        .or_else(|_| synth_status_from_v3(&value))
+        .map_err(|e| eyre!("could not decode v3 status: {e}"))
+    },
     Availability::Pending { job_id } => {
       bail!("daemon status pending (job {job_id})")
     },

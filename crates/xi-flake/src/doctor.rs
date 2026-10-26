@@ -1,14 +1,17 @@
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+  path::Path,
+  time::{SystemTime, UNIX_EPOCH},
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use tracing::debug;
 use yansi::{Color, Paint};
 
-use crate::args::DoctorArgs;
-use crate::project_config::ProjectDoctorConfig;
-use crate::resolve_local_flake_dir;
+use crate::{
+  args::DoctorArgs,
+  project_config::ProjectDoctorConfig,
+  resolve_local_flake_dir,
+};
 
 // ---------------------------------------------------------------------------
 // Supported nixpkgs branches (built-in defaults)
@@ -43,7 +46,7 @@ pub enum CheckStatus {
 
 #[derive(Debug)]
 pub struct CheckResult {
-  pub name: &'static str,
+  pub name:   &'static str,
   pub status: CheckStatus,
 }
 
@@ -90,13 +93,13 @@ impl CheckResult {
 /// A direct flake input with its locked metadata.
 #[derive(Debug)]
 struct FlakeInput {
-  name: String,
-  owner: Option<String>,
-  repo: Option<String>,
-  git_ref: Option<String>,
+  name:          String,
+  owner:         Option<String>,
+  repo:          Option<String>,
+  git_ref:       Option<String>,
   last_modified: Option<u64>,
   #[allow(dead_code)]
-  source_type: Option<String>,
+  source_type:   Option<String>,
 }
 
 /// Parse flake.lock and extract direct (root-level) inputs.
@@ -154,23 +157,23 @@ fn parse_flake_lock(lock_path: &Path) -> Result<Vec<FlakeInput>> {
     let original = node.get("original").and_then(serde_json::Value::as_object);
 
     inputs.push(FlakeInput {
-      name: input_name.clone(),
-      owner: locked
+      name:          input_name.clone(),
+      owner:         locked
         .and_then(|l| l.get("owner"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
-      repo: locked
+      repo:          locked
         .and_then(|l| l.get("repo"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
-      git_ref: original
+      git_ref:       original
         .and_then(|o| o.get("ref"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
       last_modified: locked
         .and_then(|l| l.get("lastModified"))
         .and_then(serde_json::Value::as_u64),
-      source_type: locked
+      source_type:   locked
         .and_then(|l| l.get("type"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
@@ -195,7 +198,7 @@ fn check_nixpkgs_branch(
 
   let Some(ref git_ref) = input.git_ref else {
     return Some(CheckResult {
-      name: "Nixpkgs branch",
+      name:   "Nixpkgs branch",
       status: CheckStatus::Warn(format!(
         "input '{}' has no branch ref",
         input.name
@@ -205,12 +208,12 @@ fn check_nixpkgs_branch(
 
   if supported.iter().any(|b| b == git_ref) {
     Some(CheckResult {
-      name: "Nixpkgs branch",
+      name:   "Nixpkgs branch",
       status: CheckStatus::Ok(format!("{} ({})", input.name, git_ref)),
     })
   } else {
     Some(CheckResult {
-      name: "Nixpkgs branch",
+      name:   "Nixpkgs branch",
       status: CheckStatus::Warn(format!(
         "input '{}' uses branch '{}' which is not in the supported list",
         input.name, git_ref
@@ -235,7 +238,7 @@ fn check_input_freshness(
 
   if age_days <= max_age_days {
     Some(CheckResult {
-      name: "Input freshness",
+      name:   "Input freshness",
       status: CheckStatus::Ok(format!(
         "{} — {} days old (threshold: {})",
         input.name, age_days, max_age_days
@@ -243,9 +246,10 @@ fn check_input_freshness(
     })
   } else {
     Some(CheckResult {
-      name: "Input freshness",
+      name:   "Input freshness",
       status: CheckStatus::Warn(format!(
-        "input '{}' is {} days old (threshold: {}). Run `xi update` to refresh.",
+        "input '{}' is {} days old (threshold: {}). Run `xi update` to \
+         refresh.",
         input.name, age_days, max_age_days
       )),
     })
@@ -262,7 +266,7 @@ fn check_nixpkgs_owner(input: &FlakeInput) -> Option<CheckResult> {
 
   if owner == "NixOS" {
     Some(CheckResult {
-      name: "Nixpkgs source",
+      name:   "Nixpkgs source",
       status: CheckStatus::Ok(format!(
         "{} (github:{}/{})",
         input.name,
@@ -272,7 +276,7 @@ fn check_nixpkgs_owner(input: &FlakeInput) -> Option<CheckResult> {
     })
   } else {
     Some(CheckResult {
-      name: "Nixpkgs source",
+      name:   "Nixpkgs source",
       status: CheckStatus::Warn(format!(
         "input '{}' uses fork from '{}' instead of NixOS",
         input.name, owner
@@ -292,16 +296,21 @@ fn check_formatter(flake_ref: &str) -> CheckResult {
     .output();
 
   match output {
-    Ok(o) if o.status.success() => CheckResult {
-      name: "Formatter",
-      status: CheckStatus::Ok("declared".to_string()),
+    Ok(o) if o.status.success() => {
+      CheckResult {
+        name:   "Formatter",
+        status: CheckStatus::Ok("declared".to_string()),
+      }
     },
-    _ => CheckResult {
-      name: "Formatter",
-      status: CheckStatus::Warn(
-        "no formatter declared. Consider adding one or using `xi.formatter.enable` in the xi flake-parts module."
-          .to_string(),
-      ),
+    _ => {
+      CheckResult {
+        name:   "Formatter",
+        status: CheckStatus::Warn(
+          "no formatter declared. Consider adding one or using \
+           `xi.formatter.enable` in the xi flake-parts module."
+            .to_string(),
+        ),
+      }
     },
   }
 }
@@ -455,12 +464,12 @@ mod tests {
       .as_secs();
 
     FlakeInput {
-      name: "nixpkgs".to_string(),
-      owner: Some(owner.to_string()),
-      repo: Some("nixpkgs".to_string()),
-      git_ref: Some(branch.to_string()),
+      name:          "nixpkgs".to_string(),
+      owner:         Some(owner.to_string()),
+      repo:          Some("nixpkgs".to_string()),
+      git_ref:       Some(branch.to_string()),
       last_modified: Some(now - (age_days * SECONDS_PER_DAY)),
-      source_type: Some("github".to_string()),
+      source_type:   Some("github".to_string()),
     }
   }
 
@@ -529,12 +538,12 @@ mod tests {
   #[test]
   fn non_nixpkgs_skips_branch_check() {
     let input = FlakeInput {
-      name: "crane".to_string(),
-      owner: Some("ipetkov".to_string()),
-      repo: Some("crane".to_string()),
-      git_ref: Some("master".to_string()),
+      name:          "crane".to_string(),
+      owner:         Some("ipetkov".to_string()),
+      repo:          Some("crane".to_string()),
+      git_ref:       Some("master".to_string()),
       last_modified: Some(0),
-      source_type: Some("github".to_string()),
+      source_type:   Some("github".to_string()),
     };
     let supported: Vec<String> = DEFAULT_SUPPORTED_BRANCHES
       .iter()

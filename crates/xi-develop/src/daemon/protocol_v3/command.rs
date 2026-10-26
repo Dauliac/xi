@@ -25,17 +25,18 @@ const FIELD_SEP: u8 = 0x1F;
 /// A blake3-derived idempotency key (32 bytes).
 ///
 /// Derivation (see [`IdempotencyKey::derive_for`]):
-/// `blake3(command_kind || 0x1F || canonical_json(params) || 0x1F || flake_lock_hash)`
+/// `blake3(command_kind || 0x1F || canonical_json(params) || 0x1F ||
+/// flake_lock_hash)`
 ///
 /// * `command_kind` — the serde tag of the [`Command`] variant, e.g.
 ///   `"eval_devshell"`, `"restart"`, `"abort_job"`, `"invalidate_cache"`.
 /// * `0x1F` — one literal ASCII Unit Separator byte between fields.
 /// * `canonical_json(params)` — a canonical (sorted-keys, no insignificant
-///   whitespace) JSON serialization of every field of the variant *except*
-///   the [`IdempotencyKey`] itself.
+///   whitespace) JSON serialization of every field of the variant *except* the
+///   [`IdempotencyKey`] itself.
 /// * `flake_lock_hash` — the lowercase hex string of `blake3(flake.lock
-///   contents)`. Callers with no lock available pass `""` (the empty
-///   string); the resulting key is stable across such lock-less callers.
+///   contents)`. Callers with no lock available pass `""` (the empty string);
+///   the resulting key is stable across such lock-less callers.
 ///
 /// Serialised as a lowercase hex string on the wire so it stays human-readable
 /// under `socat`.
@@ -104,7 +105,7 @@ pub enum Command {
     /// The devshell attribute path (typically `"default"`).
     target: String,
     /// The client-derived idempotency key (see [`IdempotencyKey`]).
-    key: IdempotencyKey,
+    key:    IdempotencyKey,
   },
   /// Restart the daemon (used to recover from `Stuck`).
   ///
@@ -122,7 +123,7 @@ pub enum Command {
     /// The job id to abort.
     job_id: JobId,
     /// The idempotency key.
-    key: IdempotencyKey,
+    key:    IdempotencyKey,
   },
   /// Invalidate one or more daemon caches.
   ///
@@ -132,7 +133,7 @@ pub enum Command {
     /// A free-form cache scope selector (task 2.x refines this).
     scope: String,
     /// The idempotency key.
-    key: IdempotencyKey,
+    key:   IdempotencyKey,
   },
 }
 
@@ -250,7 +251,7 @@ pub enum CommandReply {
   /// The command was accepted and a job id is available.
   Accepted {
     /// The existing or newly-allocated job id.
-    job_id: JobId,
+    job_id:   JobId,
     /// True when this request attached to an already-running job by
     /// matching [`IdempotencyKey`]; false when a fresh job was allocated.
     attached: bool,
@@ -277,7 +278,7 @@ mod hex_bytes {
     let mut out = [0u8; 64];
     for (i, b) in bytes.iter().enumerate() {
       let hi = b >> 4;
-      let lo = b & 0x0f;
+      let lo = b & 0x0F;
       out[i * 2] = hex_nibble(hi);
       out[i * 2 + 1] = hex_nibble(lo);
     }
@@ -334,14 +335,14 @@ mod tests {
   fn eval(target: &str) -> Command {
     Command::EvalDevshell {
       target: target.to_owned(),
-      key: PLACEHOLDER,
+      key:    PLACEHOLDER,
     }
   }
 
   fn invalidate(scope: &str) -> Command {
     Command::InvalidateCache {
       scope: scope.to_owned(),
-      key: PLACEHOLDER,
+      key:   PLACEHOLDER,
     }
   }
 
@@ -404,11 +405,11 @@ mod tests {
     // must produce the same derived key — the derivation ignores `key`.
     let a = Command::EvalDevshell {
       target: "default".to_owned(),
-      key: IdempotencyKey::placeholder(),
+      key:    IdempotencyKey::placeholder(),
     };
     let b = Command::EvalDevshell {
       target: "default".to_owned(),
-      key: IdempotencyKey::from_bytes([0xAA; 32]),
+      key:    IdempotencyKey::from_bytes([0xAA; 32]),
     };
     assert_eq!(
       IdempotencyKey::derive_for(&a, "lockhash"),

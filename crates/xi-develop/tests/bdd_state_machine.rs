@@ -5,18 +5,20 @@
 //!
 //! 1. All transitions go through one writer; readers observe a lock-free
 //!    monotonic snapshot sequence.
-//! 2. Illegal transitions are rejected explicitly (`TransitionRejected`),
-//!    do not publish a new snapshot, and do not bump `seq`.
-//! 3. A concurrent reader thread never observes torn state — snapshots
-//!    are wait-free via `arc_swap::ArcSwap<StateSnapshot>`.
+//! 2. Illegal transitions are rejected explicitly (`TransitionRejected`), do
+//!    not publish a new snapshot, and do not bump `seq`.
+//! 3. A concurrent reader thread never observes torn state — snapshots are
+//!    wait-free via `arc_swap::ArcSwap<StateSnapshot>`.
 
-use std::path::PathBuf;
-use std::sync::{Arc, Barrier};
-use std::thread;
+use std::{
+  path::PathBuf,
+  sync::{Arc, Barrier},
+  thread,
+};
 
-use xi_develop::daemon::protocol::DaemonState;
-use xi_develop::daemon::state_machine::{
-  DaemonStateKind, StateMachine, TransitionEvent, kind_of,
+use xi_develop::daemon::{
+  protocol::DaemonState,
+  state_machine::{DaemonStateKind, StateMachine, TransitionEvent, kind_of},
 };
 
 /// A newly-constructed machine publishes `Starting` at seq=0.
@@ -99,7 +101,7 @@ fn build_failed_carries_error_and_retry_count() {
   sm.transition(&TransitionEvent::EvalStarted).expect("legal");
   let snap = sm
     .transition(&TransitionEvent::EvalFailed {
-      error: "flake syntax error".into(),
+      error:       "flake syntax error".into(),
       retry_count: 3,
     })
     .expect("legal");

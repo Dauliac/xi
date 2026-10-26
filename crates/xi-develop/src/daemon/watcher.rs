@@ -1,4 +1,5 @@
-//! File watcher — watches nix-relevant git-tracked files + user-configured extras.
+//! File watcher — watches nix-relevant git-tracked files + user-configured
+//! extras.
 //!
 //! Default: watches staged `*.nix`, `flake.lock`, `flake.nix` files.
 //! Users can extend with `[develop.watch]` in `xi.toml`:
@@ -8,10 +9,12 @@
 //! extra = ["*.yaml", "version.txt", "Cargo.lock"]
 //! ```
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::{
+  collections::HashSet,
+  path::{Path, PathBuf},
+  sync::mpsc,
+  time::Duration,
+};
 
 use color_eyre::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -30,7 +33,7 @@ pub struct FileChangeEvent {
 /// Git-aware file watcher.
 pub struct GitWatcher {
   _watcher: RecommendedWatcher,
-  pub rx: mpsc::Receiver<FileChangeEvent>,
+  pub rx:   mpsc::Receiver<FileChangeEvent>,
 }
 
 impl GitWatcher {
@@ -86,7 +89,7 @@ impl GitWatcher {
 
     Ok(Self {
       _watcher: watcher,
-      rx: event_rx,
+      rx:       event_rx,
     })
   }
 

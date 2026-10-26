@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use crate::store_path::PackageInfo;
 
 /// Computed diff between two package lists.
 pub struct PackageDiff {
-  pub added: Vec<PackageInfo>,
+  pub added:   Vec<PackageInfo>,
   pub removed: Vec<PackageInfo>,
   pub updated: Vec<(PackageInfo, PackageInfo)>,
 }
@@ -54,7 +53,8 @@ impl PackageDiff {
     self.added.is_empty() && self.removed.is_empty() && self.updated.is_empty()
   }
 
-  /// Format as plain text for notification (`Notification::render` adds prefix/color).
+  /// Format as plain text for notification (`Notification::render` adds
+  /// prefix/color).
   pub fn to_notification_raw(
     &self,
     target: &str,
@@ -157,8 +157,8 @@ mod tests {
 
   fn pkg(name: &str, version: &str) -> PackageInfo {
     PackageInfo {
-      name: name.into(),
-      version: Some(version.into()),
+      name:       name.into(),
+      version:    Some(version.into()),
       store_path: format!("/nix/store/xxx-{name}-{version}/bin"),
     }
   }

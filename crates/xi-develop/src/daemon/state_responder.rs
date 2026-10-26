@@ -31,8 +31,10 @@
 //! variants) is intended to stay byte-identical so this file's only churn
 //! should be swapping `use` paths.
 
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::{
+  sync::Arc,
+  thread::{self, JoinHandle},
+};
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, Sender};
@@ -55,22 +57,22 @@ use super::protocol::DaemonState;
 #[derive(Debug, Clone)]
 pub struct StateSnapshot {
   /// Coarse-grained lifecycle state.
-  pub state: DaemonState,
+  pub state:          DaemonState,
   /// Monotonic sequence number, incremented each time the state machine
   /// publishes a new snapshot.
-  pub seq: u64,
+  pub seq:            u64,
   /// Wall-clock uptime seconds at snapshot publish time.
-  pub uptime_secs: u64,
+  pub uptime_secs:    u64,
   /// Number of consumers currently attached to the daemon.
   pub consumer_count: u32,
   /// Package count exposed by the current devshell (0 while no env is
   /// resolved).
-  pub package_count: u32,
+  pub package_count:  u32,
   /// Target of the currently active devshell, `""` if none.
   pub current_target: String,
   /// Daemon version, mirrored from `env!("CARGO_PKG_VERSION")` at publish
   /// time.
-  pub version: String,
+  pub version:        String,
 }
 
 impl StateSnapshot {
@@ -78,13 +80,13 @@ impl StateSnapshot {
   #[must_use]
   pub fn initial() -> Self {
     Self {
-      state: DaemonState::Starting,
-      seq: 0,
-      uptime_secs: 0,
+      state:          DaemonState::Starting,
+      seq:            0,
+      uptime_secs:    0,
       consumer_count: 0,
-      package_count: 0,
+      package_count:  0,
       current_target: String::new(),
-      version: env!("CARGO_PKG_VERSION").to_string(),
+      version:        env!("CARGO_PKG_VERSION").to_string(),
     }
   }
 }
@@ -104,7 +106,7 @@ pub mod state_meta {
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   pub struct StateEntry {
     /// Machine-readable name, matches the `DaemonState` variant name.
-    pub name: &'static str,
+    pub name:        &'static str,
     /// Human-readable one-line description.
     pub description: &'static str,
   }
@@ -115,31 +117,32 @@ pub mod state_meta {
   /// with the state machine's canonical catalog.
   pub const CATALOG: &[StateEntry] = &[
     StateEntry {
-      name: "Starting",
+      name:        "Starting",
       description: "Daemon is initializing, no work accepted yet.",
     },
     StateEntry {
-      name: "Evaluating",
+      name:        "Evaluating",
       description: "A devshell evaluation is in progress.",
     },
     StateEntry {
-      name: "Ready",
+      name:        "Ready",
       description: "Daemon is idle with a resolved devshell environment.",
     },
     StateEntry {
-      name: "BuildFailed",
+      name:        "BuildFailed",
       description: "The last build failed; retries may be scheduled.",
     },
     StateEntry {
-      name: "WatcherDegraded",
-      description: "The filesystem watcher lost the tree; falling back to poll.",
+      name:        "WatcherDegraded",
+      description: "The filesystem watcher lost the tree; falling back to \
+                    poll.",
     },
     StateEntry {
-      name: "ConfigError",
+      name:        "ConfigError",
       description: "Config load failed; daemon is running in degraded mode.",
     },
     StateEntry {
-      name: "ShuttingDown",
+      name:        "ShuttingDown",
       description: "Daemon is draining and will exit shortly.",
     },
   ];
@@ -209,7 +212,7 @@ pub enum QueryReply {
     /// Sequence the client asked for.
     requested_seq: u64,
     /// Sequence currently held by the responder.
-    current_seq: u64,
+    current_seq:   u64,
   },
   /// Reply to [`Query::GetJob`].
   Job(Availability<JobPayload>),
@@ -219,19 +222,19 @@ pub enum QueryReply {
 #[derive(Debug, Clone)]
 pub struct StatusPayload {
   /// Coarse daemon state at snapshot time.
-  pub state: DaemonState,
+  pub state:          DaemonState,
   /// Uptime seconds at snapshot time.
-  pub uptime_secs: u64,
+  pub uptime_secs:    u64,
   /// Number of attached consumers.
   pub consumer_count: u32,
   /// Package count of the resolved devshell (0 if none).
-  pub package_count: u32,
+  pub package_count:  u32,
   /// Current devshell target (`""` if none).
   pub current_target: String,
   /// Daemon version string.
-  pub version: String,
+  pub version:        String,
   /// Sequence number of the snapshot this reply was built from.
-  pub seq: u64,
+  pub seq:            u64,
 }
 
 /// Payload for [`Query::Devshell`] once task 2.3 wires the env pointer.
@@ -240,7 +243,7 @@ pub struct DevshellPayload {
   /// Absolute path to the env file (`envrc` or equivalent).
   pub env_file_path: String,
   /// Store path of the resolved devshell.
-  pub store_path: String,
+  pub store_path:    String,
 }
 
 /// Payload for [`Query::FlakeOutputs`] once task 2.5 wires it.
@@ -254,7 +257,7 @@ pub struct FlakeOutputsPayload {
 #[derive(Debug, Clone)]
 pub struct JobPayload {
   /// Job identifier.
-  pub id: String,
+  pub id:     String,
   /// Human-readable status line.
   pub status: String,
 }
@@ -270,7 +273,7 @@ pub struct JobPayload {
 /// blocked by any command-side work.
 pub struct StateResponder {
   handle: StateHandle,
-  rx: Receiver<QueryEnvelope>,
+  rx:     Receiver<QueryEnvelope>,
 }
 
 /// A query paired with a one-shot reply channel.
@@ -280,7 +283,7 @@ pub struct StateResponder {
 #[derive(Debug)]
 pub struct QueryEnvelope {
   /// The query to answer.
-  pub query: Query,
+  pub query:    Query,
   /// One-shot reply channel. Sending is best-effort; if the peer dropped the
   /// receiver we silently discard the reply.
   pub reply_to: Sender<QueryReply>,
@@ -337,13 +340,13 @@ impl StateResponder {
       Query::Status => {
         let snap = handle.load();
         QueryReply::Status(Availability::Ready(StatusPayload {
-          state: snap.state.clone(),
-          uptime_secs: snap.uptime_secs,
+          state:          snap.state.clone(),
+          uptime_secs:    snap.uptime_secs,
           consumer_count: snap.consumer_count,
-          package_count: snap.package_count,
+          package_count:  snap.package_count,
           current_target: snap.current_target.clone(),
-          version: snap.version.clone(),
-          seq: snap.seq,
+          version:        snap.version.clone(),
+          seq:            snap.seq,
         }))
       },
       Query::Devshell => {
@@ -391,8 +394,9 @@ impl StateResponder {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use crossbeam_channel::bounded;
+
+  use super::*;
 
   fn make_handle(snap: StateSnapshot) -> StateHandle {
     Arc::new(ArcSwap::from_pointee(snap))
@@ -412,13 +416,13 @@ mod tests {
   #[test]
   fn status_reflects_snapshot_state() {
     let handle = make_handle(StateSnapshot {
-      state: DaemonState::Ready,
-      seq: 42,
-      uptime_secs: 100,
+      state:          DaemonState::Ready,
+      seq:            42,
+      uptime_secs:    100,
       consumer_count: 3,
-      package_count: 17,
+      package_count:  17,
       current_target: ".#default".to_string(),
-      version: "test".to_string(),
+      version:        "test".to_string(),
     });
 
     let reply = StateResponder::answer(&handle, Query::Status);

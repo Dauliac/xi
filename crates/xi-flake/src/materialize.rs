@@ -1,15 +1,19 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+  path::{Path, PathBuf},
+  process::Command,
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use sha2::Digest;
 use tracing::{debug, info, warn};
 use yansi::{Color, Paint};
 
-use crate::args::MaterializeArgs;
-use crate::project_config::{MaterializeTarget, ProjectMaterializeConfig};
-use crate::{project_config, resolve_local_flake_dir};
+use crate::{
+  args::MaterializeArgs,
+  project_config,
+  project_config::{MaterializeTarget, ProjectMaterializeConfig},
+  resolve_local_flake_dir,
+};
 
 /// Cache directory for JIT materialization (gitignored).
 const CACHE_DIR: &str = ".xi/materialized";
@@ -40,8 +44,8 @@ impl MaterializeArgs {
 
     if config.materialize.targets.is_empty() {
       bail!(
-        "No materialization targets configured.\n\
-         Add [[materialize.target]] sections to .xi.toml"
+        "No materialization targets configured.\nAdd [[materialize.target]] \
+         sections to .xi.toml"
       );
     }
 
@@ -736,8 +740,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use tempfile::tempdir;
+
+  use super::*;
 
   #[test]
   fn compute_hash_of_single_file() {
@@ -784,9 +789,9 @@ mod tests {
     std::fs::write(dir.path().join("src.txt"), "v1").expect("write");
 
     let target = MaterializeTarget {
-      name: "test".into(),
+      name:    "test".into(),
       command: "echo hello".into(),
-      output: "out.txt".into(),
+      output:  "out.txt".into(),
       sources: vec!["src.txt".into()],
     };
 

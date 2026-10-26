@@ -3,8 +3,10 @@
 //! Queue file: `$XDG_STATE_HOME/xi/cache/queue.json`
 //! Format: JSON array of [`QueueEntry`].
 
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+  path::{Path, PathBuf},
+  time::{SystemTime, UNIX_EPOCH},
+};
 
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
@@ -16,9 +18,9 @@ use crate::args::CacheTarget;
 #[derive(Debug, Clone)]
 pub struct QueueConfig {
   /// Maximum entries in the queue (oldest dropped on overflow).
-  pub max_size: usize,
+  pub max_size:            usize,
   /// Entries older than this are expired (seconds).
-  pub expiry_secs: u64,
+  pub expiry_secs:         u64,
   /// Seconds between automatic drain attempts (daemon only).
   pub drain_interval_secs: u64,
 }
@@ -26,9 +28,9 @@ pub struct QueueConfig {
 impl Default for QueueConfig {
   fn default() -> Self {
     Self {
-      max_size: 100,
-      expiry_secs: 7 * 24 * 3600, // 7 days
-      drain_interval_secs: 300,   // 5 minutes
+      max_size:            100,
+      expiry_secs:         7 * 24 * 3600, // 7 days
+      drain_interval_secs: 300,           // 5 minutes
     }
   }
 }
@@ -37,32 +39,32 @@ impl Default for QueueConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueEntry {
   /// Nix store path to push.
-  pub store_path: String,
+  pub store_path:  String,
   /// Cache target configuration.
-  pub target: SerializableTarget,
+  pub target:      SerializableTarget,
   /// Unix timestamp when enqueued.
   pub enqueued_at: u64,
   /// Number of retry attempts so far.
   pub retry_count: u32,
   /// Last error message.
-  pub last_error: String,
+  pub last_error:  String,
 }
 
 /// Serializable subset of `CacheTarget` for persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableTarget {
-  pub name: String,
-  pub push_url: Option<String>,
-  pub signing_key: Option<String>,
+  pub name:         String,
+  pub push_url:     Option<String>,
+  pub signing_key:  Option<String>,
   pub push_command: Vec<String>,
 }
 
 impl From<&CacheTarget> for SerializableTarget {
   fn from(t: &CacheTarget) -> Self {
     Self {
-      name: t.name.clone(),
-      push_url: t.push_url.clone(),
-      signing_key: t.signing_key.clone(),
+      name:         t.name.clone(),
+      push_url:     t.push_url.clone(),
+      signing_key:  t.signing_key.clone(),
       push_command: t.push_command.clone(),
     }
   }
@@ -71,9 +73,9 @@ impl From<&CacheTarget> for SerializableTarget {
 impl From<&SerializableTarget> for CacheTarget {
   fn from(t: &SerializableTarget) -> Self {
     Self {
-      name: t.name.clone(),
-      push_url: t.push_url.clone(),
-      signing_key: t.signing_key.clone(),
+      name:         t.name.clone(),
+      push_url:     t.push_url.clone(),
+      signing_key:  t.signing_key.clone(),
       push_command: t.push_command.clone(),
     }
   }
@@ -143,11 +145,11 @@ pub fn enqueue(
   }
 
   entries.push(QueueEntry {
-    store_path: store_path.to_string(),
-    target: SerializableTarget::from(target),
+    store_path:  store_path.to_string(),
+    target:      SerializableTarget::from(target),
     enqueued_at: now_secs(),
     retry_count: 0,
-    last_error: error.to_string(),
+    last_error:  error.to_string(),
   });
 
   // Enforce max size (drop oldest)
@@ -164,9 +166,9 @@ pub fn enqueue(
 /// Result of draining the queue.
 pub struct DrainResult {
   pub succeeded: u32,
-  pub failed: u32,
-  pub expired: u32,
-  pub missing: u32,
+  pub failed:    u32,
+  pub expired:   u32,
+  pub missing:   u32,
 }
 
 /// Drain the queue: retry all entries, remove succeeded/expired/missing.
@@ -181,9 +183,9 @@ pub fn drain(
   if entries.is_empty() {
     return DrainResult {
       succeeded: 0,
-      failed: 0,
-      expired: 0,
-      missing: 0,
+      failed:    0,
+      expired:   0,
+      missing:   0,
     };
   }
 
@@ -191,9 +193,9 @@ pub fn drain(
   let mut remaining = Vec::new();
   let mut result = DrainResult {
     succeeded: 0,
-    failed: 0,
-    expired: 0,
-    missing: 0,
+    failed:    0,
+    expired:   0,
+    missing:   0,
   };
 
   for mut entry in entries {
@@ -269,9 +271,9 @@ mod tests {
   #[test]
   fn serializable_target_roundtrip() {
     let target = CacheTarget {
-      name: "test".into(),
-      push_url: Some("s3://bucket".into()),
-      signing_key: None,
+      name:         "test".into(),
+      push_url:     Some("s3://bucket".into()),
+      signing_key:  None,
       push_command: vec![],
     };
     let ser = SerializableTarget::from(&target);
@@ -284,16 +286,16 @@ mod tests {
   #[test]
   fn queue_entry_roundtrip() {
     let entry = QueueEntry {
-      store_path: "/nix/store/abc-pkg".into(),
-      target: SerializableTarget {
-        name: "mycache".into(),
-        push_url: Some("s3://bucket".into()),
-        signing_key: None,
+      store_path:  "/nix/store/abc-pkg".into(),
+      target:      SerializableTarget {
+        name:         "mycache".into(),
+        push_url:     Some("s3://bucket".into()),
+        signing_key:  None,
         push_command: vec![],
       },
       enqueued_at: 1_700_000_000,
       retry_count: 2,
-      last_error: "connection refused".into(),
+      last_error:  "connection refused".into(),
     };
     let json = serde_json::to_string(&entry).unwrap();
     let deser: QueueEntry = serde_json::from_str(&json).unwrap();

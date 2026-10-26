@@ -3,8 +3,7 @@
 //! Tests for the trust/untrust lifecycle.
 //! These are unit-level tests that don't require nix or a daemon.
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 /// Helper: set XDG dirs to a temp directory so trust operations are isolated.
 fn setup_trust_env(tmp: &Path) -> (std::path::PathBuf, std::path::PathBuf) {

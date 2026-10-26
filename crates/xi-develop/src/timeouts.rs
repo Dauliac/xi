@@ -5,19 +5,18 @@
 //! Layering, lowest to highest precedence:
 //!
 //! 1. **Defaults** — see [`Timeouts::default`]; the numbers documented in
-//!    `openspec/changes/async-daemon-cqrs/proposal.md` under
-//!    _"Timeouts are user-configurable"_.
+//!    `openspec/changes/async-daemon-cqrs/proposal.md` under _"Timeouts are
+//!    user-configurable"_.
 //! 2. **Project config** — `[develop.timeouts]` table in `.xi.toml` at the
 //!    flake root.
-//! 3. **Environment variables** — `XI_DEVELOP_*` variables override the
-//!    project config on a per-field basis.
+//! 3. **Environment variables** — `XI_DEVELOP_*` variables override the project
+//!    config on a per-field basis.
 //!
 //! Every field is parsed as milliseconds from TOML / env and stored as a
 //! [`Duration`] internally. The subscriber ring is a count (not a duration)
 //! and stored as `usize`.
 
-use std::path::Path;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use tracing::warn;
 
@@ -64,14 +63,14 @@ pub struct Timeouts {
 impl Default for Timeouts {
   fn default() -> Self {
     Self {
-      state_query: Duration::from_millis(20),
-      prompt_budget: Duration::from_millis(100),
-      stuck_threshold: Duration::from_secs(30),
-      offline_cache_ttl: Duration::from_hours(24),
-      subscriber_ring_size: 1000,
-      keepalive: Duration::from_secs(30),
-      broadcast_batching: Duration::from_millis(100),
-      idle_shutdown: Duration::from_mins(30),
+      state_query:           Duration::from_millis(20),
+      prompt_budget:         Duration::from_millis(100),
+      stuck_threshold:       Duration::from_secs(30),
+      offline_cache_ttl:     Duration::from_hours(24),
+      subscriber_ring_size:  1000,
+      keepalive:             Duration::from_secs(30),
+      broadcast_batching:    Duration::from_millis(100),
+      idle_shutdown:         Duration::from_mins(30),
       reconnect_backoff_cap: Duration::from_mins(1),
     }
   }

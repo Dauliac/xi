@@ -2,16 +2,23 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
-use xi_core::installable::{CommandContext, InstallableArgs};
 use xi_core::{
   args::{
-    CacheArgs, DiffType, HasBuildArgs, HasCacheArgs, NixBuildPassthroughArgs,
+    CacheArgs,
+    DiffType,
+    HasBuildArgs,
+    HasCacheArgs,
+    NixBuildPassthroughArgs,
   },
   checks::{
-    FeatureRequirements, FlakeFeatures, LegacyFeatures, ReplFeatures,
+    FeatureRequirements,
+    FlakeFeatures,
+    LegacyFeatures,
+    ReplFeatures,
     ReplVariant,
   },
   complete,
+  installable::{CommandContext, InstallableArgs},
 };
 use xi_remote::RemoteHost;
 

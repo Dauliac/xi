@@ -19,9 +19,11 @@ impl ShellType {
       "bash" => Ok(Self::Bash),
       "zsh" => Ok(Self::Zsh),
       "fish" => Ok(Self::Fish),
-      _ => Err(color_eyre::eyre::eyre!(
-        "Unsupported shell: '{s}'. Supported: bash, zsh, fish"
-      )),
+      _ => {
+        Err(color_eyre::eyre::eyre!(
+          "Unsupported shell: '{s}'. Supported: bash, zsh, fish"
+        ))
+      },
     }
   }
 

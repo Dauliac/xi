@@ -65,7 +65,8 @@ pub enum Query {
   Status,
   /// Look up a specific job in the registry.
   GetJob {
-    /// The job id previously returned by a command or in `Availability::Pending`.
+    /// The job id previously returned by a command or in
+    /// `Availability::Pending`.
     job_id: JobId,
   },
   /// Fetch the current devshell env pointer.
@@ -81,9 +82,9 @@ pub enum Query {
   HeartBeat,
   /// The compile-time state metadata catalog.
   ///
-  /// Returned as `{ state_name → { display, color, category, phase, terminal } }`.
-  /// A parity test in the daemon build fails if any `DaemonState` variant is
-  /// missing from the catalog.
+  /// Returned as `{ state_name → { display, color, category, phase, terminal }
+  /// }`. A parity test in the daemon build fails if any `DaemonState` variant
+  /// is missing from the catalog.
   StateCatalog,
   /// Fetch a specific snapshot by sequence number.
   ///
@@ -115,7 +116,8 @@ pub enum QueryReply {
   GetJob(Availability<serde_json::Value>),
   /// Reply to [`Query::Devshell`].
   Devshell(Availability<serde_json::Value>),
-  /// Reply to [`Query::FlakeOutputs`]. Prefer notify-and-fetch for large payloads.
+  /// Reply to [`Query::FlakeOutputs`]. Prefer notify-and-fetch for large
+  /// payloads.
   FlakeOutputs(Availability<serde_json::Value>),
   /// Reply to [`Query::HeartBeat`]. Presence of this variant confirms the
   /// daemon speaks v3; a v2 daemon replies via the legacy `DaemonResponse`.

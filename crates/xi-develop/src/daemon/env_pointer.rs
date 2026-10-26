@@ -3,9 +3,9 @@
 //!
 //! ## Contract
 //!
-//! - `current_env` is the last **successfully evaluated** devshell env. Interactive
-//!   shells that have already sourced this env must never observe it disappear
-//!   or change while an in-flight re-evaluation fails.
+//! - `current_env` is the last **successfully evaluated** devshell env.
+//!   Interactive shells that have already sourced this env must never observe
+//!   it disappear or change while an in-flight re-evaluation fails.
 //! - `pending_env` is the in-flight eval's env — populated by
 //!   [`EnvPointer::begin_eval`], promoted to `current` by
 //!   [`EnvPointer::commit_eval`], or discarded by [`EnvPointer::abandon_eval`]
@@ -30,8 +30,7 @@
 //! `begin_eval`. The pointer never becomes `None` on failure, only on
 //! never-succeeded startup.
 
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::{path::PathBuf, time::SystemTime};
 
 use arc_swap::ArcSwap;
 
@@ -68,16 +67,16 @@ impl JobId {
 pub struct EnvSnapshot {
   /// Path under `/nix/store/...` (or the daemon's env-file staging dir) that
   /// downstream consumers should read.
-  pub store_path: PathBuf,
+  pub store_path:   PathBuf,
   /// Content-addressed hash of the `flake.lock` (or equivalent) that produced
   /// this env. Used by clients to detect drift without re-evaluating.
-  pub lock_hash: String,
+  pub lock_hash:    String,
   /// Wall-clock time the eval finished. Only used for diagnostics — do not
   /// rely on this for ordering (use `JobId` sequencing).
   pub evaluated_at: SystemTime,
   /// The job that produced this snapshot. Ties the env back to a completed
   /// unit of work in the job registry.
-  pub job_id: JobId,
+  pub job_id:       JobId,
 }
 
 /// Internal composite state — the payload of the single `ArcSwap`.
@@ -118,9 +117,11 @@ impl EnvPointer {
     // `rcu` (read-copy-update) is a compare-and-swap loop: we clone the
     // observed state, mutate the clone, and swap only if nothing else beat
     // us. This is contention-safe without any locks.
-    self.state.rcu(|cur| EnvState {
-      current: cur.current.clone(),
-      pending: Some(pending.clone()),
+    self.state.rcu(|cur| {
+      EnvState {
+        current: cur.current.clone(),
+        pending: Some(pending.clone()),
+      }
     });
   }
 
@@ -131,13 +132,17 @@ impl EnvPointer {
   pub fn commit_eval(&self) {
     self.state.rcu(|cur| {
       cur.pending.clone().map_or_else(
-        || EnvState {
-          current: cur.current.clone(),
-          pending: None,
+        || {
+          EnvState {
+            current: cur.current.clone(),
+            pending: None,
+          }
         },
-        |new_current| EnvState {
-          current: Some(new_current),
-          pending: None,
+        |new_current| {
+          EnvState {
+            current: Some(new_current),
+            pending: None,
+          }
         },
       )
     });
@@ -149,9 +154,11 @@ impl EnvPointer {
   /// mechanism behind SC-014 — after this call, `current()` returns exactly
   /// what it returned before the matching `begin_eval`.
   pub fn abandon_eval(&self) {
-    self.state.rcu(|cur| EnvState {
-      current: cur.current.clone(),
-      pending: None,
+    self.state.rcu(|cur| {
+      EnvState {
+        current: cur.current.clone(),
+        pending: None,
+      }
     });
   }
 
@@ -185,28 +192,34 @@ impl EnvPointer {
   /// outside the crate.
   #[cfg(test)]
   fn set_current_for_test(&self, snapshot: EnvSnapshot) {
-    self.state.rcu(|cur| EnvState {
-      current: Some(snapshot.clone()),
-      pending: cur.pending.clone(),
+    self.state.rcu(|cur| {
+      EnvState {
+        current: Some(snapshot.clone()),
+        pending: cur.pending.clone(),
+      }
     });
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
-  use std::sync::atomic::{AtomicBool, Ordering};
-  use std::thread;
-  use std::time::{Duration, SystemTime};
+  use std::{
+    sync::{
+      Arc,
+      atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, SystemTime},
+  };
 
   use super::*;
 
   fn snap(id: &str, path: &str) -> EnvSnapshot {
     EnvSnapshot {
-      store_path: PathBuf::from(path),
-      lock_hash: format!("hash-{id}"),
+      store_path:   PathBuf::from(path),
+      lock_hash:    format!("hash-{id}"),
       evaluated_at: SystemTime::now(),
-      job_id: JobId::new(id),
+      job_id:       JobId::new(id),
     }
   }
 
@@ -346,7 +359,8 @@ mod tests {
         assert_eq!(
           obs.as_ref(),
           Some(&good_for_reader),
-          "current() diverged from the last-good snapshot during a failed-eval cycle",
+          "current() diverged from the last-good snapshot during a \
+           failed-eval cycle",
         );
         observations = observations.wrapping_add(1);
       }

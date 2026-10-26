@@ -6,17 +6,23 @@ use std::{
 
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use tracing::{debug, info, warn};
-use xi_core::installable::{CommandContext, Installable, resolve_toplevel};
 use xi_core::{
   args::DiffType,
   command::{
-    self, Command, CommandKind, ElevationStrategy, NixCommand,
+    self,
+    Command,
+    CommandKind,
+    ElevationStrategy,
+    NixCommand,
     find_real_nix_binary,
   },
+  installable::{CommandContext, Installable, resolve_toplevel},
   update::update,
   util::{
-    ensure_ssh_key_login, get_build_image_variants,
-    get_build_image_variants_flake, get_hostname,
+    ensure_ssh_key_login,
+    get_build_image_variants,
+    get_build_image_variants_flake,
+    get_hostname,
   },
 };
 use xi_diff::{handle_nixos_diff, print_dix_diff};
@@ -24,8 +30,14 @@ use xi_remote::{self, RemoteBuildConfig, RemoteHost};
 
 use crate::{
   args::{
-    self, OsBuildImageArgs, OsBuildVmArgs, OsGenerationsArgs,
-    OsRebuildActivateArgs, OsRebuildArgs, OsReplArgs, OsRollbackArgs,
+    self,
+    OsBuildImageArgs,
+    OsBuildVmArgs,
+    OsGenerationsArgs,
+    OsRebuildActivateArgs,
+    OsRebuildArgs,
+    OsReplArgs,
+    OsRollbackArgs,
     OsSubcommand::{self},
   },
   generations,
@@ -406,11 +418,11 @@ impl OsRebuildActivateArgs {
           target_host,
           &resolved_profile,
           &xi_remote::ActivateRemoteConfig {
-            platform: xi_remote::Platform::NixOS,
-            activation_type: xi_remote::ActivationType::Boot,
+            platform:           xi_remote::Platform::NixOS,
+            activation_type:    xi_remote::ActivationType::Boot,
             install_bootloader: self.rebuild.install_bootloader,
-            show_logs: false,
-            elevation: elevate.then_some(elevation),
+            show_logs:          false,
+            elevation:          elevate.then_some(elevation),
           },
         )
         .wrap_err("Bootloader activation failed")?;
@@ -723,10 +735,12 @@ impl OsRebuildArgs {
 
     let message = match variant {
       BuildVm => "Building NixOS VM image",
-      BuildIso => &final_attrs.and_then(|attrs| attrs.last()).map_or_else(
-        || "Building NixOS image".to_string(),
-        |variant| format!("Building NixOS image ({variant})"),
-      ),
+      BuildIso => {
+        &final_attrs.and_then(|attrs| attrs.last()).map_or_else(
+          || "Building NixOS image".to_string(),
+          |variant| format!("Building NixOS image ({variant})"),
+        )
+      },
       _ => "Building NixOS configuration",
     };
 
@@ -1002,12 +1016,14 @@ fn find_vm_script(out_path: &Path) -> Result<PathBuf> {
     .wrap_err_with(|| {
       format!("Failed to read directory {}", bin_dir.display())
     })?
-    .filter_map(|entry_result| match entry_result {
-      Ok(entry) => Some(entry),
-      Err(e) => {
-        warn!("Error reading entry in {}: {}", bin_dir.display(), e);
-        None
-      },
+    .filter_map(|entry_result| {
+      match entry_result {
+        Ok(entry) => Some(entry),
+        Err(e) => {
+          warn!("Error reading entry in {}: {}", bin_dir.display(), e);
+          None
+        },
+      }
     })
     .find_map(|entry| {
       let fname = entry.file_name();

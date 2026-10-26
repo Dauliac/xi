@@ -1,14 +1,16 @@
 use std::time::Instant;
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use tracing::{debug, info};
 use yansi::{Color, Paint};
 
-use crate::args::LibArgs;
-use crate::show::DISCOVER_ATTRS_NIX;
-use crate::{ensure_flake_locked, resolve_local_flake_dir};
+use crate::{
+  args::LibArgs,
+  ensure_flake_locked,
+  resolve_local_flake_dir,
+  show::DISCOVER_ATTRS_NIX,
+};
 
 // ---------------------------------------------------------------------------
 // Counting

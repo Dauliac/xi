@@ -4,6 +4,7 @@
 //! These tests WILL FAIL (TDD red) until F2 implements find_flake_stack.
 
 use std::fs;
+
 use xi_develop::flake_detect;
 
 /// find_flake_stack from deeply nested dir returns [outermost, innermost]

@@ -28,10 +28,10 @@ fn write_read_roundtrip_all_variants() {
   let requests = vec![
     DaemonRequest::Prompt(PromptRequest {
       consumer_pid: 12345,
-      target: "default".into(),
-      cwd: "/tmp".into(),
-      is_subshell: false,
-      parent_pid: None,
+      target:       "default".into(),
+      cwd:          "/tmp".into(),
+      is_subshell:  false,
+      parent_pid:   None,
     }),
     DaemonRequest::Deregister(DeregisterRequest { consumer_pid: 99 }),
     DaemonRequest::Eval(EvalRequest {
@@ -40,10 +40,10 @@ fn write_read_roundtrip_all_variants() {
     DaemonRequest::Status,
     DaemonRequest::Shutdown,
     DaemonRequest::CachePush(CachePushRequest {
-      store_path: "/nix/store/abc-test".into(),
-      cache_url: "s3://my-cache".into(),
+      store_path:   "/nix/store/abc-test".into(),
+      cache_url:    "s3://my-cache".into(),
       push_command: vec!["cachix".into(), "push".into(), "mycache".into()],
-      sign_key: Some("/path/to/key".into()),
+      sign_key:     Some("/path/to/key".into()),
     }),
   ];
 
@@ -65,10 +65,10 @@ fn write_read_roundtrip_all_variants() {
 fn request_tagged_union_format() {
   let req = DaemonRequest::Prompt(PromptRequest {
     consumer_pid: 1,
-    target: "default".into(),
-    cwd: "/tmp".into(),
-    is_subshell: false,
-    parent_pid: None,
+    target:       "default".into(),
+    cwd:          "/tmp".into(),
+    is_subshell:  false,
+    parent_pid:   None,
   });
   let json = serde_json::to_string(&req).unwrap();
   assert!(json.contains("\"type\":\"Prompt\""));
@@ -121,12 +121,12 @@ fn daemon_state_simple_variants_serialize() {
 #[test]
 fn status_response_has_version() {
   let resp = StatusResponse {
-    state: DaemonState::Ready,
-    uptime_secs: 120,
-    consumer_count: 2,
-    current_target: "default".into(),
-    package_count: 15,
-    version: "4.5.0".into(),
+    state:               DaemonState::Ready,
+    uptime_secs:         120,
+    consumer_count:      2,
+    current_target:      "default".into(),
+    package_count:       15,
+    version:             "4.5.0".into(),
     active_cache_pushes: vec![],
   };
 
@@ -145,7 +145,7 @@ fn daemon_state_v2_all_variants_serde() {
     DaemonState::Evaluating,
     DaemonState::Ready,
     DaemonState::BuildFailed {
-      error: "eval failed: attribute 'foo' missing".into(),
+      error:       "eval failed: attribute 'foo' missing".into(),
       retry_count: 3,
     },
     DaemonState::WatcherDegraded,
@@ -167,10 +167,10 @@ fn daemon_state_v2_all_variants_serde() {
 fn prompt_request_roundtrip() {
   let req = PromptRequest {
     consumer_pid: 42,
-    target: "devShells.x86_64-linux.default".into(),
-    cwd: "/home/user/project".into(),
-    is_subshell: true,
-    parent_pid: Some(1000),
+    target:       "devShells.x86_64-linux.default".into(),
+    cwd:          "/home/user/project".into(),
+    is_subshell:  true,
+    parent_pid:   Some(1000),
   };
 
   let json = serde_json::to_string(&req).unwrap();
@@ -185,10 +185,10 @@ fn prompt_request_roundtrip() {
   // Also test with parent_pid = None
   let req_no_parent = PromptRequest {
     consumer_pid: 99,
-    target: "default".into(),
-    cwd: "/tmp".into(),
-    is_subshell: false,
-    parent_pid: None,
+    target:       "default".into(),
+    cwd:          "/tmp".into(),
+    is_subshell:  false,
+    parent_pid:   None,
   };
 
   let json2 = serde_json::to_string(&req_no_parent).unwrap();
@@ -203,20 +203,20 @@ fn prompt_request_roundtrip() {
 #[test]
 fn prompt_response_roundtrip() {
   let resp = PromptResponse {
-    should_source_env: true,
-    env_file_path: Some("/tmp/xi/env-default.sh".into()),
-    should_source_hook: true,
-    hook_file_path: Some("/tmp/xi/hook-default.sh".into()),
-    should_exit: false,
+    should_source_env:     true,
+    env_file_path:         Some("/tmp/xi/env-default.sh".into()),
+    should_source_hook:    true,
+    hook_file_path:        Some("/tmp/xi/hook-default.sh".into()),
+    should_exit:           false,
     should_spawn_subshell: true,
-    spawn_flake_root: Some("/home/user/project".into()),
-    notifications: vec![
+    spawn_flake_root:      Some("/home/user/project".into()),
+    notifications:         vec![
       Notification::success("devshell ready"),
       Notification::info("2 packages added"),
       Notification::warn("input 'nixpkgs' is 45 days old"),
     ],
-    daemon_state: DaemonState::Ready,
-    is_trusted: true,
+    daemon_state:          DaemonState::Ready,
+    is_trusted:            true,
   };
 
   let json = serde_json::to_string(&resp).unwrap();
@@ -251,10 +251,10 @@ fn prompt_response_roundtrip() {
 fn daemon_request_prompt_tagged() {
   let req = DaemonRequest::Prompt(PromptRequest {
     consumer_pid: 7,
-    target: "default".into(),
-    cwd: "/home/user".into(),
-    is_subshell: false,
-    parent_pid: None,
+    target:       "default".into(),
+    cwd:          "/home/user".into(),
+    is_subshell:  false,
+    parent_pid:   None,
   });
 
   let json = serde_json::to_string(&req).unwrap();
@@ -266,7 +266,8 @@ fn daemon_request_prompt_tagged() {
   assert!(matches!(decoded, DaemonRequest::Prompt(_)));
 }
 
-/// BDD: 20_daemon_protocol.feature#DaemonRequest::Deregister tagged union format
+/// BDD: 20_daemon_protocol.feature#DaemonRequest::Deregister tagged union
+/// format
 #[test]
 fn daemon_request_deregister_tagged() {
   let req = DaemonRequest::Deregister(DeregisterRequest { consumer_pid: 55 });
@@ -290,7 +291,7 @@ fn deregister_roundtrip() {
 
   // Response
   let resp = DeregisterResponse {
-    was_registered: true,
+    was_registered:      true,
     remaining_consumers: 4,
   };
   let json = serde_json::to_string(&resp).unwrap();
@@ -300,7 +301,7 @@ fn deregister_roundtrip() {
 
   // Response with was_registered = false
   let resp2 = DeregisterResponse {
-    was_registered: false,
+    was_registered:      false,
     remaining_consumers: 0,
   };
   let json2 = serde_json::to_string(&resp2).unwrap();
@@ -315,10 +316,10 @@ fn prompt_wire_format_roundtrip() {
   // Write a DaemonRequest::Prompt through the wire format
   let req = DaemonRequest::Prompt(PromptRequest {
     consumer_pid: 42,
-    target: "devShells.x86_64-linux.default".into(),
-    cwd: "/home/user/project".into(),
-    is_subshell: true,
-    parent_pid: Some(1000),
+    target:       "devShells.x86_64-linux.default".into(),
+    cwd:          "/home/user/project".into(),
+    is_subshell:  true,
+    parent_pid:   Some(1000),
   });
 
   let mut buf = Vec::new();
@@ -333,16 +334,18 @@ fn prompt_wire_format_roundtrip() {
 
   // Write a DaemonResponse::Prompt through the wire format
   let resp = DaemonResponse::Prompt(PromptResponse {
-    should_source_env: true,
-    env_file_path: Some("/tmp/xi/env.sh".into()),
-    should_source_hook: false,
-    hook_file_path: None,
-    should_exit: false,
+    should_source_env:     true,
+    env_file_path:         Some("/tmp/xi/env.sh".into()),
+    should_source_hook:    false,
+    hook_file_path:        None,
+    should_exit:           false,
     should_spawn_subshell: false,
-    spawn_flake_root: None,
-    notifications: vec![Notification::loading("evaluating devshell...")],
-    daemon_state: DaemonState::Evaluating,
-    is_trusted: true,
+    spawn_flake_root:      None,
+    notifications:         vec![Notification::loading(
+      "evaluating devshell...",
+    )],
+    daemon_state:          DaemonState::Evaluating,
+    is_trusted:            true,
   });
 
   let mut buf2 = Vec::new();
@@ -356,7 +359,7 @@ fn prompt_wire_format_roundtrip() {
 
   // Write a DaemonResponse::Deregister through the wire format
   let dereg_resp = DaemonResponse::Deregister(DeregisterResponse {
-    was_registered: true,
+    was_registered:      true,
     remaining_consumers: 2,
   });
 

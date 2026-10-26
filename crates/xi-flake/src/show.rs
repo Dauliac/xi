@@ -6,7 +6,7 @@ use yansi::{Color, Paint};
 
 /// A single flake output entry parsed from JSON.
 struct OutputEntry {
-  name: Option<String>,
+  name:        Option<String>,
   description: Option<String>,
   output_type: Option<String>,
 }
@@ -14,7 +14,7 @@ struct OutputEntry {
 /// Parsed version info from a nix derivation name.
 struct VersionInfo<'a> {
   version: &'a str,
-  dirty: bool,
+  dirty:   bool,
 }
 
 impl OutputEntry {
@@ -65,7 +65,8 @@ impl OutputEntry {
 /// Detect the kind of a top-level flake output from its JSON value.
 ///
 /// Returns a human-readable label:
-/// - `"derivation"`, `"app"`, `"nixos-configuration"`, `"nixpkgs-overlay"` → known types
+/// - `"derivation"`, `"app"`, `"nixos-configuration"`, `"nixpkgs-overlay"` →
+///   known types
 /// - `"module"` → detected from naming convention (ends with Module/Modules)
 /// - `"function"` → opaque nix function (type=unknown, no name/description)
 /// - `None` → per-system category, handled differently
@@ -114,7 +115,8 @@ fn is_discovered_tree(
     .any(|v| v.is_null() || (v.is_object() && is_discovered_subtree(v)))
 }
 
-/// Check if a value looks like a discovered subtree (object without "type" key).
+/// Check if a value looks like a discovered subtree (object without "type"
+/// key).
 fn is_discovered_subtree(value: &serde_json::Value) -> bool {
   value
     .as_object()
@@ -393,8 +395,10 @@ fn print_opaque_category(cat_name: &str, value: &serde_json::Value) {
     .unwrap_or("unknown");
 
   let label = match kind {
-    "unknown" => FlakeOutputKind::infer_from_category(cat_name)
-      .map_or("opaque", |k| k.as_str()),
+    "unknown" => {
+      FlakeOutputKind::infer_from_category(cat_name)
+        .map_or("opaque", |k| k.as_str())
+    },
     other => other,
   };
 
@@ -407,7 +411,8 @@ fn print_opaque_category(cat_name: &str, value: &serde_json::Value) {
 
 /// Render the formatter category inline as `formatter :: <name>`.
 ///
-/// The formatter has no child attrs — each system maps directly to a derivation.
+/// The formatter has no child attrs — each system maps directly to a
+/// derivation.
 fn render_formatter_inline(
   cat_obj: &serde_json::Map<String, serde_json::Value>,
 ) {
@@ -575,7 +580,7 @@ fn print_entry(attr_name: &str, entry: &OutputEntry, is_default: bool) {
 fn parse_entry(value: &serde_json::Value) -> OutputEntry {
   let obj = value.as_object();
   OutputEntry {
-    name: obj
+    name:        obj
       .and_then(|o| o.get("name"))
       .and_then(serde_json::Value::as_str)
       .map(String::from),
@@ -592,7 +597,7 @@ fn parse_entry(value: &serde_json::Value) -> OutputEntry {
 
 const fn empty_entry() -> OutputEntry {
   OutputEntry {
-    name: None,
+    name:        None,
     description: None,
     output_type: None,
   }
@@ -603,7 +608,14 @@ const fn empty_entry() -> OutputEntry {
 /// Returns `null` for leaf values (functions, derivations, evaluated module
 /// sets, and module definitions with `imports`). Returns nested objects for
 /// namespace containers.
-pub const DISCOVER_ATTRS_NIX: &str = "x: let go = d: v: if d == 0 then null else if !(builtins.isAttrs v) then null else let names = builtins.attrNames v; in if builtins.elem \"config\" names && builtins.elem \"options\" names then null else if builtins.elem \"imports\" names then null else if builtins.elem \"outPath\" names || builtins.elem \"drvPath\" names then null else if builtins.elem \"expected\" names && builtins.elem \"expr\" names then null else builtins.mapAttrs (_: go (d - 1)) v; in go 4 x";
+pub const DISCOVER_ATTRS_NIX: &str =
+  "x: let go = d: v: if d == 0 then null else if !(builtins.isAttrs v) then \
+   null else let names = builtins.attrNames v; in if builtins.elem \"config\" \
+   names && builtins.elem \"options\" names then null else if builtins.elem \
+   \"imports\" names then null else if builtins.elem \"outPath\" names || \
+   builtins.elem \"drvPath\" names then null else if builtins.elem \
+   \"expected\" names && builtins.elem \"expr\" names then null else \
+   builtins.mapAttrs (_: go (d - 1)) v; in go 4 x";
 
 /// Enrich a flake JSON by discovering children of leaf categories.
 ///
@@ -661,7 +673,7 @@ mod tests {
 
   fn entry(name: &str) -> OutputEntry {
     OutputEntry {
-      name: Some(name.to_string()),
+      name:        Some(name.to_string()),
       description: None,
       output_type: None,
     }

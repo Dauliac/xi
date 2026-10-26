@@ -8,9 +8,9 @@ use color_eyre::{
   eyre::{Context, bail, eyre},
 };
 use tracing::{debug, info, warn};
-use xi_core::installable::{CommandContext, Installable};
 use xi_core::{
   command::{self, Command, CommandKind, NixCommand},
+  installable::{CommandContext, Installable},
   update::update,
   util::get_hostname,
 };

@@ -10,19 +10,19 @@ use serde::Deserialize;
 #[derive(Debug, Clone)]
 pub struct DeployTarget {
   /// Node name (flake attribute key).
-  pub name: String,
+  pub name:            String,
   /// SSH hostname / IP address.
-  pub hostname: String,
+  pub hostname:        String,
   /// Profiles to deploy on this target.
-  pub profiles: Vec<DeployProfile>,
+  pub profiles:        Vec<DeployProfile>,
   /// SSH connection user (overridable per-profile).
-  pub ssh_user: Option<String>,
+  pub ssh_user:        Option<String>,
   /// Extra SSH options (e.g. `["-p", "2222"]`).
-  pub ssh_opts: Vec<String>,
+  pub ssh_opts:        Vec<String>,
   /// Tags for filtering (colmena-style).
-  pub tags: Vec<String>,
+  pub tags:            Vec<String>,
   /// Whether to use magic rollback (deploy-rs).
-  pub magic_rollback: bool,
+  pub magic_rollback:  bool,
   /// Seconds to wait for confirmation before rollback.
   pub confirm_timeout: u64,
 }
@@ -31,13 +31,13 @@ pub struct DeployTarget {
 #[derive(Debug, Clone)]
 pub struct DeployProfile {
   /// Profile name (e.g. "system", "home", custom name).
-  pub name: String,
+  pub name:         String,
   /// Nix store path of the built profile, or flake attribute to build.
-  pub path: String,
+  pub path:         String,
   /// User to activate as (may differ from SSH user → triggers sudo).
-  pub user: Option<String>,
+  pub user:         Option<String>,
   /// What kind of activation to perform.
-  pub kind: ProfileKind,
+  pub kind:         ProfileKind,
   /// Custom nix profile install location.
   pub profile_path: Option<String>,
 }
@@ -65,15 +65,15 @@ pub enum ProfileKind {
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct DeployRsConfig {
   #[serde(default)]
-  pub nodes: std::collections::BTreeMap<String, DeployRsNode>,
+  pub nodes:           std::collections::BTreeMap<String, DeployRsNode>,
   #[serde(default, rename = "sshUser")]
-  pub ssh_user: Option<String>,
+  pub ssh_user:        Option<String>,
   #[serde(default, rename = "sshOpts")]
-  pub ssh_opts: Vec<String>,
+  pub ssh_opts:        Vec<String>,
   #[serde(default = "default_true", rename = "autoRollback")]
-  pub auto_rollback: bool,
+  pub auto_rollback:   bool,
   #[serde(default = "default_true", rename = "magicRollback")]
-  pub magic_rollback: bool,
+  pub magic_rollback:  bool,
   #[serde(default = "default_confirm_timeout", rename = "confirmTimeout")]
   pub confirm_timeout: u64,
 }
@@ -81,17 +81,17 @@ pub struct DeployRsConfig {
 /// A single node in deploy-rs config.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct DeployRsNode {
-  pub hostname: String,
+  pub hostname:        String,
   #[serde(default)]
-  pub profiles: std::collections::BTreeMap<String, DeployRsProfile>,
+  pub profiles:        std::collections::BTreeMap<String, DeployRsProfile>,
   #[serde(default, rename = "sshUser")]
-  pub ssh_user: Option<String>,
+  pub ssh_user:        Option<String>,
   #[serde(default, rename = "sshOpts")]
-  pub ssh_opts: Vec<String>,
+  pub ssh_opts:        Vec<String>,
   #[serde(default, rename = "profilesOrder")]
-  pub profiles_order: Vec<String>,
+  pub profiles_order:  Vec<String>,
   #[serde(default = "default_true", rename = "magicRollback")]
-  pub magic_rollback: bool,
+  pub magic_rollback:  bool,
   #[serde(default = "default_confirm_timeout", rename = "confirmTimeout")]
   pub confirm_timeout: u64,
 }
@@ -99,11 +99,11 @@ pub struct DeployRsNode {
 /// A single profile in deploy-rs config.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct DeployRsProfile {
-  pub path: String,
+  pub path:           String,
   #[serde(default)]
-  pub user: Option<String>,
+  pub user:           Option<String>,
   #[serde(default, rename = "profilePath")]
-  pub profile_path: Option<String>,
+  pub profile_path:   Option<String>,
   #[serde(default = "default_true", rename = "magicRollback")]
   pub magic_rollback: bool,
 }

@@ -4,13 +4,14 @@
 //! using `nix-locate`, builds it with nom progress, then executes the
 //! binary directly from the store path.
 
-use std::io::{BufRead, Write as _};
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::{
+  io::{BufRead, Write as _},
+  os::unix::process::CommandExt,
+  path::{Path, PathBuf},
+  process::{Command, Stdio},
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------
@@ -29,8 +30,9 @@ use tracing::{debug, info};
 pub enum LocateSource {
   /// Build against the user's system flake-registry entry for `nixpkgs`.
   SystemNixpkgs,
-  /// Build against a specific flake reference, e.g. `github:NixOS/nixpkgs/<rev>`.
-  /// Typically the local flake's locked `nixpkgs` input.
+  /// Build against a specific flake reference, e.g.
+  /// `github:NixOS/nixpkgs/<rev>`. Typically the local flake's locked
+  /// `nixpkgs` input.
   FlakeNixpkgs { flakeref: String },
 }
 
@@ -109,8 +111,8 @@ impl CacheLevel {
 /// (attr → /nix/store/...) are segmented by source, since the same attr
 /// against different nixpkgs revs produces different store paths.
 pub struct LocateCache {
-  dir: PathBuf,
-  level: CacheLevel,
+  dir:        PathBuf,
+  level:      CacheLevel,
   paths_file: String,
 }
 
@@ -269,9 +271,9 @@ pub fn nix_locate(command: &str) -> Result<Vec<String>> {
     .output()
     .map_err(|e| {
       color_eyre::eyre::eyre!(
-        "Failed to run nix-locate (is nix-index installed?): {e}\n\
-         Install it with: nix profile install nixpkgs#nix-index\n\
-         Then run: nix-index  (or use nix-index-database for pre-built indexes)"
+        "Failed to run nix-locate (is nix-index installed?): {e}\nInstall it \
+         with: nix profile install nixpkgs#nix-index\nThen run: nix-index  \
+         (or use nix-index-database for pre-built indexes)"
       )
     })?;
 
@@ -327,8 +329,8 @@ pub fn nix_locate(command: &str) -> Result<Vec<String>> {
 pub fn pick(candidates: &[String], command: &str) -> Result<String> {
   if candidates.is_empty() {
     bail!(
-      "command '{command}' not found in nix-index database.\n\
-       Make sure your nix-index database is up to date."
+      "command '{command}' not found in nix-index database.\nMake sure your \
+       nix-index database is up to date."
     );
   }
 
@@ -530,8 +532,8 @@ pub fn locate_and_run(
 
     if candidates.is_empty() {
       bail!(
-        "command '{command}' not found in nix-index database.\n\
-         Make sure your nix-index database is up to date."
+        "command '{command}' not found in nix-index database.\nMake sure your \
+         nix-index database is up to date."
       );
     }
 
@@ -577,8 +579,8 @@ pub fn locate_and_run(
       return exec_from_store(&found, command, extra_args);
     }
     bail!(
-      "Package {} was built but /bin/{command} not found in {}.\n\
-       The package may provide a different binary name.",
+      "Package {} was built but /bin/{command} not found in {}.\nThe package \
+       may provide a different binary name.",
       source.installable(&attr),
       store_path.display()
     );
@@ -688,8 +690,8 @@ mod tests {
   fn cache_roundtrip_in_tempdir() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cache = LocateCache {
-      dir: dir.path().to_path_buf(),
-      level: CacheLevel::Full,
+      dir:        dir.path().to_path_buf(),
+      level:      CacheLevel::Full,
       paths_file: "paths-test.json".to_string(),
     };
 
@@ -711,8 +713,8 @@ mod tests {
   fn cache_disabled_returns_none() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cache = LocateCache {
-      dir: dir.path().to_path_buf(),
-      level: CacheLevel::Disabled,
+      dir:        dir.path().to_path_buf(),
+      level:      CacheLevel::Disabled,
       paths_file: "paths-test.json".to_string(),
     };
 
@@ -746,7 +748,7 @@ mod tests {
     );
     assert_eq!(
       LocateSource::FlakeNixpkgs {
-        flakeref: "github:NixOS/nixpkgs/abc123".to_string()
+        flakeref: "github:NixOS/nixpkgs/abc123".to_string(),
       }
       .installable("hello"),
       "github:NixOS/nixpkgs/abc123#hello"
@@ -783,8 +785,8 @@ mod tests {
   fn cache_choice_level_does_not_cache_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cache = LocateCache {
-      dir: dir.path().to_path_buf(),
-      level: CacheLevel::Choice,
+      dir:        dir.path().to_path_buf(),
+      level:      CacheLevel::Choice,
       paths_file: "paths-test.json".to_string(),
     };
 

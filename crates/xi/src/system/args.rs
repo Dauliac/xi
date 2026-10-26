@@ -1,13 +1,16 @@
 use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
-use xi_core::installable::CommandContext;
 use xi_core::{
   args::{
-    CacheArgs, CommonRebuildArgs, HasBuildArgs, HasCacheArgs,
+    CacheArgs,
+    CommonRebuildArgs,
+    HasBuildArgs,
+    HasCacheArgs,
     NixBuildPassthroughArgs,
   },
   checks::{FeatureRequirements, FlakeFeatures},
   complete,
+  installable::CommandContext,
   update::UpdateArgs,
 };
 

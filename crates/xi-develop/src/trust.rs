@@ -37,7 +37,8 @@ pub fn trust_flake(flake_ref: &str, _target: &str) -> Result<()> {
     eprintln!("    bash (~/.bashrc):  eval \"$(xi develop activate bash)\"");
     eprintln!("    zsh (~/.zshrc):    eval \"$(xi develop activate zsh)\"");
     eprintln!(
-      "    fish (~/.config/fish/config.fish):  xi develop activate fish | source"
+      "    fish (~/.config/fish/config.fish):  xi develop activate fish | \
+       source"
     );
   }
 

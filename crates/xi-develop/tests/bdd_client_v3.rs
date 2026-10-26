@@ -10,22 +10,35 @@
 //! only speaks legacy `DaemonResponse` and asserting the outcome carries
 //! [`QueryOutcome::V2`].
 
-use std::io::{BufReader, BufWriter};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::sync::mpsc::channel;
-use std::thread::{self, JoinHandle};
+use std::{
+  io::{BufReader, BufWriter},
+  os::unix::net::{UnixListener, UnixStream},
+  path::PathBuf,
+  sync::mpsc::channel,
+  thread::{self, JoinHandle},
+};
 
 use tempfile::TempDir;
-use xi_develop::daemon::client_v3::{
-  self, CommandOutcome, QueryOutcome,
-};
-use xi_develop::daemon::protocol::{
-  DaemonResponse, DaemonState, StatusResponse, read_message, write_message,
-};
-use xi_develop::daemon::protocol_v3::{
-  Availability, Command, CommandReply, Envelope, IdempotencyKey, Payload,
-  Query, QueryReply, Reply,
+use xi_develop::daemon::{
+  client_v3::{self, CommandOutcome, QueryOutcome},
+  protocol::{
+    DaemonResponse,
+    DaemonState,
+    StatusResponse,
+    read_message,
+    write_message,
+  },
+  protocol_v3::{
+    Availability,
+    Command,
+    CommandReply,
+    Envelope,
+    IdempotencyKey,
+    Payload,
+    Query,
+    QueryReply,
+    Reply,
+  },
 };
 
 /// A tiny in-process daemon that answers one connection then exits.
@@ -89,10 +102,7 @@ impl MiniV2Daemon {
         // reply with a v2-shaped body no matter what came in.
         let mut reader = BufReader::new(&stream);
         let _ = xi_develop::daemon::protocol::read_frame(&mut reader);
-        let _ = write_message(
-          &mut writer,
-          &DaemonResponse::Status(response),
-        );
+        let _ = write_message(&mut writer, &DaemonResponse::Status(response));
       }
     });
     ready_rx.recv().expect("listener ready");
@@ -117,12 +127,9 @@ fn query_heartbeat_roundtrips_end_to_end() {
     ok_reply(&env.id, Reply::Query(QueryReply::HeartBeat))
   });
 
-  let outcome = client_v3::query(&daemon.socket, Query::HeartBeat)
-    .expect("query");
-  assert!(matches!(
-    outcome,
-    QueryOutcome::V3(QueryReply::HeartBeat)
-  ));
+  let outcome =
+    client_v3::query(&daemon.socket, Query::HeartBeat).expect("query");
+  assert!(matches!(outcome, QueryOutcome::V3(QueryReply::HeartBeat)));
 }
 
 /// The client short-hand `heartbeat_ok` returns true against a v3 daemon.
@@ -138,7 +145,10 @@ fn heartbeat_ok_is_true_on_v3_daemon() {
 #[test]
 fn command_eval_devshell_returns_job_id() {
   let daemon = MiniDaemon::spawn_one(|env| {
-    assert!(matches!(env.payload, Payload::Command(Command::EvalDevshell { .. })));
+    assert!(matches!(
+      env.payload,
+      Payload::Command(Command::EvalDevshell { .. })
+    ));
     ok_reply(
       &env.id,
       Reply::Command(CommandReply::Accepted {
@@ -285,10 +295,12 @@ fn state_catalog_query_returns_ready_array() {
       })),
     )
   });
-  let out = client_v3::query(&daemon.socket, Query::StateCatalog)
-    .expect("query");
+  let out =
+    client_v3::query(&daemon.socket, Query::StateCatalog).expect("query");
   match out {
-    QueryOutcome::V3(QueryReply::StateCatalog(Availability::Ready { value })) => {
+    QueryOutcome::V3(QueryReply::StateCatalog(Availability::Ready {
+      value,
+    })) => {
       assert!(value.as_array().expect("array").len() >= 1);
     },
     other => unreachable!("expected StateCatalog Ready, got {other:?}"),

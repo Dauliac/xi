@@ -13,13 +13,14 @@
 //! On-disk layout: `$XDG_STATE_HOME/xi/hook-cache/<flake_id>.json`.
 //! Written atomically via `.tmp` + rename.
 
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::{
+  fs,
+  io::Write,
+  path::PathBuf,
+  time::{Duration, SystemTime},
+};
 
-use color_eyre::Result;
-use color_eyre::eyre::eyre;
+use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, Serialize};
 
 use crate::dirs::xi_state_root;
@@ -30,7 +31,7 @@ pub struct BackoffState {
   /// Wall-clock at which the last daemon-facing operation failed.
   pub last_failed_at: SystemTime,
   /// Consecutive failure count; success resets to zero.
-  pub attempt_count: u32,
+  pub attempt_count:  u32,
 }
 
 /// Persisted per-flake hook cache.
@@ -41,14 +42,14 @@ pub struct BackoffState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfflineCache {
   /// Hex `sha256(flake.lock)` at the time the cache was written.
-  pub lock_hash: String,
+  pub lock_hash:       String,
   /// Wall-clock at which the daemon last replied successfully.
-  pub last_seen_at: SystemTime,
+  pub last_seen_at:    SystemTime,
   /// Optional stable hash of the sourced env (used by consumers to detect
   /// re-source needs cheaply).
-  pub env_hash: Option<String>,
+  pub env_hash:        Option<String>,
   /// Number of packages in the last observed devshell (for cheap status).
-  pub package_count: u32,
+  pub package_count:   u32,
   /// Reconnect backoff — `None` when the daemon is healthy.
   pub reconnect_state: Option<BackoffState>,
 }
@@ -157,12 +158,14 @@ fn cache_path(flake_id: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use std::sync::MutexGuard;
+
   use tempfile::TempDir;
 
+  use super::*;
+
   struct StateHomeGuard {
-    _td: TempDir,
+    _td:   TempDir,
     _lock: MutexGuard<'static, ()>,
   }
 
@@ -176,17 +179,17 @@ mod tests {
       std::env::set_var("XDG_STATE_HOME", td.path());
     }
     StateHomeGuard {
-      _td: td,
+      _td:   td,
       _lock: lock,
     }
   }
 
   fn sample_cache() -> OfflineCache {
     OfflineCache {
-      lock_hash: "abc123".to_owned(),
-      last_seen_at: SystemTime::now(),
-      env_hash: Some("envhash".to_owned()),
-      package_count: 42,
+      lock_hash:       "abc123".to_owned(),
+      last_seen_at:    SystemTime::now(),
+      env_hash:        Some("envhash".to_owned()),
+      package_count:   42,
       reconnect_state: None,
     }
   }
@@ -225,7 +228,7 @@ mod tests {
     // Attempt 0 -> exactly base.
     c.reconnect_state = Some(BackoffState {
       last_failed_at: SystemTime::now(),
-      attempt_count: 0,
+      attempt_count:  0,
     });
     let d0 = c.next_backoff_delay(base, cap);
     assert_eq!(d0, base);
@@ -235,7 +238,7 @@ mod tests {
     for n in 1..8 {
       c.reconnect_state = Some(BackoffState {
         last_failed_at: SystemTime::now(),
-        attempt_count: n,
+        attempt_count:  n,
       });
       let cur = c.next_backoff_delay(base, cap);
       assert!(cur >= prev, "attempt {n}: {cur:?} !>= {prev:?}");
@@ -245,14 +248,14 @@ mod tests {
     // Deep attempt saturates at cap.
     c.reconnect_state = Some(BackoffState {
       last_failed_at: SystemTime::now(),
-      attempt_count: 40,
+      attempt_count:  40,
     });
     assert_eq!(c.next_backoff_delay(base, cap), cap);
 
     // Extreme attempt still clamps, no overflow.
     c.reconnect_state = Some(BackoffState {
       last_failed_at: SystemTime::now(),
-      attempt_count: u32::MAX,
+      attempt_count:  u32::MAX,
     });
     assert_eq!(c.next_backoff_delay(base, cap), cap);
   }

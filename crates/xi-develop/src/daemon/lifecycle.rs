@@ -3,9 +3,11 @@
 //! The socket is the ONLY source of truth for liveness (cimera pattern).
 //! PID file is advisory.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+  fs,
+  path::{Path, PathBuf},
+  time::Duration,
+};
 
 use color_eyre::Result;
 use tracing::debug;
@@ -19,7 +21,7 @@ const STARTUP_RETRIES: u32 = 30; // 30 × 100ms = 3s max wait
 
 /// `PID` file content: `pid:version:binary_hash`
 struct PidInfo {
-  pid: u32,
+  pid:     u32,
   version: String,
 }
 

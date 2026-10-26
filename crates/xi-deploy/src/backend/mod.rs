@@ -9,8 +9,7 @@ pub mod deploy_rs;
 
 use color_eyre::Result;
 
-use crate::args::DeployArgs;
-use crate::target::DeployTarget;
+use crate::{args::DeployArgs, target::DeployTarget};
 
 /// Trait implemented by each deployment backend.
 ///

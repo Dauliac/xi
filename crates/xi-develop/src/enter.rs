@@ -1,15 +1,19 @@
 use std::os::unix::process::CommandExt;
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
 use subprocess::{Exec, Redirection};
 use tracing::debug;
 
-use crate::args::DevelopArgs;
-use crate::diff::PackageDiff;
-use crate::shell::ShellType;
-use crate::{dirs, env_file, meta, ui};
+use crate::{
+  args::DevelopArgs,
+  diff::PackageDiff,
+  dirs,
+  env_file,
+  meta,
+  shell::ShellType,
+  ui,
+};
 
 /// Enter a development shell (blocking, sync mode).
 ///
@@ -182,20 +186,17 @@ fn eval_and_update(
     diff.print_full();
   }
 
-  meta::save(
-    &state_dir,
-    &meta::DevShellMeta {
-      env_hash: new_env.env_hash.clone(),
-      target: target.to_string(),
-      flake_root: flake_ref.to_string(),
-      store_path: None,
-      packages: new_env.packages.clone(),
-      timestamp: meta::now_secs(),
-      eval_duration_ms: 0,
-      lock_hash: None,
-      input_hash: None,
-    },
-  )?;
+  meta::save(&state_dir, &meta::DevShellMeta {
+    env_hash:         new_env.env_hash.clone(),
+    target:           target.to_string(),
+    flake_root:       flake_ref.to_string(),
+    store_path:       None,
+    packages:         new_env.packages.clone(),
+    timestamp:        meta::now_secs(),
+    eval_duration_ms: 0,
+    lock_hash:        None,
+    input_hash:       None,
+  })?;
 
   for shell in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
     env_file::write_env_file(&state_dir, &new_env, shell, target)?;

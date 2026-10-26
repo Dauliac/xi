@@ -4,8 +4,8 @@
 //! discriminator route through here from `daemon::server::handle_connection`.
 //!
 //! Contracts:
-//! - Queries never block on work. They read `ServerState` fields directly;
-//!   no channel round-trip.
+//! - Queries never block on work. They read `ServerState` fields directly; no
+//!   channel round-trip.
 //! - Every command reply carries an existing or newly-allocated `JobId` via
 //!   [`CommandReply::Accepted`]. `EvalDevshell` attaches through
 //!   [`JobRegistry`] so N concurrent identical commands observe one job.
@@ -15,16 +15,30 @@ use std::sync::{Arc, OnceLock};
 
 use serde_json::json;
 
-use super::job_registry::{
-  Attached, IdempotencyKey as RegistryKey, JobEntry, JobId, JobKind,
-  JobRegistry, JobStatus,
+use super::{
+  job_registry::{
+    Attached,
+    IdempotencyKey as RegistryKey,
+    JobEntry,
+    JobId,
+    JobKind,
+    JobRegistry,
+    JobStatus,
+  },
+  protocol::DaemonState,
+  protocol_v3::{
+    Availability,
+    Command,
+    CommandReply,
+    Envelope,
+    IdempotencyKey,
+    Payload,
+    Query,
+    QueryReply,
+    Reply,
+  },
+  server::ServerState,
 };
-use super::protocol::DaemonState;
-use super::protocol_v3::{
-  Availability, Command, CommandReply, Envelope, IdempotencyKey, Payload,
-  Query, QueryReply, Reply,
-};
-use super::server::ServerState;
 
 /// Process-wide job registry. One per daemon process; each daemon invocation
 /// starts fresh (registry is intentionally in-memory per the design's Risks
@@ -48,8 +62,10 @@ pub fn handle_envelope(
     Payload::Query(q) => Reply::Query(handle_query(q, state)),
     Payload::Command(c) => Reply::Command(handle_command(&c)),
     Payload::Subscribe(_) => Reply::SubscribeAck { from_seq: 0 },
-    Payload::Reply(_) | Payload::Event(_) => Reply::Error {
-      message: "server received a reply/event envelope; ignoring".into(),
+    Payload::Reply(_) | Payload::Event(_) => {
+      Reply::Error {
+        message: "server received a reply/event envelope; ignoring".into(),
+      }
     },
   };
   Envelope::new(reply_id, Payload::Reply(reply))
@@ -65,19 +81,25 @@ const CURRENT_EVAL_JOB_ID: &str = "current-eval";
 #[must_use]
 fn handle_query(query: Query, state: &ServerState) -> QueryReply {
   match query {
-    Query::Status => QueryReply::Status(Availability::Ready {
-      value: status_value(state),
-    }),
+    Query::Status => {
+      QueryReply::Status(Availability::Ready {
+        value: status_value(state),
+      })
+    },
     Query::HeartBeat => QueryReply::HeartBeat,
-    Query::StateCatalog => QueryReply::StateCatalog(Availability::Ready {
-      value: catalog_value(),
-    }),
+    Query::StateCatalog => {
+      QueryReply::StateCatalog(Availability::Ready {
+        value: catalog_value(),
+      })
+    },
     Query::Devshell => QueryReply::Devshell(devshell_availability(state)),
     Query::FlakeOutputs => QueryReply::FlakeOutputs(Availability::Missing),
     Query::GetJob { job_id } => QueryReply::GetJob(job_availability(&job_id)),
-    Query::Snapshot { seq } => QueryReply::Snapshot(Availability::Ready {
-      value: json!({ "seq": seq }),
-    }),
+    Query::Snapshot { seq } => {
+      QueryReply::Snapshot(Availability::Ready {
+        value: json!({ "seq": seq }),
+      })
+    },
   }
 }
 
@@ -89,22 +111,28 @@ fn handle_command(command: &Command) -> CommandReply {
   let key = wire_key_to_registry(command_key(command));
   let (job_id, attached) = registry().attach_or_start(key, kind);
   CommandReply::Accepted {
-    job_id: job_id.as_str().to_owned(),
+    job_id:   job_id.as_str().to_owned(),
     attached: matches!(attached, Attached::Yes),
   }
 }
 
 fn job_kind_for(cmd: &Command) -> JobKind {
   match cmd {
-    Command::EvalDevshell { target, .. } => JobKind::EvalDevshell {
-      target: target.clone(),
+    Command::EvalDevshell { target, .. } => {
+      JobKind::EvalDevshell {
+        target: target.clone(),
+      }
     },
     Command::Restart { .. } => JobKind::Restart,
-    Command::AbortJob { job_id, .. } => JobKind::AbortJob {
-      target: JobId(job_id.clone()),
+    Command::AbortJob { job_id, .. } => {
+      JobKind::AbortJob {
+        target: JobId(job_id.clone()),
+      }
     },
-    Command::InvalidateCache { scope, .. } => JobKind::InvalidateCache {
-      scope: scope.clone(),
+    Command::InvalidateCache { scope, .. } => {
+      JobKind::InvalidateCache {
+        scope: scope.clone(),
+      }
     },
   }
 }
@@ -168,11 +196,11 @@ fn devshell_availability(
     .current_env
     .read()
     .unwrap_or_else(std::sync::PoisonError::into_inner);
-  env
-    .as_ref()
-    .map_or(Availability::Missing, |dev| Availability::Ready {
+  env.as_ref().map_or(Availability::Missing, |dev| {
+    Availability::Ready {
       value: env_snapshot_value(dev),
-    })
+    }
+  })
 }
 
 fn env_snapshot_value(env: &crate::env_file::DevEnv) -> serde_json::Value {
@@ -186,8 +214,10 @@ fn env_snapshot_value(env: &crate::env_file::DevEnv) -> serde_json::Value {
 fn job_availability(job_id: &str) -> Availability<serde_json::Value> {
   registry().get(&JobId(job_id.to_owned())).map_or(
     Availability::Missing,
-    |entry| Availability::Ready {
-      value: job_entry_value(&entry),
+    |entry| {
+      Availability::Ready {
+        value: job_entry_value(&entry),
+      }
     },
   )
 }
@@ -275,7 +305,7 @@ mod tests {
   fn eval_devshell_command_returns_job_id_fresh() {
     let cmd = Command::EvalDevshell {
       target: "default".into(),
-      key: IdempotencyKey::from_bytes([1u8; 32]),
+      key:    IdempotencyKey::from_bytes([1u8; 32]),
     };
     let CommandReply::Accepted { job_id, attached } = handle_command(&cmd)
     else {
@@ -313,12 +343,16 @@ mod tests {
   fn handle_query_pure(q: Query) -> QueryReply {
     match q {
       Query::HeartBeat => QueryReply::HeartBeat,
-      Query::StateCatalog => QueryReply::StateCatalog(Availability::Ready {
-        value: catalog_value(),
-      }),
-      Query::Snapshot { seq } => QueryReply::Snapshot(Availability::Ready {
-        value: json!({ "seq": seq }),
-      }),
+      Query::StateCatalog => {
+        QueryReply::StateCatalog(Availability::Ready {
+          value: catalog_value(),
+        })
+      },
+      Query::Snapshot { seq } => {
+        QueryReply::Snapshot(Availability::Ready {
+          value: json!({ "seq": seq }),
+        })
+      },
       _ => unreachable!("test helper only handles pure queries"),
     }
   }

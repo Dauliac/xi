@@ -4,8 +4,7 @@
 //!
 //! Tests for env file generation, cleanup preamble, and injected vars registry.
 
-use xi_develop::env_file::DevEnv;
-use xi_develop::shell::ShellType;
+use xi_develop::{env_file::DevEnv, shell::ShellType};
 
 fn make_env(
   paths: Vec<&str>,
@@ -13,14 +12,14 @@ fn make_env(
   hook: Option<&str>,
 ) -> DevEnv {
   DevEnv {
-    nix_paths: paths.into_iter().map(String::from).collect(),
-    env_vars: vars
+    nix_paths:  paths.into_iter().map(String::from).collect(),
+    env_vars:   vars
       .into_iter()
       .map(|(k, v)| (k.to_string(), v.to_string()))
       .collect(),
     shell_hook: hook.map(String::from),
-    env_hash: "test".into(),
-    packages: vec![],
+    env_hash:   "test".into(),
+    packages:   vec![],
   }
 }
 
@@ -71,7 +70,8 @@ fn fish_env_file_uses_set_syntax() {
   assert!(content.contains("set -gx FOO 'bar'"));
 }
 
-/// BDD: 03_live_update_package.feature#Package removed triggers re-source with cleanup
+/// BDD: 03_live_update_package.feature#Package removed triggers re-source with
+/// cleanup
 #[test]
 fn cleanup_preamble_present_in_bash() {
   let env = make_env(vec![], vec![("FOO", "bar")], None);

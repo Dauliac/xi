@@ -9,10 +9,19 @@ use xi_core::flake_output::current_nix_system;
 
 use crate::{
   args::{ContextArgs, DevshellArgs, OutputsArgs},
-  devshell, outputs,
+  devshell,
+  outputs,
   schema::{
-    AgentContext, DevshellPayload, DevshellState, Envelope, FlakeSummary,
-    GitState, WorkspaceInfo, XiConfigSummary, elapsed_ms, emit,
+    AgentContext,
+    DevshellPayload,
+    DevshellState,
+    Envelope,
+    FlakeSummary,
+    GitState,
+    WorkspaceInfo,
+    XiConfigSummary,
+    elapsed_ms,
+    emit,
   },
   validate,
 };
@@ -42,12 +51,12 @@ pub fn build(cwd: &Path, args: &ContextArgs) -> Envelope<AgentContext> {
   let flake = collect_flake_summary(cwd);
   let devshell = if args.no_daemon {
     DevshellPayload {
-      state: DevshellState::NotRunning,
-      target: None,
-      package_count: 0,
-      daemon_state: None,
+      state:               DevshellState::NotRunning,
+      target:              None,
+      package_count:       0,
+      daemon_state:        None,
       active_cache_pushes: Vec::new(),
-      entered_command: "xi develop".to_owned(),
+      entered_command:     "xi develop".to_owned(),
     }
   } else {
     devshell::collect(&DevshellArgs { timeout_ms: 500 })
@@ -60,8 +69,8 @@ pub fn build(cwd: &Path, args: &ContextArgs) -> Envelope<AgentContext> {
   // outputs are the most likely to fail (nix eval) — collect but do not
   // fail the whole context if they do.
   let outputs_args = OutputsArgs {
-    all_systems: false,
-    system: Some(workspace.current_system.clone()),
+    all_systems:    false,
+    system:         Some(workspace.current_system.clone()),
     include_hidden: false,
   };
   if let Err(diag) =

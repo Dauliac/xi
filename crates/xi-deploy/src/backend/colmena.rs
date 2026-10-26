@@ -3,14 +3,12 @@
 //! Delegates to the `colmena` CLI for deployment.  Detection checks
 //! for the `colmenaHive` flake output and the `colmena` binary in PATH.
 
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use tracing::{debug, info};
 use yansi::{Color, Paint};
 
 use super::DeployBackend;
-use crate::args::DeployArgs;
-use crate::target::DeployTarget;
+use crate::{args::DeployArgs, target::DeployTarget};
 
 /// Colmena backend that shells out to the `colmena` CLI.
 pub struct ColmenaBackend;
@@ -26,8 +24,7 @@ impl ColmenaBackend {
   pub fn new() -> Result<Self> {
     if which::which("colmena").is_err() {
       bail!(
-        "colmena not found in PATH. \
-         Install it or use a different backend."
+        "colmena not found in PATH. Install it or use a different backend."
       );
     }
     Ok(Self)

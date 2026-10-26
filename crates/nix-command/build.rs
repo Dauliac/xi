@@ -6,12 +6,14 @@
   clippy::cast_possible_truncation
 )]
 
-use std::collections::BTreeMap;
-use std::env;
-use std::fmt::Write as FmtWrite;
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::{
+  collections::BTreeMap,
+  env,
+  fmt::Write as FmtWrite,
+  fs,
+  path::PathBuf,
+  process::Command,
+};
 
 fn main() {
   println!("cargo::rerun-if-env-changed=NIX_CLI_SCHEMA_PATH");
@@ -60,7 +62,7 @@ fn load_schema_json() -> Option<serde_json::Value> {
 
 /// Represents a flag extracted from the schema.
 struct Flag {
-  name: String,
+  name:  String,
   arity: u8,
 }
 
@@ -73,12 +75,14 @@ fn extract_flags(flags_obj: &serde_json::Value) -> Vec<Flag> {
 
   let mut flags: Vec<Flag> = map
     .iter()
-    .map(|(name, info)| Flag {
-      name: name.clone(),
-      arity: info
-        .get("arity")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u8,
+    .map(|(name, info)| {
+      Flag {
+        name:  name.clone(),
+        arity: info
+          .get("arity")
+          .and_then(serde_json::Value::as_u64)
+          .unwrap_or(0) as u8,
+      }
     })
     .collect();
 
@@ -245,7 +249,8 @@ fn generate_schema_code(json: &serde_json::Value) -> String {
   // Command flag lookup
   writeln!(
     code,
-    "/// Look up the arity of a command-specific flag by command and flag name."
+    "/// Look up the arity of a command-specific flag by command and flag \
+     name."
   )
   .unwrap();
   writeln!(code, "#[must_use]").unwrap();
@@ -325,13 +330,15 @@ fn generate_empty_schema() -> String {
   writeln!(code).unwrap();
   writeln!(
     code,
-    "#[must_use]\npub fn global_flag_arity(_name: &str) -> Option<u8> {{ None }}"
+    "#[must_use]\npub fn global_flag_arity(_name: &str) -> Option<u8> {{ None \
+     }}"
   )
   .unwrap();
   writeln!(code).unwrap();
   writeln!(
     code,
-    "#[must_use]\npub fn command_flag_arity(_command: &str, _name: &str) -> Option<u8> {{ None }}"
+    "#[must_use]\npub fn command_flag_arity(_command: &str, _name: &str) -> \
+     Option<u8> {{ None }}"
   )
   .unwrap();
 

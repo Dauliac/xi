@@ -5,7 +5,7 @@
 /// RAII guard that sets an environment variable for the duration of a test
 /// and restores the original value on drop.
 pub struct EnvGuard {
-  key: String,
+  key:      String,
   original: Option<String>,
 }
 

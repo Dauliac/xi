@@ -20,11 +20,11 @@ fn now_secs() -> u64 {
 /// Per-shell-instance state tracked by the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellInstance {
-  pub pid: u32,
-  pub parent_pid: Option<u32>,
-  pub flake_id: String,
-  pub target: String,
-  pub last_env_gen: u64,
+  pub pid:           u32,
+  pub parent_pid:    Option<u32>,
+  pub flake_id:      String,
+  pub target:        String,
+  pub last_env_gen:  u64,
   pub last_hook_gen: u64,
   pub registered_at: u64, // unix timestamp
 }
@@ -49,14 +49,16 @@ impl ShellRegistry {
     flake_id: &str,
     target: &str,
   ) {
-    self.instances.entry(pid).or_insert_with(|| ShellInstance {
-      pid,
-      parent_pid,
-      flake_id: flake_id.to_string(),
-      target: target.to_string(),
-      last_env_gen: 0,
-      last_hook_gen: 0,
-      registered_at: now_secs(),
+    self.instances.entry(pid).or_insert_with(|| {
+      ShellInstance {
+        pid,
+        parent_pid,
+        flake_id: flake_id.to_string(),
+        target: target.to_string(),
+        last_env_gen: 0,
+        last_hook_gen: 0,
+        registered_at: now_secs(),
+      }
     });
   }
 

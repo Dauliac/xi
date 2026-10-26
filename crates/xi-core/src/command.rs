@@ -9,7 +9,6 @@ use std::{
   sync::{Mutex, OnceLock},
 };
 
-use crate::installable::Installable;
 use color_eyre::{
   Result,
   eyre::{self, Context, bail},
@@ -21,7 +20,7 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 use which::which;
 
-use crate::args::NixBuildPassthroughArgs;
+use crate::{args::NixBuildPassthroughArgs, installable::Installable};
 
 #[must_use]
 pub fn get_sudo_opts() -> Vec<String> {
@@ -272,10 +271,12 @@ impl FromStr for ElevationStrategyArg {
       "none" => Ok(Self::None),
       "auto" => Ok(Self::Auto),
       "passwordless" => Ok(Self::Passwordless),
-      _ => s.strip_prefix("program:").map_or_else(
-        || Ok(Self::Program(PathBuf::from(s))),
-        |rest| Ok(Self::Program(PathBuf::from(rest))),
-      ),
+      _ => {
+        s.strip_prefix("program:").map_or_else(
+          || Ok(Self::Program(PathBuf::from(s))),
+          |rest| Ok(Self::Program(PathBuf::from(rest))),
+        )
+      },
     }
   }
 }
@@ -332,17 +333,21 @@ impl ElevationStrategy {
   pub fn resolve(&self) -> Result<PathBuf> {
     match self {
       Self::Auto | Self::Passwordless => Self::choice(),
-      Self::Prefer(program) => which(program).or_else(|_| {
-        warn!(
-          ?program,
-          "Preferred elevation program not found, falling back to \
+      Self::Prefer(program) => {
+        which(program).or_else(|_| {
+          warn!(
+            ?program,
+            "Preferred elevation program not found, falling back to \
              auto-detection"
-        );
-        Self::choice()
-      }),
-      Self::Force(program_name) => which(program_name).context(format!(
-        "Forced elevation program '{program_name}' not found in PATH"
-      )),
+          );
+          Self::choice()
+        })
+      },
+      Self::Force(program_name) => {
+        which(program_name).context(format!(
+          "Forced elevation program '{program_name}' not found in PATH"
+        ))
+      },
       // Only reachable if resolve() is called directly. Safe since callers
       // check is_some() before invoking resolve().
       Self::None => bail!("Elevation disabled via --elevation-strategy=none"),
@@ -454,34 +459,34 @@ impl ElevationProgram {
 struct SudoSpec {
   program_path: PathBuf,
   program_kind: ElevationProgram,
-  pre_args: Vec<String>,
-  env_args: Vec<String>,
+  pre_args:     Vec<String>,
+  env_args:     Vec<String>,
 }
 
 #[derive(Debug)]
 #[allow(clippy::struct_field_names)]
 pub struct Command {
-  dry: bool,
-  message: Option<String>,
-  command: OsString,
-  args: Vec<OsString>,
-  elevate: Option<ElevationStrategy>,
-  ssh: Option<String>,
+  dry:         bool,
+  message:     Option<String>,
+  command:     OsString,
+  args:        Vec<OsString>,
+  elevate:     Option<ElevationStrategy>,
+  ssh:         Option<String>,
   show_output: bool,
-  env_vars: HashMap<String, EnvAction>,
+  env_vars:    HashMap<String, EnvAction>,
 }
 
 impl Command {
   pub fn new<S: AsRef<OsStr>>(command: S) -> Self {
     Self {
-      dry: false,
-      message: None,
-      command: command.as_ref().to_os_string(),
-      args: vec![],
-      elevate: None,
-      ssh: None,
+      dry:         false,
+      message:     None,
+      command:     command.as_ref().to_os_string(),
+      args:        vec![],
+      elevate:     None,
+      ssh:         None,
       show_output: false,
-      env_vars: HashMap::new(),
+      env_vars:    HashMap::new(),
     }
   }
 
@@ -989,10 +994,10 @@ impl Command {
 
 #[derive(Debug)]
 pub struct Build {
-  message: Option<String>,
+  message:     Option<String>,
   installable: Installable,
-  extra_args: Vec<OsString>,
-  nom: bool,
+  extra_args:  Vec<OsString>,
+  nom:         bool,
 }
 
 impl Build {
@@ -1177,14 +1182,11 @@ mod tests {
     assert!(cmd.show_output);
     assert_eq!(cmd.elevate, Some(ElevationStrategy::Force("sudo")));
     assert_eq!(cmd.message, Some("test message".to_string()));
-    assert_eq!(
-      cmd.args,
-      vec![
-        OsString::from("arg1"),
-        OsString::from("arg2"),
-        OsString::from("arg3")
-      ]
-    );
+    assert_eq!(cmd.args, vec![
+      OsString::from("arg1"),
+      OsString::from("arg2"),
+      OsString::from("arg3")
+    ]);
   }
 
   #[test]
@@ -1603,15 +1605,12 @@ mod tests {
       .nom(true);
 
     assert_eq!(build.message, Some("Building package".to_string()));
-    assert_eq!(
-      build.extra_args,
-      vec![
-        OsString::from("--verbose"),
-        OsString::from("--option"),
-        OsString::from("setting"),
-        OsString::from("value")
-      ]
-    );
+    assert_eq!(build.extra_args, vec![
+      OsString::from("--verbose"),
+      OsString::from("--option"),
+      OsString::from("setting"),
+      OsString::from("value")
+    ]);
     assert!(build.nom);
   }
 
@@ -1671,20 +1670,24 @@ mod tests {
   fn test_parse_cmdline_mixed_quotes() {
     let result = shlex::split(r#"cmd 'single quoted' "double quoted" normal"#)
       .unwrap_or_default();
-    assert_eq!(
-      result,
-      vec!["cmd", "single quoted", "double quoted", "normal"]
-    );
+    assert_eq!(result, vec![
+      "cmd",
+      "single quoted",
+      "double quoted",
+      "normal"
+    ]);
   }
 
   #[test]
   fn test_parse_cmdline_with_equals_in_quotes() {
     let result = shlex::split("sudo env 'PATH=/path/with spaces' /bin/cmd")
       .unwrap_or_default();
-    assert_eq!(
-      result,
-      vec!["sudo", "env", "PATH=/path/with spaces", "/bin/cmd"]
-    );
+    assert_eq!(result, vec![
+      "sudo",
+      "env",
+      "PATH=/path/with spaces",
+      "/bin/cmd"
+    ]);
   }
 
   #[test]
@@ -1716,17 +1719,14 @@ mod tests {
     let cmdline =
       r"/usr/bin/sudo env 'PATH=/path with spaces' /usr/bin/xi clean all";
     let result = shlex::split(cmdline).unwrap_or_default();
-    assert_eq!(
-      result,
-      vec![
-        "/usr/bin/sudo",
-        "env",
-        "PATH=/path with spaces",
-        "/usr/bin/xi",
-        "clean",
-        "all"
-      ]
-    );
+    assert_eq!(result, vec![
+      "/usr/bin/sudo",
+      "env",
+      "PATH=/path with spaces",
+      "/usr/bin/xi",
+      "clean",
+      "all"
+    ]);
   }
 
   #[test]
@@ -1828,14 +1828,11 @@ mod tests {
       "/nix/store/abc123-foo/bin/cmd --flag /nix/store/def456-bar",
     )
     .unwrap_or_default();
-    assert_eq!(
-      result,
-      vec![
-        "/nix/store/abc123-foo/bin/cmd",
-        "--flag",
-        "/nix/store/def456-bar"
-      ]
-    );
+    assert_eq!(result, vec![
+      "/nix/store/abc123-foo/bin/cmd",
+      "--flag",
+      "/nix/store/def456-bar"
+    ]);
   }
 
   #[test]
@@ -1858,18 +1855,15 @@ mod tests {
     // Complex sudo command with multiple quoted args
     let cmdline = r#"/usr/bin/sudo -E env 'HOME=/root' "PATH=/usr/bin" /usr/bin/xi os switch"#;
     let result = shlex::split(cmdline).unwrap_or_default();
-    assert_eq!(
-      result,
-      vec![
-        "/usr/bin/sudo",
-        "-E",
-        "env",
-        "HOME=/root",
-        "PATH=/usr/bin",
-        "/usr/bin/xi",
-        "os",
-        "switch"
-      ]
-    );
+    assert_eq!(result, vec![
+      "/usr/bin/sudo",
+      "-E",
+      "env",
+      "HOME=/root",
+      "PATH=/usr/bin",
+      "/usr/bin/xi",
+      "os",
+      "switch"
+    ]);
   }
 }

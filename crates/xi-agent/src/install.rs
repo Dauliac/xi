@@ -13,8 +13,13 @@ use crate::{
   SKILLS,
   args::{InstallArgs, InstallScope, InstallTarget},
   schema::{
-    Diagnostic, Envelope, InstallAction, InstallEntry, InstallPayload,
-    elapsed_ms, emit,
+    Diagnostic,
+    Envelope,
+    InstallAction,
+    InstallEntry,
+    InstallPayload,
+    elapsed_ms,
+    emit,
   },
 };
 
@@ -37,26 +42,28 @@ pub fn run(args: &InstallArgs) -> Result<()> {
   let mut diags: Vec<Diagnostic> = Vec::new();
 
   let targets = match args.target {
-    InstallTarget::All => vec![
-      TargetSpec {
-        runtime: "claude-code",
-        subdir: ".claude/skills",
-      },
-      TargetSpec {
-        runtime: "codex",
-        subdir: ".codex/skills",
-      },
-    ],
+    InstallTarget::All => {
+      vec![
+        TargetSpec {
+          runtime: "claude-code",
+          subdir:  ".claude/skills",
+        },
+        TargetSpec {
+          runtime: "codex",
+          subdir:  ".codex/skills",
+        },
+      ]
+    },
     InstallTarget::ClaudeCode => {
       vec![TargetSpec {
         runtime: "claude-code",
-        subdir: ".claude/skills",
+        subdir:  ".claude/skills",
       }]
     },
     InstallTarget::Codex => {
       vec![TargetSpec {
         runtime: "codex",
-        subdir: ".codex/skills",
+        subdir:  ".codex/skills",
       }]
     },
   };
@@ -110,7 +117,7 @@ pub fn run(args: &InstallArgs) -> Result<()> {
 
 struct TargetSpec {
   runtime: &'static str,
-  subdir: &'static str,
+  subdir:  &'static str,
 }
 
 fn install_skill(

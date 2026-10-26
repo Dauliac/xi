@@ -510,9 +510,8 @@ pub fn get_build_image_variants_flake(
 #[cfg(test)]
 #[expect(clippy::expect_used, clippy::unwrap_used, reason = "Fine in tests")]
 mod tests {
-  use crate::installable::Installable;
-
   use super::*;
+  use crate::installable::Installable;
 
   #[test]
   fn test_get_build_image_variants_expression() {
@@ -529,7 +528,7 @@ mod tests {
 }
       "
       .to_string(),
-      attribute: vec![],
+      attribute:  vec![],
     };
 
     let result = get_build_image_variants(&installable, "test");
@@ -564,7 +563,7 @@ mod tests {
       .expect("Failed to write test file");
 
     let installable = Installable::File {
-      path: test_file.path().to_path_buf(),
+      path:      test_file.path().to_path_buf(),
       attribute: vec![],
     };
 

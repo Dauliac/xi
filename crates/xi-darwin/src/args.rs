@@ -1,16 +1,22 @@
 use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
-use xi_core::installable::{CommandContext, InstallableArgs};
 use xi_core::{
   args::{
-    CacheArgs, CommonRebuildArgs, HasBuildArgs, HasCacheArgs,
+    CacheArgs,
+    CommonRebuildArgs,
+    HasBuildArgs,
+    HasCacheArgs,
     NixBuildPassthroughArgs,
   },
   checks::{
-    FeatureRequirements, FlakeFeatures, LegacyFeatures, ReplFeatures,
+    FeatureRequirements,
+    FlakeFeatures,
+    LegacyFeatures,
+    ReplFeatures,
     ReplVariant,
   },
   complete,
+  installable::{CommandContext, InstallableArgs},
   update::UpdateArgs,
 };
 use xi_remote::RemoteHost;

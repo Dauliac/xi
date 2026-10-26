@@ -10,9 +10,15 @@
 //! `CATALOG`. This suite calls it and also spot-checks that every
 //! `DaemonState` variant round-trips through `meta_for_state`.
 
-use xi_develop::daemon::protocol::DaemonState;
-use xi_develop::daemon::state_meta::{
-  CATALOG, DaemonStateKind, assert_parity, meta_for, meta_for_state,
+use xi_develop::daemon::{
+  protocol::DaemonState,
+  state_meta::{
+    CATALOG,
+    DaemonStateKind,
+    assert_parity,
+    meta_for,
+    meta_for_state,
+  },
 };
 
 #[test]
@@ -65,17 +71,11 @@ fn every_daemon_state_variant_resolves_to_meta() {
       retry_count: 0,
     },
     DaemonState::WatcherDegraded,
-    DaemonState::ConfigError {
-      error: "x".into(),
-    },
+    DaemonState::ConfigError { error: "x".into() },
     DaemonState::ShuttingDown,
-    DaemonState::Pending {
-      job_id: "j".into(),
-    },
+    DaemonState::Pending { job_id: "j".into() },
     DaemonState::Missing,
-    DaemonState::Degraded {
-      reason: "x".into(),
-    },
+    DaemonState::Degraded { reason: "x".into() },
     DaemonState::Stuck {
       job_id:   "j".into(),
       stuck_ms: 0,
