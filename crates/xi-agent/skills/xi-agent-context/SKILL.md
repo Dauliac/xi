@@ -19,7 +19,8 @@ Load the entire project surface in one call. Returns:
 ## When to use
 
 - First turn in a Nix-flake project you have not seen before.
-- Any time the user's request depends on "what does this project support?" — build targets, checks, formatters, deploy backends.
+- Any time the user's request depends on "what does this project support?" —
+  build targets, checks, formatters, deploy backends.
 - Before proposing edits to `flake.nix`, `modules/`, or `.xi.toml`.
 
 ## How to call
@@ -40,21 +41,27 @@ xi agent context --no-daemon                # skip socket call, force NotRunning
 Response is one JSON object on stdout. Key fields:
 
 - `data.workspace.root` — cwd of the project
-- `data.flake` — `null` iff the cwd is not a flake; then treat as a plain project
-- `data.devshell.state` — one of `ready`, `evaluating`, `stale`, `degraded`, `not-running`. If not `ready`, propose `xi develop` before running toolchain commands
+- `data.flake` — `null` iff the cwd is not a flake; then treat as a plain
+  project
+- `data.devshell.state` — one of `ready`, `evaluating`, `stale`, `degraded`,
+  `not-running`. If not `ready`, propose `xi develop` before running toolchain
+  commands
 - `data.git.dirty` — if `true`, some edits are unstaged
-- `data.validation.steps[]` — the ordered plan of checks; each step has `id`, `command`, `purpose`, `blocking`
-- `data.xi-config.fmt-backend` — the configured formatter (`nixfmt`, `alejandra`, `flake`, custom)
+- `data.validation.steps[]` — the ordered plan of checks; each step has `id`,
+  `command`, `purpose`, `blocking`
+- `data.xi-config.fmt-backend` — the configured formatter (`nixfmt`,
+  `alejandra`, `flake`, custom)
 
-`errors[]` may be non-empty with `data` present — that means partial success. The `code` field is stable (e.g. `flake.eval.failed`, `daemon.not-running`).
+`errors[]` may be non-empty with `data` present — that means partial success.
+The `code` field is stable (e.g. `flake.eval.failed`, `daemon.not-running`).
 
 ## Failure surface
 
-| Condition | Behaviour |
-| --- | --- |
-| Not a flake | `data.flake = null`; other reads still populated |
+| Condition          | Behaviour                                                                |
+| ------------------ | ------------------------------------------------------------------------ |
+| Not a flake        | `data.flake = null`; other reads still populated                         |
 | Daemon not running | `data.devshell.state = "not-running"`; hint field points at `xi develop` |
-| Slow flake eval | Partial `data` + `errors: [{ code: "flake.eval.failed", ... }]`, exit 0 |
+| Slow flake eval    | Partial `data` + `errors: [{ code: "flake.eval.failed", ... }]`, exit 0  |
 
 ## Follow-up skills
 

@@ -2,7 +2,9 @@
 
 **Date**: 2026-08-01
 
-Canonical serde types for `crates/xi-agent/src/schema.rs`. Every subcommand emits an `Envelope<T>` on stdout. All names use `serde(rename_all = "kebab-case")` unless noted.
+Canonical serde types for `crates/xi-agent/src/schema.rs`. Every subcommand
+emits an `Envelope<T>` on stdout. All names use
+`serde(rename_all = "kebab-case")` unless noted.
 
 ## Envelope (all responses)
 
@@ -28,7 +30,8 @@ Diagnostic {
 Rules:
 
 - `schema` MUST start with `xi.agent/v` followed by an integer major.
-- Additive fields inside `data` are allowed within a major; removals or renames bump major.
+- Additive fields inside `data` are allowed within a major; removals or renames
+  bump major.
 - A response may carry both `data` and `errors` (partial success).
 
 ## `context` payload
@@ -191,6 +194,8 @@ InstallEntry {
 
 ## Version discipline
 
-- Bump `schema` major (`xi.agent/v2`) only on incompatible change: removed field, renamed field, changed enum semantics.
+- Bump `schema` major (`xi.agent/v2`) only on incompatible change: removed
+  field, renamed field, changed enum semantics.
 - Prefer new fields with `#[serde(default)]` over new majors.
-- Contract test (`bdd_schema_stability.rs`) asserts every response is `deserialize_from(&write(response))` round-trip stable.
+- Contract test (`bdd_schema_stability.rs`) asserts every response is
+  `deserialize_from(&write(response))` round-trip stable.

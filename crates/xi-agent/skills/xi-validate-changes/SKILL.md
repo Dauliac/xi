@@ -16,7 +16,8 @@ Turn "have I broken anything?" into a definitive yes/no. Every step:
 ## When to use
 
 - Before proposing a commit.
-- Before saying "done" to the user on any change that touches code, config, or modules.
+- Before saying "done" to the user on any change that touches code, config, or
+  modules.
 - After an edit sequence, when the user says "check it".
 
 ## How to call
@@ -37,23 +38,33 @@ xi agent validate --run --fail-fast
 Execution emits one JSON line per event:
 
 - `event: "started"` — step is running (with timestamp)
-- `event: "finished"` — step done (`status: passed | failed | skipped | blocked`, `duration-ms`, optional `error` summary)
+- `event: "finished"` — step done
+  (`status: passed | failed | skipped | blocked`, `duration-ms`, optional
+  `error` summary)
 - `event: "complete"` — final summary (`total-ms`, `all-blocking-passed`)
 
-Exit code: `0` iff every blocking step passed. `1` if any blocking step failed. `130` if the run was interrupted.
+Exit code: `0` iff every blocking step passed. `1` if any blocking step failed.
+`130` if the run was interrupted.
 
 ## Interpreting results
 
 - `passed` — done, move on.
-- `failed` — report the `error` field to the user; do not attempt to re-run the same step without a fix.
-- `blocked` — a dependency failed; not a real failure of this step. Fix the dependency and re-run.
+- `failed` — report the `error` field to the user; do not attempt to re-run the
+  same step without a fix.
+- `blocked` — a dependency failed; not a real failure of this step. Fix the
+  dependency and re-run.
 - `skipped` — the step opted out (rare; e.g. no changes for a scoped check).
 
 ## When to use `--fail-fast`
 
-Prefer it when the developer is iterating: no point running `xi ci` if `xi fmt --check` already failed. Do NOT use `--fail-fast` when the developer explicitly wants a full report before deciding.
+Prefer it when the developer is iterating: no point running `xi ci` if
+`xi fmt --check` already failed. Do NOT use `--fail-fast` when the developer
+explicitly wants a full report before deciding.
 
 ## Failure surface
 
-- No `flake.nix`, no `Cargo.toml`, no `.xi.toml [ci]` → empty plan. Still emits an envelope; the agent should report "no configured validation for this project" rather than claim success.
-- A step's binary is missing (`xi` not on PATH) → the step reports `failed` with a clear `error`. Do not suppress; surface it.
+- No `flake.nix`, no `Cargo.toml`, no `.xi.toml [ci]` → empty plan. Still emits
+  an envelope; the agent should report "no configured validation for this
+  project" rather than claim success.
+- A step's binary is missing (`xi` not on PATH) → the step reports `failed` with
+  a clear `error`. Do not suppress; surface it.

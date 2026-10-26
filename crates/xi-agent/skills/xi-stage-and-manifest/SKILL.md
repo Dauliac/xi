@@ -9,15 +9,20 @@ description: Identify which files Nix will actually see for a build and which on
 
 Nix only sees files known to git. This skill exposes:
 
-- **`stage`** — files git tracks or ignores that a Nix build path would touch, with the referring chain from `flake.nix`. Use it to propose the minimal correct `git add`.
-- **`manifest`** — all files reachable from `flake.nix` via imports. Use it to answer "what is the flake, actually?"
+- **`stage`** — files git tracks or ignores that a Nix build path would touch,
+  with the referring chain from `flake.nix`. Use it to propose the minimal
+  correct `git add`.
+- **`manifest`** — all files reachable from `flake.nix` via imports. Use it to
+  answer "what is the flake, actually?"
 
 ## When to use
 
 - The user says "my change is not being picked up by Nix."
 - The user asks to stage files before a build.
-- The user asks which files make up the flake (for review, refactor, or splitting).
-- Before proposing `git add <path>` — check whether the flake even references the file.
+- The user asks which files make up the flake (for review, refactor, or
+  splitting).
+- Before proposing `git add <path>` — check whether the flake even references
+  the file.
 
 ## How to call
 
@@ -29,16 +34,21 @@ xi agent manifest     # every file reachable from flake.nix
 ## Reading `stage`
 
 - `data.clean == true` and `data.entries == []` → nothing to stage. Move on.
-- Each entry has `path`, `git-status` (`untracked` / `modified` / `ignored` / `deleted` / `renamed`), `staged` (bool), and `referenced-by[]`.
-- If `referenced-by` is non-empty for an `untracked` entry, `git add <path>` is almost certainly required before `nix build`.
+- Each entry has `path`, `git-status` (`untracked` / `modified` / `ignored` /
+  `deleted` / `renamed`), `staged` (bool), and `referenced-by[]`.
+- If `referenced-by` is non-empty for an `untracked` entry, `git add <path>` is
+  almost certainly required before `nix build`.
 - Sorted deterministically by path — safe to diff across runs.
 
 ## Reading `manifest`
 
 - `data.root` — always `flake.nix`.
-- Each entry: `path`, `kind` (`flake-root` / `module` / `overlay` / `lib` / `package` / `other`), and `imported-by[]`.
-- Use `kind == module` to find the effective modules of the project without evaluating.
-- `imported-by` is empty for the root and populated for everything reachable — reversed edges from `flake.nix`.
+- Each entry: `path`, `kind` (`flake-root` / `module` / `overlay` / `lib` /
+  `package` / `other`), and `imported-by[]`.
+- Use `kind == module` to find the effective modules of the project without
+  evaluating.
+- `imported-by` is empty for the root and populated for everything reachable —
+  reversed edges from `flake.nix`.
 
 ## Common workflows
 
@@ -56,5 +66,8 @@ xi agent manifest     # every file reachable from flake.nix
 
 ## Failure surface
 
-- Not a git repo: `stage` returns `errors: [{ code: "git.spawn-failed" | "git.status-failed" }]`, `entries: []`, `clean: true`.
-- Not a flake: `manifest` returns `errors: [{ code: "workspace.not-a-flake" }]`, `files: []`.
+- Not a git repo: `stage` returns
+  `errors: [{ code: "git.spawn-failed" | "git.status-failed" }]`, `entries: []`,
+  `clean: true`.
+- Not a flake: `manifest` returns `errors: [{ code: "workspace.not-a-flake" }]`,
+  `files: []`.
