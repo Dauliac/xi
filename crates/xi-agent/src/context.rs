@@ -5,6 +5,7 @@ use std::{
 };
 
 use color_eyre::eyre::Result;
+use sha2::{Digest, Sha256};
 use xi_core::flake_output::current_nix_system;
 
 use crate::{
@@ -112,17 +113,9 @@ fn collect_flake_summary(cwd: &std::path::Path) -> Option<FlakeSummary> {
   if !flake.exists() {
     return None;
   }
-  let lock_hash = std::fs::read_to_string(cwd.join("flake.lock"))
+  let lock_hash = std::fs::read(cwd.join("flake.lock"))
     .ok()
-    .and_then(|s| {
-      serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
-        .and_then(|v| {
-          v.get("root")
-            .and_then(|r| r.as_str())
-            .map(ToOwned::to_owned)
-        })
-    });
+    .map(|bytes| format!("sha256:{:x}", Sha256::digest(&bytes)));
   Some(FlakeSummary {
     path: flake,
     lock_hash,
