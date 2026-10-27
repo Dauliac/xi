@@ -38,3 +38,9 @@ cargo-root-2
 outputs.err
 outputs.json
 xi-check.log
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# beads gate lock, a runtime artifact of the pre-commit gate
+.beads.gate.lock
