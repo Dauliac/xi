@@ -13,8 +13,7 @@ let
     "xi-stage-and-manifest"
     "xi-validate-changes"
   ];
-  skillSrc =
-    name: xiFlake + "/crates/xi-agent/skills/${name}/SKILL.md";
+  skillSrc = name: xiFlake + "/crates/xi-agent/skills/${name}/SKILL.md";
   # System-wide install lands under /etc so every user picks it up when
   # HM is unavailable. Individual users can still opt into HM-level
   # install on top of this.
@@ -25,9 +24,7 @@ let
       codex = "xi/agents/codex/skills";
     }
     .${target};
-  enabledTargets = builtins.attrNames (
-    lib.filterAttrs (_: t: t.enable) cfg.agents.targets
-  );
+  enabledTargets = builtins.attrNames (lib.filterAttrs (_: t: t.enable) cfg.agents.targets);
   etcFor =
     target:
     lib.listToAttrs (

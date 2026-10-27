@@ -13,8 +13,7 @@ let
     "xi-stage-and-manifest"
     "xi-validate-changes"
   ];
-  skillSrc =
-    name: xiFlake + "/crates/xi-agent/skills/${name}/SKILL.md";
+  skillSrc = name: xiFlake + "/crates/xi-agent/skills/${name}/SKILL.md";
   # Map every enabled agent target to its skill install root under the
   # user's home. Structure is stable across Claude Code and Codex per
   # the Agent Skills convention (agentskills.io).
@@ -25,9 +24,7 @@ let
       codex = ".codex/skills";
     }
     .${target};
-  enabledTargets = builtins.attrNames (
-    lib.filterAttrs (_: t: t.enable) cfg.agents.targets
-  );
+  enabledTargets = builtins.attrNames (lib.filterAttrs (_: t: t.enable) cfg.agents.targets);
   filesFor =
     target:
     lib.listToAttrs (
@@ -41,8 +38,7 @@ let
 in
 {
   options.programs.xi.agents = {
-    enable =
-      lib.mkEnableOption "xi-agent skills for AI coding agents";
+    enable = lib.mkEnableOption "xi-agent skills for AI coding agents";
 
     targets = lib.mkOption {
       description = ''
