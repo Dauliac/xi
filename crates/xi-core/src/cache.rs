@@ -123,7 +123,7 @@ fn push_to_cache_async(targets: &[CacheTarget], out_path: &Path) {
           info!(
             "[cache] push '{}' running in background (pid {pid})",
             target.name
-          )
+          );
         },
         Err(e) => warn!("[cache] push '{}' failed to spawn: {e}", target.name),
       }
@@ -138,7 +138,7 @@ fn push_to_cache_async(targets: &[CacheTarget], out_path: &Path) {
         info!(
           "[cache] push '{}' running in background (pid {pid})",
           target.name
-        )
+        );
       },
       Err(e) => warn!("[cache] push '{}' failed to spawn: {e}", target.name),
     }
