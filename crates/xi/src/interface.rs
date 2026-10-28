@@ -71,7 +71,7 @@ pub struct Main {
   disable_help_subcommand = true,
   subcommand_help_heading = "Commands",
   after_help = "\x1b[1mCommand groups:\x1b[0m
-  Config mgmt:  os, home, darwin, system
+  Config mgmt:  os, home, darwin, system, sources
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
                 doctor, materialize
   Deployment:   deploy
@@ -82,10 +82,18 @@ pub struct Main {
 )]
 pub enum XiCommand {
   // -- Configuration Management --
+  // `nixos` is the spelling the xi-sources-model scope table uses;
+  // `os` stays the primary name.
+  #[command(alias = "nixos")]
   Os(xi_nixos::args::OsArgs),
   Home(xi_home::args::HomeArgs),
   Darwin(xi_darwin::args::DarwinArgs),
   System(crate::system::args::SystemArgs),
+  /// Inspect the config-repo sources model
+  Sources(crate::sources::args::SourcesProxy),
+  /// Rejected on purpose: names the four concrete switch verbs.
+  #[command(hide = true)]
+  Switch,
 
   // -- Flake Operations --
   Build(xi_flake::args::BuildArgs),
@@ -164,6 +172,8 @@ impl XiCommand {
       | Self::Materialize(..)
       | Self::Deploy(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Agent(..)
+      | Self::Sources(..)
+      | Self::Switch
       | Self::Search(..)
       | Self::Auth(..)
       | Self::Cache(..)
@@ -351,6 +361,8 @@ impl XiCommand {
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
       Self::Auth(args) => xi_auth::run(&args),
+      Self::Sources(proxy) => proxy.run(),
+      Self::Switch => crate::sources::verbless_switch(),
       Self::Cache(proxy) => proxy.run(),
       Self::Clean(proxy) => proxy.command.run(elevation),
       Self::Nix(args) => args.run(),

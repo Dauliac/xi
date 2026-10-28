@@ -356,3 +356,15 @@ pub struct OsGenerationsArgs {
   #[arg(long, value_delimiter = ',')]
   pub fields: Option<Vec<Field>>,
 }
+
+impl OsArgs {
+  /// The sources scope `xi os|nixos switch` operates in.
+  ///
+  /// Declared at parse time so the sources resolver never has to
+  /// infer scope from the installable or the CWD. The mapping is
+  /// fixed by the xi-sources-model scope table.
+  #[must_use]
+  pub const fn scope() -> xi_core::sources::Scope {
+    xi_core::sources::Scope::System
+  }
+}

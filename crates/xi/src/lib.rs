@@ -9,6 +9,7 @@ pub mod config;
 pub mod interface;
 pub mod logging;
 pub mod proxy;
+pub mod sources;
 pub mod system;
 
 pub const XI_VERSION: &str = env!("CARGO_PKG_VERSION");

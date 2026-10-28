@@ -22,6 +22,7 @@ inquire.workspace               = true
 nix.workspace                   = true
 nix-command.workspace           = true
 regex.workspace                 = true
+serde_json.workspace            = true
 tempfile.workspace              = true
 toml_edit.workspace             = true
 tracing.workspace               = true

@@ -8,6 +8,7 @@ pub mod dirs;
 pub mod flake_output;
 pub mod installable;
 pub mod progress;
+pub mod sources;
 pub mod style;
 pub mod suggest;
 pub mod update;

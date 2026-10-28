@@ -104,3 +104,15 @@ impl HasBuildArgs for SystemArgs {
     }
   }
 }
+
+impl SystemArgs {
+  /// The sources scope `xi system switch` operates in.
+  ///
+  /// Declared at parse time so the sources resolver never has to
+  /// infer scope from the installable or the CWD. The mapping is
+  /// fixed by the xi-sources-model scope table.
+  #[must_use]
+  pub const fn scope() -> xi_core::sources::Scope {
+    xi_core::sources::Scope::System
+  }
+}
