@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Subcommand, ValueEnum};
 use xi_core::sources::Scope;
 
@@ -12,6 +14,9 @@ pub struct SourcesProxy {
 pub enum SourcesCommand {
   /// Report the sources model for a scope as a JSON envelope
   Status(StatusArgs),
+
+  /// Configure a config repo for this scope and perform the first clone
+  Init(InitArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -22,10 +27,57 @@ pub struct StatusArgs {
 
   /// Remote URL of the config repo.
   ///
-  /// Until `xi-sources-config` lands its path tables, this (or the
-  /// matching environment variable) is the only way to name the source.
+  /// Highest rung of the precedence ladder. Omit it to let
+  /// `XI_SOURCES_REMOTE`, `.xi.toml [sources]`, or the Nix module answer.
   #[arg(long, env = "XI_SOURCES_REMOTE")]
   pub remote: Option<String>,
+
+  /// Add a `provenance` map naming the rung that answered for each key.
+  #[arg(long)]
+  pub explain: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct InitArgs {
+  /// Remote URL of the config repo (https, ssh, scp-style, or a path).
+  pub remote: String,
+
+  /// Branch to track. Defaults to `main`.
+  #[arg(long, env = "XI_SOURCES_BRANCH")]
+  pub branch: Option<String>,
+
+  /// Absolute path to your editable clone, so `switch` works anywhere.
+  #[arg(long, env = "XI_SOURCES_WORKING_DIR")]
+  pub working_dir: Option<PathBuf>,
+
+  /// Which half of the machine to configure.
+  ///
+  /// `auto` picks `system` when running as root and `user` otherwise.
+  #[arg(long, value_enum, default_value_t = InitScopeArg::Auto)]
+  pub scope: InitScopeArg,
+
+  /// Replace an existing `[sources]` block instead of refusing.
+  #[arg(long)]
+  pub force: bool,
+
+  /// Write the config and create the directories, but skip the clone.
+  #[arg(long)]
+  pub no_clone: bool,
+}
+
+/// Scope selector for `init`, which can additionally infer from the uid.
+///
+/// Separate from [`ScopeArg`] because `auto` is only meaningful here:
+/// `status` reports on one named scope and must not silently switch
+/// which half of the machine it is describing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InitScopeArg {
+  /// `system` when the effective uid is 0, `user` otherwise.
+  Auto,
+  /// Host-wide configuration.
+  System,
+  /// Per-user configuration.
+  User,
 }
 
 /// CLI spelling of [`Scope`].

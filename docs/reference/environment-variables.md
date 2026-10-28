@@ -116,6 +116,48 @@ Consumed by `xi develop` and its background daemon.
 | ------------------- | --------------------------------------------- |
 | `XI_REMOTE_CLEANUP` | Attempt to kill remote processes on interrupt |
 
+## Sources (`xi sources`)
+
+Every `[sources]` key in `.xi.toml` has a matching variable: uppercase the key
+and replace hyphens with underscores.
+
+| Variable                     | `[sources]` key   | Description                                                             |
+| ---------------------------- | ----------------- | ----------------------------------------------------------------------- |
+| `XI_SOURCES_REMOTE`          | `remote`          | Remote git URL of the config repo                                       |
+| `XI_SOURCES_BRANCH`          | `branch`          | Branch to track (default `main`)                                        |
+| `XI_SOURCES_WORKING_DIR`     | `working-dir`     | Absolute path to your editable clone, so `xi switch` works from any CWD |
+| `XI_SOURCES_POLL_INTERVAL`   | `poll-interval`   | Gitops poll cadence, e.g. `60s`, `5m` (default `60s`)                   |
+| `XI_SOURCES_REQUIRE_SIGNED`  | `require-signed`  | Refuse to advance past unsigned commits                                 |
+| `XI_SOURCES_ALLOWED_SIGNERS` | `allowed-signers` | Absolute path to an SSH `allowed_signers` file                          |
+| `XI_SOURCES_SCOPE`           | `scope`           | `system` or `user`; disambiguates when both are configured              |
+| `XI_SOURCES_SYNC_MODE`       | `sync-mode`       | `prompt`, `auto-copy`, or `never` (default `prompt`)                    |
+| `XI_SOURCES_INSTALLER`       | `installer`       | `detsys`, `lix`, or `none`                                              |
+| `XI_SOURCES_STATE_DIR`       | none (env only)   | Override the resolved state dir; absolute paths only                    |
+
+`XI_SOURCES_STATE_DIR` has no `.xi.toml` counterpart on purpose. The state dir
+records what xi already deployed, so letting a repo-committed config redirect it
+would let a config repo rewrite the history of its own deployment.
+
+Values are validated when the config loads, not when the remote is first
+contacted: a malformed URL, a relative `working-dir`, or an unparseable
+`poll-interval` fails immediately and names the variable.
+
+### Precedence
+
+Sources config resolves through five rungs, highest first:
+
+1. CLI flag (e.g. `--sources-remote <url>`)
+2. Environment variable (`XI_SOURCES_*`)
+3. `.xi.toml` `[sources]` key
+4. Nix module default, written to `/etc/xi/sources.toml` (system scope) or
+   `$XDG_CONFIG_HOME/xi/sources.toml` (user scope)
+5. Built-in default (`branch = "main"`, `poll-interval = 60s`,
+   `sync-mode = "prompt"`)
+
+Each key walks the ladder independently, so a `.xi.toml` `branch` and an
+`XI_SOURCES_REMOTE` combine rather than one shadowing the other wholesale. Run
+`xi sources status --explain` to see which rung answered for each key.
+
 ## Configuration and diagnostics
 
 | Variable          | Description                                                |

@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::{Result, eyre::bail};
 use nix_command::{CommandKind, NixCommand};
+/// Strict `.xi.toml [sources]` loader, used by the `xi sources`
+/// commands. The rest of `project_config` stays crate-private.
+pub use project_config::load_sources_config;
 use subprocess::{Exec, Redirection};
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;

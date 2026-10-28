@@ -235,6 +235,54 @@ output = "generated.nix"
 sources = ["src/**/*.rs"]
 ```
 
+### `[sources]` - config-repo sources
+
+Points xi at the git repo that holds your NixOS / home-manager / darwin
+configuration, so `xi <scope> switch` works from any directory on the machine.
+All keys are optional; a `.xi.toml` without a `[sources]` block keeps working
+and `xi sources status` reports `Missing`.
+
+| Key               | Type   | Default    | Description                                                     |
+| ----------------- | ------ | ---------- | --------------------------------------------------------------- |
+| `remote`          | string | none       | Remote git URL (`https://`, `ssh://`, scp-style, or local path) |
+| `branch`          | string | `"main"`   | Branch to track                                                 |
+| `working-dir`     | string | none       | Absolute path to your editable clone                            |
+| `poll-interval`   | string | `"60s"`    | Gitops poll cadence, e.g. `60s`, `5m`                           |
+| `require-signed`  | bool   | `false`    | Refuse to advance past unsigned commits                         |
+| `allowed-signers` | string | none       | Absolute path to an SSH `allowed_signers` file                  |
+| `scope`           | string | none       | `system` or `user`; required when both are configured as root   |
+| `sync-mode`       | string | `"prompt"` | `prompt`, `auto-copy`, or `never`                               |
+| `installer`       | string | none       | `detsys`, `lix`, or `none`                                      |
+
+The key set is closed: an unrecognised key is a load-time error naming the file
+and line, so a typo surfaces immediately instead of silently doing nothing. URLs
+and paths are validated at the same moment, not at first fetch. `working-dir`
+and `allowed-signers` must be absolute, because sources config is read by
+daemons and by `xi switch` runs started from arbitrary directories.
+
+Precedence per key is CLI flag → `XI_SOURCES_*` → `.xi.toml [sources]` → Nix
+module (`/etc/xi/sources.toml` or `$XDG_CONFIG_HOME/xi/sources.toml`) → built-in
+default. `xi sources status --explain` reports which rung answered.
+
+Resolved paths per scope:
+
+| Concept | System (NixOS / nix-darwin) | User scope                         |
+| ------- | --------------------------- | ---------------------------------- |
+| sources | `/var/lib/xi/sources`       | `$XDG_DATA_HOME/xi/sources`        |
+| state   | `/var/lib/xi/state`         | `$XDG_STATE_HOME/xi`               |
+| config  | `/etc/xi/sources.toml`      | `$XDG_CONFIG_HOME/xi/sources.toml` |
+
+Unset `XDG_*` variables fall back to the XDG Base Directory defaults
+(`~/.local/share`, `~/.local/state`, `~/.config`).
+
+```toml
+[sources]
+remote = "git@github.com:you/dotfiles.git"
+branch = "main"
+working-dir = "/home/you/src/dotfiles"
+poll-interval = "5m"
+```
+
 ### Full example
 
 ```toml

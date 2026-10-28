@@ -27,6 +27,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod config;
+
 // ---------------------------------------------------------------------------
 // Scope  -  system vs user
 // ---------------------------------------------------------------------------
@@ -158,7 +160,7 @@ fn assemble_url(scheme: &str, authority: &str, path: &str) -> String {
 ///
 /// A colon that appears *after* a slash belongs to the path, not to the
 /// authority, so such a string is not scp-like.
-fn scp_separator(s: &str) -> Option<usize> {
+pub(crate) fn scp_separator(s: &str) -> Option<usize> {
   let colon = s.find(':')?;
   match s.find('/') {
     Some(slash) if slash < colon => None,
@@ -647,6 +649,12 @@ pub struct SourcesStatusResponse {
   /// The status and its body.
   #[serde(flatten)]
   pub status:         SourcesStatus,
+  /// Which precedence rung answered for each config key.
+  ///
+  /// Only present under `xi sources status --explain`, so the default
+  /// envelope keeps the exact shape `xi-sources-model` pinned.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub provenance:     Option<config::Provenances>,
 }
 
 impl SourcesStatusResponse {
@@ -656,7 +664,15 @@ impl SourcesStatusResponse {
     Self {
       schema_version: SOURCES_SCHEMA_VERSION,
       status,
+      provenance: None,
     }
+  }
+
+  /// Attach the provenance map, for `--explain`.
+  #[must_use]
+  pub fn with_provenance(mut self, provenance: config::Provenances) -> Self {
+    self.provenance = Some(provenance);
+    self
   }
 }
 

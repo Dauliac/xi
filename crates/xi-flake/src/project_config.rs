@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use tracing::{debug, warn};
+use xi_core::sources::config::{ConfigError, SourcesConfig};
 
 /// Project-level configuration from `.xi.toml`.
 #[derive(Debug, Default)]
@@ -11,6 +12,7 @@ pub struct ProjectConfig {
   pub test:        ProjectTestConfig,
   pub fmt:         ProjectFmtConfig,
   pub materialize: ProjectMaterializeConfig,
+  pub sources:     SourcesConfig,
 }
 
 /// Formatter configuration.
@@ -380,8 +382,43 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
     }
   }
 
+  // [sources] section.
+  //
+  // The schema, the closed key set and the validation live in
+  // `xi_core::sources::config` so this project file and the
+  // Nix-module-written per-scope `sources.toml` cannot drift apart.
+  //
+  // This call site is deliberately lenient, matching the rest of this
+  // function: a `[sources]` typo must not break `xi build` for someone who
+  // never enabled sources. Commands that actually read sources config go
+  // through `load_sources_config`, which is strict  -  that is what makes
+  // the spec's "fails at config-load time, not at first fetch" hold.
+  match SourcesConfig::from_toml_str(&config_path, &raw) {
+    Ok(sources) => config.sources = sources,
+    Err(e) => warn!("{e}"),
+  }
+
   debug!(?config, "Loaded project config from .xi.toml");
   config
+}
+
+/// Load and validate the `.xi.toml [sources]` section, strictly.
+///
+/// Unlike [`load_project_config`], a malformed `[sources]` block is an
+/// error rather than a warning: an operator who misspells `remote` must
+/// find out at config-load time, not when a gitops daemon silently never
+/// advances. A missing `.xi.toml`, or one without a `[sources]` table, is
+/// not malformed  -  both yield an empty layer.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::File`] naming the file and the 1-based line of
+/// the offending key.
+pub fn load_sources_config(
+  flake_dir: Option<&Path>,
+) -> Result<SourcesConfig, ConfigError> {
+  let dir = flake_dir.unwrap_or_else(|| Path::new("."));
+  SourcesConfig::from_toml_file(&dir.join(".xi.toml"))
 }
 
 fn default_config() -> ProjectConfig {
@@ -396,5 +433,6 @@ fn default_config() -> ProjectConfig {
     test:        ProjectTestConfig::default(),
     fmt:         ProjectFmtConfig::default(),
     materialize: ProjectMaterializeConfig::default(),
+    sources:     SourcesConfig::default(),
   }
 }
