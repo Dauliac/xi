@@ -48,7 +48,7 @@ features (bootstrap, push, gitops) are just verbs over the same model.
   - remote `→` sources dir, via the gitops daemon's fetch
     ([[xi-sources-gitops]])
   - sources dir `→` working dir, via the hermetic chezmoi-style sync
-    ([[xi-sources-conflict]], `xi sources sync`)
+    ([[xi-sources-conflict]], `xi <scope> sources sync`)
   - working dir `→` remote, via the user's own `git push` (xi does not wrap
     this)
 
@@ -66,8 +66,8 @@ features (bootstrap, push, gitops) are just verbs over the same model.
   two. Mirrors the `flake_id` pattern established by
   `xi-devshell-flake-discovery` and `xi-devshell-trust`.
 
-- Add a read-only machine surface `xi sources status` returning the full model
-  as a `{schema version, status Ready|Pending|Missing|Degraded}` envelope
+- Add a read-only machine surface `xi <scope> sources status` returning the full
+  model as a `{schema version, status Ready|Pending|Missing|Degraded}` envelope
   matching the house convention (`xi-core` response types).
 
 ## Impact
@@ -93,10 +93,11 @@ features (bootstrap, push, gitops) are just verbs over the same model.
 
 ## Success Criteria
 
-- **SC-M-001**: `xi sources status` on a machine with no sources configured
-  returns `status: Missing` and names which env/config/flag could configure it.
-- **SC-M-002**: `xi sources status` on a machine with sources configured returns
-  `status: Ready` carrying
+- **SC-M-001**: `xi <scope> sources status` on a machine with no sources
+  configured returns `status: Missing` and names which env/config/flag could
+  configure it.
+- **SC-M-002**: `xi <scope> sources status` on a machine with sources configured
+  returns `status: Ready` carrying
   `(sources_dir, state_dir, working_dir?,
   remote_head, working_head, sources_head, active_generation)`.
 - **SC-M-003**: Two different scopes on the same machine (`system` and `home`)

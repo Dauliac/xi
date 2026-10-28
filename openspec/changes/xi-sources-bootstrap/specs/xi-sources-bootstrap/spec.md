@@ -29,9 +29,11 @@ The stub MUST:
 
 ### Requirement: `xi system switch <remote-url>`
 
-The capability MUST recognise a remote git URL as a positional argument to any
-`xi {system,nixos,darwin,home} switch` and trigger the bootstrap sequence
-instead of a local-flake dispatch.
+The capability MUST recognise a config-repo remote as a positional argument to
+any `xi {system,nixos,darwin,home} switch` and trigger the bootstrap sequence
+instead of a local-flake dispatch. Which argument shapes count as a remote is
+owned by [[xi-sources-config]]; this capability consumes that decision rather
+than restating it.
 
 The bootstrap sequence is a planner that MUST emit a plan the user can preview
 before execution. Non-interactive mode (`XI_BOOTSTRAP_NO_CONFIRM=1` or
@@ -48,6 +50,50 @@ before execution. Non-interactive mode (`XI_BOOTSTRAP_NO_CONFIRM=1` or
 - **GIVEN** `./flake.nix` exists in the current directory
 - **WHEN** `xi system switch .` runs
 - **THEN** the direct dispatch path is used, not the bootstrap
+
+### Requirement: Installer pre-check on every switch
+
+Probing for a usable Nix MUST be a pre-check on **every**
+`xi {system,nixos,darwin,home} switch`, not only on the bootstrap path. Reaching
+a switch on a machine without Nix is the same problem whether the operator
+passed a remote URL, a local flake, or nothing at all, and a bare
+`nix: command not found` is a worse answer than installing it.
+
+The pre-check MUST:
+
+1. Run before any evaluation or build work.
+2. Be a no-op, with no network access and no prompt, when a usable `nix` is
+   already on PATH. This is the overwhelmingly common case and it MUST NOT slow
+   the everyday switch down.
+3. When Nix is absent and the resolved `installer` is not `none`, delegate to
+   the backend below, then continue the switch.
+4. When Nix is absent and `installer = "none"`, halt with an error naming the
+   config key that would let xi install it.
+
+This is what lets the shell stub be nothing more than "download xi, exec
+switch": the binary carries the whole flow, so a bare machine and a managed
+machine take the same command.
+
+#### Scenario: Nix present is a silent no-op
+
+- **GIVEN** a usable `nix` on PATH
+- **WHEN** any `xi <scope> switch` runs
+- **THEN** no installer is invoked, nothing is downloaded, and no prompt is
+  shown
+
+#### Scenario: Nix absent on a plain local switch
+
+- **GIVEN** no `nix` on PATH and `installer = "detsys"`
+- **WHEN** `xi system switch .` runs, with no remote URL anywhere
+- **THEN** the installer pre-check still fires and installs Nix
+- **AND** the switch continues against the local flake
+
+#### Scenario: Opting out names the escape hatch
+
+- **GIVEN** no `nix` on PATH and `installer = "none"`
+- **WHEN** any `xi <scope> switch` runs
+- **THEN** the command exits non-zero
+- **AND** the message names the `installer` key and its accepted values
 
 ### Requirement: Ordered planner phases
 
