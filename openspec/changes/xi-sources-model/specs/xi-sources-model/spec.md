@@ -3,7 +3,7 @@
 This capability owns the data model that every other `xi-sources-*` capability
 reads from. It defines the three on-disk concepts (sources dir, state dir,
 working dir), the ref lineage, the scope resolver, and the public
-`xi sources status` surface.
+`xi <scope> sources status` surface.
 
 ## ADDED Requirements
 
@@ -31,7 +31,8 @@ by [[xi-sources-config]]. This capability only names the concepts.
 
 #### Scenario: No source code in state dir
 
-- **WHEN** `xi sources status` or any other xi code writes to the state dir
+- **WHEN** `xi <scope> sources status` or any other xi code writes to the state
+  dir
 - **THEN** every file written is <= 64 KiB and matches a known metadata filename
   (`remote-head`, `working-head`, `sources-head`, `working-dir`,
   `active-generation`, `lock`)
@@ -43,7 +44,7 @@ user-visible tree. The allowed set is exactly:
 
 1. remote `->` sources dir, via the gitops daemon's fetch
 2. sources dir `->` working dir, via the hermetic sync verb
-   ([[xi-sources-conflict]], `xi sources sync`)
+   ([[xi-sources-conflict]], `xi <scope> sources sync`)
 3. state dir metadata writes (owned by this capability)
 
 Writes NOT in this set are forbidden. In particular:
@@ -65,7 +66,7 @@ Writes NOT in this set are forbidden. In particular:
 
 #### Scenario: Sync writes only the working dir
 
-- **GIVEN** `xi sources sync` runs with a clean working dir
+- **GIVEN** `xi <scope> sources sync` runs with a clean working dir
 - **WHEN** the sync completes
 - **THEN** the working dir reflects the sources dir tree at `sources_head`
 - **AND** the sources dir is byte-identical to its pre-sync state
@@ -145,15 +146,15 @@ spec only mandates that all four are OBSERVABLE via the model.
 #### Scenario: All four refs observable
 
 - **GIVEN** a configured sources repo with gitops disabled and no working dir
-- **WHEN** `xi sources status` runs
+- **WHEN** `xi home sources status` runs
 - **THEN** the response carries
   `remote_head: None, working_head: None,
   sources_head: Some(..), active_generation: Some(..)`
 
 ### Requirement: Public status surface
 
-The capability MUST add `xi sources status` as a JSON command. The response MUST
-match the house envelope (schema version + status
+The capability MUST add `xi <scope> sources status` as a JSON command. The
+response MUST match the house envelope (schema version + status
 `Ready | Pending | Missing | Degraded`), with status computed as:
 
 - `Missing` - no sources dir on disk for this scope
@@ -167,7 +168,7 @@ match the house envelope (schema version + status
 #### Scenario: Fresh machine returns Missing
 
 - **GIVEN** no sources dir exists for the resolved scope
-- **WHEN** `xi sources status` runs
+- **WHEN** `xi home sources status` runs
 - **THEN** the status is `Missing`
 - **AND** the body names which env var / config key / CLI flag could configure
   sources
@@ -176,14 +177,14 @@ match the house envelope (schema version + status
 
 - **GIVEN** sources dir exists, `active_generation` is known, and gitops is
   disabled OR the last fetch succeeded
-- **WHEN** `xi sources status` runs
+- **WHEN** `xi home sources status` runs
 - **THEN** the status is `Ready`
 
 #### Scenario: Stale working-dir pointer surfaces as Degraded
 
 - **GIVEN** sources dir exists AND `state_dir/working-dir` points at a path that
   no longer exists on disk
-- **WHEN** `xi sources status` runs
+- **WHEN** `xi home sources status` runs
 - **THEN** the status is `Degraded` with a reason naming the stale working dir
   path
 
@@ -193,6 +194,9 @@ The state dir MUST contain at most the following files, each individually
 optional, each readable only by the owning UNIX user (mode `0600` on files,
 `0700` on the directory):
 
+- `remote-url` - the remote this scope is adopted to, written by
+  `xi <scope> switch <remote-url>`. This is what lets a bare `xi <scope> switch`
+  find its source with no arguments.
 - `remote-head` - hex sha, one line
 - `working-head` - hex sha, one line
 - `sources-head` - hex sha, one line
@@ -201,10 +205,10 @@ optional, each readable only by the owning UNIX user (mode `0600` on files,
 - `lock` - advisory lockfile for mutating operations
 
 Any file outside this set found in the state dir MUST be reported in
-`xi sources status` as a `Degraded` reason, not silently ignored.
+`xi <scope> sources status` as a `Degraded` reason, not silently ignored.
 
 #### Scenario: Unknown file in state dir is reported
 
 - **GIVEN** the state dir contains `random-file.txt`
-- **WHEN** `xi sources status` runs
+- **WHEN** `xi home sources status` runs
 - **THEN** the status is `Degraded` with a reason naming the unknown file

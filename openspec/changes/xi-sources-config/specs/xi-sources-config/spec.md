@@ -38,14 +38,14 @@ wins):
 5. Built-in default (e.g. `branch = "main"`, `poll_interval = 60s`)
 
 The resolved value's provenance MUST be observable via
-`xi sources status --explain` (adds a `provenance` map to the response).
+`xi <scope> sources status --explain` (adds a `provenance` map to the response).
 
 #### Scenario: Flag beats everything
 
 - **GIVEN** the same key is set via all five surfaces with distinct values
 - **WHEN** the user runs the command with the CLI flag
 - **THEN** the flag's value is used
-- **AND** `xi sources status --explain` reports provenance = `cli-flag`
+- **AND** `xi <scope> sources status --explain` reports provenance = `cli-flag`
 
 ### Requirement: Filesystem path table
 
@@ -66,7 +66,7 @@ XDG fallbacks follow the XDG Base Directory spec:
 #### Scenario: XDG unset falls back to spec defaults
 
 - **GIVEN** `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` are all unset
-- **WHEN** `xi sources status` runs at user scope
+- **WHEN** `xi home sources status` runs
 - **THEN** paths resolve to `~/.local/share/xi/sources`, `~/.local/state/xi`,
   `~/.config/xi/sources.toml`
 
@@ -91,8 +91,6 @@ The `[sources]` section accepts the following keys, all optional:
   past unsigned commits (details in [[xi-sources-gitops]])
 - `allowed-signers` - path to an SSH `allowed_signers` file; required when
   `require-signed = true`
-- `scope`, `system` or `user`; required when ambiguous (running as root with
-  both scopes configured)
 - `sync-mode`, one of `prompt | auto-copy | never`; default `prompt`. Owned by
   [[xi-sources-conflict]]; read here so it travels with the rest of the sources
   config through the precedence ladder.
@@ -120,35 +118,114 @@ The capability MUST support env variables prefixed `XI_SOURCES_` for every
 #### Scenario: Env variable beats toml
 
 - **GIVEN** `.xi.toml` sets `branch = "main"` and `XI_SOURCES_BRANCH=dev`
-- **WHEN** `xi sources status` runs
+- **WHEN** `xi home sources status` runs
 - **THEN** the resolved branch is `dev`
 
-### Requirement: `xi sources init`
+### Requirement: Switch is the sources entrypoint
 
-The subcommand `xi sources init <remote-url>` MUST:
+`xi <scope> switch [<remote-url>]` MUST be the only entrypoint for pointing a
+machine at a config repo, where `<scope>` is one of `nixos`, `darwin`, `system`
+or `home`. The same invocation MUST work on a machine with no Nix installed and
+on a machine already managed by xi. Rationale and the rejected alternatives are
+in `design.md`.
 
-1. Determine scope (`--scope` flag, else `system` if effective uid is 0, else
-   `user`).
-2. Refuse if `.xi.toml` already has a `[sources]` block, unless `--force`.
-3. Write a minimal `[sources]` block carrying only the user-supplied keys.
-4. Create the sources dir, state dir, and config dir per the path table.
-5. Clone the remote into the sources dir.
-6. Return a response envelope matching the house convention; status is `Ready`
-   on success, `Degraded` if `require-signed = true` and the HEAD is unsigned,
-   `Pending` if the clone needs credentials.
+When the positional is a config-repo remote, switch MUST:
 
-#### Scenario: Init on fresh user profile
+1. Take scope from the invoked verb, never from a flag.
+2. Run the installer pre-check owned by [[xi-sources-bootstrap]].
+3. Create the sources dir, state dir and config dir per the path table.
+4. Clone the remote into the sources dir, or fast-forward it when the same
+   remote is already recorded for this scope.
+5. Record the remote as this scope's source.
+6. Proceed with the normal build and activation against the sources dir.
 
-- **GIVEN** a user-scope config dir without `.xi.toml`
-- **WHEN** `xi sources init https://git.example/dotfiles` runs
-- **THEN** `.xi.toml` is created with
-  `[sources] remote =
-  "https://git.example/dotfiles"`
-- **AND** `$XDG_DATA_HOME/xi/sources` contains a clone of the repo
-- **AND** `xi sources status` returns `Ready`
+Adoption MUST be idempotent: re-running with the remote already recorded for
+this scope updates the clone and switches, rather than failing.
 
-#### Scenario: Init refuses to overwrite
+Re-pointing a scope at a _different_ remote MUST be refused without `--force`,
+because it silently replaces what the machine deploys from.
 
-- **GIVEN** `.xi.toml` already contains a `[sources]` block
-- **WHEN** `xi sources init <different-url>` runs without `--force`
-- **THEN** the command exits non-zero without modifying any file
+#### Scenario: Adopt on a fresh machine
+
+- **GIVEN** a machine with no recorded source for the user scope
+- **WHEN** `xi home switch https://git.example/dotfiles` runs
+- **THEN** `$XDG_DATA_HOME/xi/sources` contains a clone of the repo
+- **AND** the remote is recorded as the user scope's source
+- **AND** the home-manager configuration is built and activated from it
+
+#### Scenario: The same command works on a managed machine
+
+- **GIVEN** `https://git.example/dotfiles` is already this scope's recorded
+  source
+- **WHEN** `xi home switch https://git.example/dotfiles` runs again
+- **THEN** the command succeeds
+- **AND** the existing clone is updated rather than re-cloned
+- **AND** the configuration is rebuilt and activated
+
+#### Scenario: Switching remotes needs --force
+
+- **GIVEN** `https://git.example/dotfiles` is this scope's recorded source
+- **WHEN** `xi home switch https://git.example/other` runs without `--force`
+- **THEN** the command exits non-zero naming both remotes
+- **AND** no file and no clone is modified
+
+#### Scenario: Bare switch uses the recorded source
+
+- **GIVEN** a scope with a recorded source
+- **WHEN** `xi home switch` runs with no positional
+- **THEN** the recorded source is used
+- **AND** no network clone is attempted beyond the normal fetch
+
+### Requirement: Remote and installable are distinguished without a flag
+
+Switch MUST decide whether its positional is a config-repo remote or a flake
+installable from the argument's own shape, with no flag on the happy path.
+
+Scp-style `user@host:path`, and bare `https`, `http` and `ssh` URLs, MUST be
+read as config-repo remotes. Everything xi already parses as an installable,
+including `github:owner/repo`, `git+<scheme>://...`, `path:...`, store paths and
+filesystem paths, MUST keep its current meaning.
+
+`--adopt` and `--no-adopt` MUST be available to force either reading.
+
+#### Scenario: A flake reference is not adopted
+
+- **WHEN** `xi system switch github:you/cfg` runs
+- **THEN** the argument is evaluated as a flake installable, as it was before
+  this capability existed
+- **AND** no source is recorded and no clone is made
+
+#### Scenario: An https remote is adopted
+
+- **WHEN** `xi system switch https://git.example/cfg.git` runs
+- **THEN** the argument is read as a config-repo remote and adopted
+
+### Requirement: `sources` is scoped by its parent verb
+
+The maintenance surface MUST be mounted under each scope verb as
+`xi <scope> sources <verb>`, and MUST NOT exist as a top-level `xi sources`
+command.
+
+Scope MUST come from the parent verb, so the `--scope` flag and the
+`[sources] scope` config key MUST NOT exist. The verb-to-scope mapping is the
+resolver owned by [[xi-sources-model]].
+
+This group is for operator maintenance (inspection today; sync, reset and daemon
+control as their changes land). It is not how a machine is set up.
+
+#### Scenario: Scope comes from the verb
+
+- **WHEN** `xi home sources status` runs
+- **THEN** the reported scope is `user`
+- **AND** `xi system sources status`, `xi nixos sources status` and
+  `xi darwin sources status` all report `system`
+
+#### Scenario: No top-level sources command
+
+- **WHEN** `xi sources status` runs
+- **THEN** the command is rejected as an unrecognised subcommand
+
+#### Scenario: Scope cannot be stated twice
+
+- **WHEN** any `xi <scope> sources` verb is invoked with `--scope`
+- **THEN** the flag is rejected as unknown
