@@ -32,7 +32,7 @@ struct Machine {
 
 impl Machine {
   /// `with_sources_dir = false` models a host that never ran
-  /// `xi sources init`.
+  /// `xi <scope> switch <remote-url>`.
   fn new(with_sources_dir: bool) -> Self {
     let tmp = TempDir::new().expect("tempdir");
     let sources_dir = tmp.path().join("sources");
@@ -81,7 +81,9 @@ fn fresh_machine_returns_missing_and_names_the_configuration_surfaces() {
         "config key not named: {names:?}"
       );
       assert!(
-        names.iter().any(|name| name.contains("xi sources init")),
+        names
+          .iter()
+          .any(|name| name.contains("switch <remote-url>")),
         "command not named: {names:?}"
       );
     },

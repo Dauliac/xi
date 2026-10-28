@@ -51,7 +51,6 @@ pub const SOURCES_KEYS: &[&str] = &[
   "poll-interval",
   "require-signed",
   "allowed-signers",
-  "scope",
   "sync-mode",
   "installer",
 ];
@@ -83,6 +82,11 @@ pub enum Provenance {
   TomlFile,
   /// A Nix module default, written to the per-scope `sources.toml`.
   NixModule,
+  /// The remote recorded in the state dir by a previous adoption.
+  ///
+  /// Below every configurable rung: an explicit setting always wins
+  /// over what a past `switch` happened to adopt.
+  StateDir,
   /// The built-in default compiled into xi.
   Default,
 }
@@ -96,6 +100,7 @@ impl Provenance {
       Self::EnvVar => "env-var",
       Self::TomlFile => "toml-file",
       Self::NixModule => "nix-module",
+      Self::StateDir => "state-dir",
       Self::Default => "default",
     }
   }
@@ -191,23 +196,6 @@ str_enum!(
   "lix" => Lix,
   "none" => None,
 );
-
-/// `Scope` already carries `as_str()` and `Display` in the parent module,
-/// so it only needs the parse side of the config spelling here.
-impl Scope {
-  /// Every accepted `[sources] scope` spelling.
-  pub const ALL: &'static [&'static str] = &["system", "user"];
-
-  /// Parse from the `.xi.toml` / env spelling.
-  #[must_use]
-  pub fn from_config_str(raw: &str) -> Option<Self> {
-    match raw {
-      "system" => Some(Self::System),
-      "user" => Some(Self::User),
-      _ => None,
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // ConfigError  -  always points at something the user can edit
@@ -403,8 +391,6 @@ pub struct SourcesConfig {
   pub require_signed:  Option<bool>,
   /// SSH `allowed_signers` file, required when `require_signed`.
   pub allowed_signers: Option<PathBuf>,
-  /// Disambiguates when both scopes are configured and uid is 0.
-  pub scope:           Option<Scope>,
   /// Working-dir reconciliation policy.
   pub sync_mode:       Option<SyncMode>,
   /// Which Nix installer a bootstrap run should use.
@@ -521,12 +507,6 @@ impl SourcesConfig {
           .map_err(|m| fail("allowed-signers", m))?,
       );
     }
-    if let Some(raw_scope) = string("scope")? {
-      config.scope =
-        Some(Scope::from_config_str(raw_scope).ok_or_else(|| {
-          fail("scope", one_of("scope", raw_scope, Scope::ALL))
-        })?);
-    }
     if let Some(raw_mode) = string("sync-mode")? {
       config.sync_mode =
         Some(SyncMode::from_config_str(raw_mode).ok_or_else(|| {
@@ -625,12 +605,6 @@ impl SourcesConfig {
       config.allowed_signers = Some(
         validate_abs_path("allowed-signers", &signers)
           .map_err(|m| fail("allowed-signers", m))?,
-      );
-    }
-    if let Some(scope) = get("scope") {
-      config.scope = Some(
-        Scope::from_config_str(&scope)
-          .ok_or_else(|| fail("scope", one_of("scope", &scope, Scope::ALL)))?,
       );
     }
     if let Some(mode) = get("sync-mode") {
@@ -829,7 +803,6 @@ impl Layers {
       require_signed:  pick!("require-signed", require_signed, Some(false))
         .unwrap_or(false),
       allowed_signers: pick!("allowed-signers", allowed_signers, None),
-      scope:           pick!("scope", scope, None),
       sync_mode:       pick!("sync-mode", sync_mode, Some(SyncMode::Prompt))
         .unwrap_or_default(),
       installer:       pick!("installer", installer, None),
@@ -869,8 +842,6 @@ pub struct ResolvedSources {
   pub require_signed:  bool,
   /// SSH `allowed_signers` file.
   pub allowed_signers: Option<PathBuf>,
-  /// Explicit scope, when the caller could not infer one.
-  pub scope:           Option<Scope>,
   /// Working-dir reconciliation policy. Defaults to [`SyncMode::Prompt`].
   pub sync_mode:       SyncMode,
   /// Installer choice, left to `xi-sources-bootstrap` when unset.
@@ -981,9 +952,6 @@ impl SourcesConfig {
     if let Some(signers) = self.allowed_signers.as_ref() {
       put("allowed-signers", signers.display().to_string().into());
     }
-    if let Some(scope) = self.scope {
-      put("scope", scope.as_str().into());
-    }
     if let Some(mode) = self.sync_mode {
       put("sync-mode", mode.as_str().into());
     }
@@ -1069,4 +1037,83 @@ impl SourcesConfig {
 
     Ok(outcome)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Remote vs installable  -  what a bare `switch` positional means
+// ---------------------------------------------------------------------------
+
+/// How `xi <scope> switch <arg>` read its positional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionalKind {
+  /// A config repo to adopt as this scope's source.
+  ConfigRemote,
+  /// A flake installable, evaluated exactly as it was before this
+  /// capability existed.
+  Installable,
+}
+
+/// Flake-reference schemes that xi already resolves as installables.
+///
+/// `git+https://` and friends are deliberately here rather than in the
+/// remote list: a user who spells the `git+` prefix is asking for the
+/// flake-reference reading, and that spelling predates this capability.
+const INSTALLABLE_SCHEMES: &[&str] = &[
+  "git+https",
+  "git+ssh",
+  "git+file",
+  "github",
+  "gitlab",
+  "sourcehut",
+  "path",
+  "flake",
+  "tarball",
+  "file",
+];
+
+/// Decide whether a `switch` positional names a config repo or a flake.
+///
+/// The rule, from `openspec/changes/xi-sources-config/design.md`:
+/// scp-style `user@host:path` and bare `https`/`http`/`ssh` URLs are
+/// config-repo remotes; everything xi already parses as an installable
+/// keeps its meaning. Requiring a flag was rejected because it breaks
+/// the "same command from zero or on a managed machine" property.
+///
+/// This is shape-only and never touches the network or the filesystem,
+/// so it cannot be slow and cannot behave differently across machines.
+#[must_use]
+pub fn classify_positional(raw: &str) -> PositionalKind {
+  let arg = raw.trim();
+
+  if let Some(idx) = arg.find("://") {
+    let scheme = arg[..idx].to_ascii_lowercase();
+    if INSTALLABLE_SCHEMES.contains(&scheme.as_str()) {
+      return PositionalKind::Installable;
+    }
+    if matches!(scheme.as_str(), "https" | "http" | "ssh") {
+      return PositionalKind::ConfigRemote;
+    }
+    return PositionalKind::Installable;
+  }
+
+  // Scheme-prefixed flake refs without `://`, e.g. `github:owner/repo`.
+  // Checked before the scp rule, since `github:owner/repo` also matches
+  // "colon before any slash".
+  if let Some((prefix, _)) = arg.split_once(':')
+    && INSTALLABLE_SCHEMES.contains(&prefix.to_ascii_lowercase().as_str())
+  {
+    return PositionalKind::Installable;
+  }
+
+  // Filesystem and store paths are installables.
+  if arg.starts_with('.') || arg.starts_with('/') || arg.is_empty() {
+    return PositionalKind::Installable;
+  }
+
+  // What is left that looks like git's scp form is a config remote.
+  if scp_separator(arg).is_some() {
+    return PositionalKind::ConfigRemote;
+  }
+
+  PositionalKind::Installable
 }

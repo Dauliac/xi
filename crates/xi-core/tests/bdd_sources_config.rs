@@ -200,7 +200,7 @@ fn built_in_defaults_match_the_spec() {
 /// Scenario: XDG unset falls back to spec defaults.
 ///
 /// GIVEN `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` are unset
-/// WHEN `xi sources status` runs at user scope
+/// WHEN `xi home sources status` runs
 /// THEN paths resolve to `~/.local/share/xi/sources`, `~/.local/state/xi`,
 /// `~/.config/xi/sources.toml`
 #[test]
@@ -344,8 +344,8 @@ fn full_block_parses_into_every_field() {
     "[sources]\nremote = \"git@github.com:you/cfg.git\"\nbranch = \
      \"trunk\"\nworking-dir = \"/home/you/src/cfg\"\npoll-interval = \
      \"5m\"\nrequire-signed = true\nallowed-signers = \
-     \"/etc/ssh/allowed_signers\"\nscope = \"user\"\nsync-mode = \
-     \"auto-copy\"\ninstaller = \"lix\"\n",
+     \"/etc/ssh/allowed_signers\"\nsync-mode = \"auto-copy\"\ninstaller = \
+     \"lix\"\n",
   );
 
   assert_eq!(config.remote.as_deref(), Some("git@github.com:you/cfg.git"));
@@ -353,7 +353,6 @@ fn full_block_parses_into_every_field() {
   assert_eq!(config.working_dir, Some(PathBuf::from("/home/you/src/cfg")));
   assert_eq!(config.poll_interval, Some(Duration::from_secs(300)));
   assert_eq!(config.require_signed, Some(true));
-  assert_eq!(config.scope, Some(Scope::User));
   assert_eq!(config.sync_mode, Some(SyncMode::AutoCopy));
 }
 
@@ -374,7 +373,7 @@ fn invalid_values_are_rejected_at_load_time() {
     ("branch = \"-dash\"", "must not start with '-'"),
     ("sync-mode = \"sometimes\"", "expected one of"),
     ("installer = \"brew\"", "expected one of"),
-    ("scope = \"global\"", "expected one of"),
+    ("scope = \"user\"", "unknown key 'scope'"),
     ("remote = 42", "must be a string"),
     ("require-signed = \"yes\"", "must be a boolean"),
   ];
@@ -592,7 +591,6 @@ fn written_blocks_round_trip_through_the_loader() {
     poll_interval:   Some(Duration::from_secs(300)),
     require_signed:  Some(true),
     allowed_signers: Some(PathBuf::from("/etc/ssh/allowed_signers")),
-    scope:           Some(Scope::User),
     sync_mode:       Some(SyncMode::Never),
     installer:       None,
   };
@@ -632,5 +630,92 @@ fn nix_module_output_parses_as_a_valid_layer() {
   assert_eq!(
     layer.working_dir,
     Some(PathBuf::from("/home/you/src/nix-config"))
+  );
+}
+
+// -- Requirement: Remote and installable are distinguished without a flag --
+
+/// Scenario: A flake reference is not adopted.
+/// Scenario: An https remote is adopted.
+///
+/// One case per row of the table in
+/// `openspec/changes/xi-sources-config/design.md`, plus the shapes most
+/// likely to be misread. Adopting something the user meant as a
+/// one-off flake ref would silently repoint what the machine deploys
+/// from, so this table is the safety property of the whole entrypoint.
+#[test]
+fn positional_shape_decides_remote_versus_installable() {
+  use xi_core::sources::config::{PositionalKind, classify_positional};
+
+  let remotes = [
+    "git@github.com:you/cfg.git",
+    "git@git.example.org:cfg",
+    "https://git.example/owner/repo.git",
+    "https://git.example/dotfiles",
+    "http://git.example/dotfiles",
+    "ssh://git@example.org/cfg",
+  ];
+  for arg in remotes {
+    assert_eq!(
+      classify_positional(arg),
+      PositionalKind::ConfigRemote,
+      "`{arg}` should be read as a config-repo remote"
+    );
+  }
+
+  let installables = [
+    ".",
+    "./cfg",
+    "/abs/path",
+    "/nix/store/abc-foo",
+    "github:owner/repo",
+    "gitlab:owner/repo",
+    "sourcehut:~owner/repo",
+    "git+https://git.example/repo",
+    "git+ssh://git@example.org/cfg",
+    "path:/abs/path",
+    "flake:nixpkgs",
+    "nixpkgs",
+    "",
+  ];
+  for arg in installables {
+    assert_eq!(
+      classify_positional(arg),
+      PositionalKind::Installable,
+      "`{arg}` should keep its pre-existing installable meaning"
+    );
+  }
+}
+
+/// The `git+` prefix is the user explicitly asking for the flake
+/// reading of a URL that would otherwise be adopted.
+#[test]
+fn git_plus_prefix_opts_out_of_adoption() {
+  use xi_core::sources::config::{PositionalKind, classify_positional};
+
+  assert_eq!(
+    classify_positional("https://git.example/cfg"),
+    PositionalKind::ConfigRemote
+  );
+  assert_eq!(
+    classify_positional("git+https://git.example/cfg"),
+    PositionalKind::Installable
+  );
+}
+
+/// Classification is shape-only: no network, no filesystem, so it
+/// cannot differ between machines or hang on a slow DNS lookup.
+#[test]
+fn classification_does_not_depend_on_what_exists_on_disk() {
+  use xi_core::sources::config::{PositionalKind, classify_positional};
+
+  // Neither path exists in the test environment.
+  assert_eq!(
+    classify_positional("/definitely/not/here"),
+    PositionalKind::Installable
+  );
+  assert_eq!(
+    classify_positional("https://definitely.invalid/nope.git"),
+    PositionalKind::ConfigRemote
   );
 }

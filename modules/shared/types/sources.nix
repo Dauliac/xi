@@ -81,20 +81,6 @@
         '';
       };
 
-      scope = lib.mkOption {
-        type = lib.types.nullOr (
-          lib.types.enum [
-            "system"
-            "user"
-          ]
-        );
-        default = null;
-        description = ''
-          Disambiguates when both scopes are configured and the command
-          runs as root. Usually inferred and left null.
-        '';
-      };
-
       syncMode = lib.mkOption {
         type = lib.types.nullOr (
           lib.types.enum [

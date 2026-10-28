@@ -36,25 +36,41 @@ Live state in beads under `change:xi-sources-config`.
 - [x] 4.3 `modules/flake-parts/sources.nix`: flake-parts facade so a flake can
       declare its own sources config declaratively.
 
-## 5. `xi sources init` (P1)
+## 5. Switch entrypoint + CLI topology (P1)
 
-- [x] 5.1 Positional `<remote-url>`, flags `--branch`, `--working-dir`,
-      `--scope {system|user|auto}` (auto picks system when running as root, user
-      otherwise).
-- [x] 5.2 Writes `.xi.toml` if not present; appends `[sources]` block if present
-      without one; refuses to overwrite an existing block without `--force`.
-- [x] 5.3 Performs the first clone into the sources dir; emits `Ready` on
-      success, `Degraded` if clone succeeded but trust requires signatures the
-      HEAD lacks.
+See `design.md` for why this replaces the former `xi sources init`.
+
+- [x] 5.1 Mount `sources` under each scope verb
+      (`xi {nixos,darwin,system,home} sources`); drop the top-level `xi sources`
+      group, the `--scope` flag and the `[sources] scope` key. Scope comes from
+      the parent verb.
+- [x] 5.2 Add the optional `[<remote-url>]` positional to `xi <scope> switch`,
+      with the shape-based discrimination rule (scp-style and bare
+      https/http/ssh are remotes; everything xi already parses as an installable
+      stays one) plus `--adopt` / `--no-adopt` overrides.
+- [x] 5.3 Adopt on switch: create the dirs, clone or fast-forward, record the
+      remote as this scope's source. Idempotent for the same remote; refuse a
+      different remote without `--force`.
+- [x] 5.4 Bare `xi <scope> switch` resolves the recorded source and builds from
+      the sources dir.
+- [x] 5.5 Installer pre-check wired into every switch, ahead of any evaluation.
+      No-op and no network when `nix` is already usable. Owned by
+      [[xi-sources-bootstrap]]; this task is the call site.
 
 ## 6. Tests (P1)
 
 - [x] 6.1 BDD scenario per precedence level.
 - [x] 6.2 Unit: XDG fallback paths when `XDG_DATA_HOME` / `XDG_STATE_HOME` /
       `XDG_CONFIG_HOME` are unset.
-- [x] 6.3 Unit: `init` refuses to overwrite without `--force`.
+- [x] 6.3 Unit: the discrimination rule, one case per row of the design.md
+      table.
+- [x] 6.4 BDD: adopt on a fresh machine, re-adopt the same remote, refuse a
+      different remote without `--force`.
+- [x] 6.5 BDD: `xi home sources status` reports user scope and the three system
+      verbs report system; `--scope` is rejected.
 
 ## 7. Follow-ups (P4)
 
-- [ ] 7.1 Interactive `xi sources init` TUI. Deferred.
+- [ ] 7.1 Interactive remote-picker TUI for a bare `xi <scope> switch` on an
+      unconfigured machine. Deferred.
 - [ ] 7.2 Config-file includes (`.xi.toml` sourcing a shared snippet). Deferred.

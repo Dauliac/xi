@@ -27,7 +27,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod args;
 pub mod config;
+pub mod switch;
 
 // ---------------------------------------------------------------------------
 // Scope  -  system vs user
@@ -262,6 +264,7 @@ pub struct RefLineage {
 /// Anything else found there is reported as a `Degraded` reason rather than
 /// silently ignored.
 pub const STATE_FILE_NAMES: &[&str] = &[
+  "remote-url",
   "remote-head",
   "working-head",
   "sources-head",
@@ -577,8 +580,9 @@ impl ConfigureHint {
     vec![
       Self {
         kind:   HintKind::Command,
-        name:   "xi sources init <remote-url>".to_owned(),
-        detail: "clone the config repo and record it for this scope".to_owned(),
+        name:   "xi <scope> switch <remote-url>".to_owned(),
+        detail: "adopt the config repo for this scope and switch to it"
+          .to_owned(),
       },
       Self {
         kind:   HintKind::Env,
@@ -890,7 +894,7 @@ mod tests {
           configure_with.iter().map(|h| h.name.as_str()).collect();
         assert!(names.iter().any(|n| n.contains("XI_SOURCES_REMOTE")));
         assert!(names.iter().any(|n| n.contains("[sources] remote")));
-        assert!(names.iter().any(|n| n.contains("xi sources init")));
+        assert!(names.iter().any(|n| n.contains("switch <remote-url>")));
       },
       other => panic!("expected Missing, got {other:?}"),
     }

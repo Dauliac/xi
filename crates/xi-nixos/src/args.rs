@@ -59,6 +59,9 @@ impl OsArgs {
           variant: ReplVariant::Os,
         })
       },
+      // `sources` only reads config and the state dir; it never
+      // evaluates a flake, so it needs no Nix features.
+      OsSubcommand::Sources(_) => Box::new(FlakeFeatures),
       OsSubcommand::Switch(args)
       | OsSubcommand::Boot(args)
       | OsSubcommand::Test(args) => {
@@ -125,6 +128,9 @@ pub enum OsSubcommand {
 
   /// Build a `NixOS` disk-image variant
   BuildImage(OsBuildImageArgs),
+
+  /// Inspect and manage the config repo this scope deploys from
+  Sources(xi_core::sources::args::SourcesProxy),
 }
 
 #[derive(Debug, Args)]
@@ -227,7 +233,8 @@ impl HasCacheArgs for OsArgs {
       OsSubcommand::Build(a) => Some(&mut a.common.cache),
       OsSubcommand::BuildVm(a) => Some(&mut a.common.common.cache),
       OsSubcommand::BuildImage(a) => Some(&mut a.common.common.cache),
-      OsSubcommand::Repl(_)
+      OsSubcommand::Sources(_)
+      | OsSubcommand::Repl(_)
       | OsSubcommand::Info(_)
       | OsSubcommand::Rollback(_) => None,
     }
@@ -243,7 +250,8 @@ impl HasBuildArgs for OsArgs {
       OsSubcommand::Build(a) => Some(&mut a.common.passthrough),
       OsSubcommand::BuildVm(a) => Some(&mut a.common.common.passthrough),
       OsSubcommand::BuildImage(a) => Some(&mut a.common.common.passthrough),
-      OsSubcommand::Repl(_)
+      OsSubcommand::Sources(_)
+      | OsSubcommand::Repl(_)
       | OsSubcommand::Info(_)
       | OsSubcommand::Rollback(_) => None,
     }
@@ -257,7 +265,8 @@ impl HasBuildArgs for OsArgs {
       OsSubcommand::Build(a) => Some(&mut a.common.no_nom),
       OsSubcommand::BuildVm(a) => Some(&mut a.common.common.no_nom),
       OsSubcommand::BuildImage(a) => Some(&mut a.common.common.no_nom),
-      OsSubcommand::Repl(_)
+      OsSubcommand::Sources(_)
+      | OsSubcommand::Repl(_)
       | OsSubcommand::Info(_)
       | OsSubcommand::Rollback(_) => None,
     }
@@ -308,6 +317,9 @@ pub struct CommonRebuildArgs {
 
   #[command(flatten)]
   pub installable: InstallableArgs,
+
+  #[command(flatten)]
+  pub sources: xi_core::sources::switch::SwitchSourcesArgs,
 
   /// Don't use nix-output-monitor for the build process
   #[arg(long, env = "XI_NO_NOM", value_parser = clap::builder::BoolishValueParser::new())]

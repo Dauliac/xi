@@ -41,6 +41,9 @@ impl DarwinArgs {
           variant: ReplVariant::Darwin,
         })
       },
+      // `sources` only reads config and the state dir; it never
+      // evaluates a flake, so it needs no Nix features.
+      DarwinSubcommand::Sources(_) => Box::new(FlakeFeatures),
       DarwinSubcommand::Switch(args) | DarwinSubcommand::Build(args) => {
         if args.uses_flakes() {
           Box::new(FlakeFeatures)
@@ -60,6 +63,9 @@ pub enum DarwinSubcommand {
   Build(DarwinRebuildArgs),
   /// Load a nix-darwin configuration in a Nix REPL
   Repl(DarwinReplArgs),
+
+  /// Inspect and manage the config repo this scope deploys from
+  Sources(xi_core::sources::args::SourcesProxy),
 }
 
 #[derive(Debug, Args)]
@@ -123,7 +129,7 @@ impl HasCacheArgs for DarwinArgs {
       DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
         Some(&mut a.common.cache)
       },
-      DarwinSubcommand::Repl(_) => None,
+      DarwinSubcommand::Repl(_) | DarwinSubcommand::Sources(_) => None,
     }
   }
 }
@@ -134,7 +140,7 @@ impl HasBuildArgs for DarwinArgs {
       DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
         Some(&mut a.common.passthrough)
       },
-      DarwinSubcommand::Repl(_) => None,
+      DarwinSubcommand::Repl(_) | DarwinSubcommand::Sources(_) => None,
     }
   }
 
@@ -143,7 +149,7 @@ impl HasBuildArgs for DarwinArgs {
       DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
         Some(&mut a.common.no_nom)
       },
-      DarwinSubcommand::Repl(_) => None,
+      DarwinSubcommand::Repl(_) | DarwinSubcommand::Sources(_) => None,
     }
   }
 }

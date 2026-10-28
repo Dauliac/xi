@@ -30,6 +30,9 @@ pub enum HomeSubcommand {
 
   /// Load a home-manager configuration in a Nix REPL
   Repl(HomeReplArgs),
+
+  /// Inspect and manage the config repo this scope deploys from
+  Sources(xi_core::sources::args::SourcesProxy),
 }
 
 #[derive(Debug, Args)]
@@ -57,6 +60,9 @@ impl HomeArgs {
           Box::new(LegacyFeatures)
         }
       },
+      // `sources` only reads config and the state dir; it never
+      // evaluates a flake, so it needs no Nix features.
+      HomeSubcommand::Sources(_) => Box::new(FlakeFeatures),
     }
   }
 }
@@ -136,7 +142,7 @@ impl HasCacheArgs for HomeArgs {
       HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
         Some(&mut a.common.cache)
       },
-      HomeSubcommand::Repl(_) => None,
+      HomeSubcommand::Repl(_) | HomeSubcommand::Sources(_) => None,
     }
   }
 }
@@ -147,7 +153,7 @@ impl HasBuildArgs for HomeArgs {
       HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
         Some(&mut a.common.passthrough)
       },
-      HomeSubcommand::Repl(_) => None,
+      HomeSubcommand::Repl(_) | HomeSubcommand::Sources(_) => None,
     }
   }
 
@@ -156,7 +162,7 @@ impl HasBuildArgs for HomeArgs {
       HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
         Some(&mut a.common.no_nom)
       },
-      HomeSubcommand::Repl(_) => None,
+      HomeSubcommand::Repl(_) | HomeSubcommand::Sources(_) => None,
     }
   }
 }

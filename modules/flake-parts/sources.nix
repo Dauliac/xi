@@ -33,7 +33,7 @@ in
 
   config = lib.mkIf (cfg.enable && cfg.sources.enable) {
     xi.settings.sources = lib.filterAttrs (_: v: v != null) {
-      inherit (cfg.sources) remote branch scope installer;
+      inherit (cfg.sources) remote branch installer;
       working-dir = if cfg.sources.workingDir == null then null else toString cfg.sources.workingDir;
       poll-interval = cfg.sources.pollInterval;
       require-signed = cfg.sources.requireSigned;

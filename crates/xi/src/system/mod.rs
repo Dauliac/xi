@@ -37,6 +37,7 @@ impl SystemArgs {
         }
         args.rebuild(&Build, elevation)
       },
+      SystemSubcommand::Sources(proxy) => proxy.run(Self::scope()),
     }
   }
 }
@@ -72,11 +73,14 @@ impl SystemRebuildArgs {
 
     debug!("Output path: {out_path:?}");
 
-    let installable = self
-      .common
-      .installable
-      .clone()
-      .resolve_or_default(CommandContext::System)?;
+    // Switch pre-steps: installer check, then adopt a config repo if
+    // the positional named one. Everything else passes through.
+    let installable = xi_core::sources::switch::prepare(
+      crate::system::args::SystemArgs::scope(),
+      self.common.installable.clone(),
+      &self.common.sources,
+    )?
+    .resolve_or_default(CommandContext::System)?;
 
     if self.update_args.update_all || self.update_args.update_input.is_some() {
       update(
