@@ -247,7 +247,7 @@ and `xi sources status` reports `Missing`.
 | `remote`          | string | none       | Remote git URL (`https://`, `ssh://`, scp-style, or local path) |
 | `branch`          | string | `"main"`   | Branch to track                                                 |
 | `working-dir`     | string | none       | Absolute path to your editable clone                            |
-| `poll-interval`   | string | `"60s"`    | Gitops poll cadence, e.g. `60s`, `5m`                           |
+| `poll-interval`   | string | `"60s"`    | GitOps poll cadence, e.g. `60s`, `5m`                           |
 | `require-signed`  | bool   | `false`    | Refuse to advance past unsigned commits                         |
 | `allowed-signers` | string | none       | Absolute path to an SSH `allowed_signers` file                  |
 | `scope`           | string | none       | `system` or `user`; required when both are configured as root   |
