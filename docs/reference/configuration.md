@@ -240,7 +240,7 @@ sources = ["src/**/*.rs"]
 Points xi at the git repo that holds your NixOS / home-manager / darwin
 configuration, so `xi <scope> switch` works from any directory on the machine.
 All keys are optional; a `.xi.toml` without a `[sources]` block keeps working
-and `xi sources status` reports `Missing`.
+and `xi <scope> sources status` reports `Missing`.
 
 | Key               | Type   | Default    | Description                                                     |
 | ----------------- | ------ | ---------- | --------------------------------------------------------------- |
@@ -250,7 +250,6 @@ and `xi sources status` reports `Missing`.
 | `poll-interval`   | string | `"60s"`    | GitOps poll cadence, e.g. `60s`, `5m`                           |
 | `require-signed`  | bool   | `false`    | Refuse to advance past unsigned commits                         |
 | `allowed-signers` | string | none       | Absolute path to an SSH `allowed_signers` file                  |
-| `scope`           | string | none       | `system` or `user`; required when both are configured as root   |
 | `sync-mode`       | string | `"prompt"` | `prompt`, `auto-copy`, or `never`                               |
 | `installer`       | string | none       | `detsys`, `lix`, or `none`                                      |
 
@@ -260,9 +259,18 @@ and paths are validated at the same moment, not at first fetch. `working-dir`
 and `allowed-signers` must be absolute, because sources config is read by
 daemons and by `xi switch` runs started from arbitrary directories.
 
+Point a machine at this repo with `xi <scope> switch <remote-url>`. The same
+command works on a bare machine and on one already managed: it probes for Nix
+first, clones or fast-forwards the repo into the sources dir, records it, then
+builds. A later bare `xi <scope> switch` reuses what was recorded. Re-pointing a
+scope at a different remote needs `--force`.
+
+Scope is not a key: it comes from the verb you invoke (`xi home ...` is user
+scope, `xi nixos|darwin|system ...` is system scope).
+
 Precedence per key is CLI flag → `XI_SOURCES_*` → `.xi.toml [sources]` → Nix
 module (`/etc/xi/sources.toml` or `$XDG_CONFIG_HOME/xi/sources.toml`) → built-in
-default. `xi sources status --explain` reports which rung answered.
+default. `xi <scope> sources status --explain` reports which rung answered.
 
 Resolved paths per scope:
 

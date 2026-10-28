@@ -17,7 +17,6 @@
           "poll-interval" = sources.pollInterval;
           "require-signed" = sources.requireSigned;
           "allowed-signers" = sources.allowedSigners;
-          scope = sources.scope;
           "sync-mode" = sources.syncMode;
           installer = sources.installer;
         };

@@ -27,6 +27,9 @@ impl SystemArgs {
   #[must_use]
   pub fn get_feature_requirements(&self) -> Box<dyn FeatureRequirements> {
     match &self.subcommand {
+      // `sources` only reads config and the state dir; it never
+      // evaluates a flake, so it needs no Nix features.
+      SystemSubcommand::Sources(_) => Box::new(FlakeFeatures),
       SystemSubcommand::Switch(_) | SystemSubcommand::Build(_) => {
         Box::new(FlakeFeatures)
       },
@@ -40,6 +43,9 @@ pub enum SystemSubcommand {
   Switch(SystemRebuildArgs),
   /// Build a system-manager configuration
   Build(SystemRebuildArgs),
+
+  /// Inspect and manage the config repo this scope deploys from
+  Sources(xi_core::sources::args::SourcesProxy),
 }
 
 #[derive(Debug, Args)]
@@ -80,6 +86,7 @@ impl SystemRebuildArgs {
 impl HasCacheArgs for SystemArgs {
   fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
     match &mut self.subcommand {
+      SystemSubcommand::Sources(_) => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.cache)
       },
@@ -90,6 +97,7 @@ impl HasCacheArgs for SystemArgs {
 impl HasBuildArgs for SystemArgs {
   fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
     match &mut self.subcommand {
+      SystemSubcommand::Sources(_) => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.passthrough)
       },
@@ -98,6 +106,7 @@ impl HasBuildArgs for SystemArgs {
 
   fn no_nom_mut(&mut self) -> Option<&mut bool> {
     match &mut self.subcommand {
+      SystemSubcommand::Sources(_) => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.no_nom)
       },

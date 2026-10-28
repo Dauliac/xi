@@ -101,6 +101,7 @@ impl args::OsArgs {
       OsSubcommand::Info(args) => args.info(),
       OsSubcommand::Rollback(args) => args.rollback(elevation),
       OsSubcommand::BuildImage(args) => args.build_image(&elevation),
+      OsSubcommand::Sources(proxy) => proxy.run(Self::scope()),
     }
   }
 }
@@ -563,11 +564,14 @@ impl OsRebuildArgs {
     target_hostname: &str,
     final_attrs: Option<&[&str]>,
   ) -> Result<Installable> {
-    let installable = self
-      .common
-      .installable
-      .clone()
-      .resolve_or_default(CommandContext::Os)?;
+    // Switch pre-steps: installer check, then adopt a config repo if
+    // the positional named one. Everything else passes through.
+    let installable = xi_core::sources::switch::prepare(
+      crate::args::OsArgs::scope(),
+      self.common.installable.clone(),
+      &self.common.sources,
+    )?
+    .resolve_or_default(CommandContext::Os)?;
 
     toplevel_for(
       target_hostname,

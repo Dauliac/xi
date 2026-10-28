@@ -129,7 +129,6 @@ and replace hyphens with underscores.
 | `XI_SOURCES_POLL_INTERVAL`   | `poll-interval`   | GitOps poll cadence, e.g. `60s`, `5m` (default `60s`)                   |
 | `XI_SOURCES_REQUIRE_SIGNED`  | `require-signed`  | Refuse to advance past unsigned commits                                 |
 | `XI_SOURCES_ALLOWED_SIGNERS` | `allowed-signers` | Absolute path to an SSH `allowed_signers` file                          |
-| `XI_SOURCES_SCOPE`           | `scope`           | `system` or `user`; disambiguates when both are configured              |
 | `XI_SOURCES_SYNC_MODE`       | `sync-mode`       | `prompt`, `auto-copy`, or `never` (default `prompt`)                    |
 | `XI_SOURCES_INSTALLER`       | `installer`       | `detsys`, `lix`, or `none`                                              |
 | `XI_SOURCES_STATE_DIR`       | none (env only)   | Override the resolved state dir; absolute paths only                    |
@@ -156,7 +155,7 @@ Sources config resolves through five rungs, highest first:
 
 Each key walks the ladder independently, so a `.xi.toml` `branch` and an
 `XI_SOURCES_REMOTE` combine rather than one shadowing the other wholesale. Run
-`xi sources status --explain` to see which rung answered for each key.
+`xi <scope> sources status --explain` to see which rung answered for each key.
 
 ## Configuration and diagnostics
 

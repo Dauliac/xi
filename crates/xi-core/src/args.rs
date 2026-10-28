@@ -153,6 +153,9 @@ pub struct CommonRebuildArgs {
   #[command(flatten)]
   pub installable: InstallableArgs,
 
+  #[command(flatten)]
+  pub sources: crate::sources::switch::SwitchSourcesArgs,
+
   /// Don't use nix-output-monitor for the build process
   #[arg(long, env = "XI_NO_NOM", value_parser = clap::builder::BoolishValueParser::new())]
   pub no_nom: bool,

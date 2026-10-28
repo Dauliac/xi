@@ -86,6 +86,14 @@ pub fn main() -> Result<()> {
     eprintln!("{notification}");
   }
 
+  // The installer pre-check has to run before `verify_nix_environment`,
+  // which shells out to `nix --version` and would otherwise fail first
+  // with "No output from nix --version command". On a machine that has
+  // Nix this is a PATH lookup and nothing more.
+  if let Some(scope) = args.command.sources_scope() {
+    xi_core::sources::switch::ensure_nix_available_for(scope)?;
+  }
+
   // Check Nix version upfront
   xi_core::checks::verify_nix_environment()?;
 

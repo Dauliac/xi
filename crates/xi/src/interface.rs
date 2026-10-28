@@ -71,7 +71,7 @@ pub struct Main {
   disable_help_subcommand = true,
   subcommand_help_heading = "Commands",
   after_help = "\x1b[1mCommand groups:\x1b[0m
-  Config mgmt:  os, home, darwin, system, sources
+  Config mgmt:  os, home, darwin, system
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
                 doctor, materialize
   Deployment:   deploy
@@ -89,8 +89,6 @@ pub enum XiCommand {
   Home(xi_home::args::HomeArgs),
   Darwin(xi_darwin::args::DarwinArgs),
   System(crate::system::args::SystemArgs),
-  /// Inspect the config-repo sources model
-  Sources(crate::sources::args::SourcesProxy),
   /// Rejected on purpose: names the four concrete switch verbs.
   #[command(hide = true)]
   Switch,
@@ -150,6 +148,22 @@ pub enum CompletionShell {
 }
 
 impl XiCommand {
+  /// The sources scope this command deploys, if it is a scope verb.
+  ///
+  /// Only the four config-management verbs have a scope; everything
+  /// else (`build`, `search`, `agent`, ...) is scope-less and skips the
+  /// installer pre-check entirely.
+  #[must_use]
+  pub const fn sources_scope(&self) -> Option<xi_core::sources::Scope> {
+    match self {
+      Self::Os(..) => Some(xi_nixos::args::OsArgs::scope()),
+      Self::Home(..) => Some(xi_home::args::HomeArgs::scope()),
+      Self::Darwin(..) => Some(xi_darwin::args::DarwinArgs::scope()),
+      Self::System(..) => Some(crate::system::args::SystemArgs::scope()),
+      _ => None,
+    }
+  }
+
   #[must_use]
   pub fn get_feature_requirements(&self) -> Box<dyn FeatureRequirements> {
     match self {
@@ -172,7 +186,6 @@ impl XiCommand {
       | Self::Materialize(..)
       | Self::Deploy(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Agent(..)
-      | Self::Sources(..)
       | Self::Switch
       | Self::Search(..)
       | Self::Auth(..)
@@ -361,7 +374,6 @@ impl XiCommand {
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
       Self::Auth(args) => xi_auth::run(&args),
-      Self::Sources(proxy) => proxy.run(),
       Self::Switch => crate::sources::verbless_switch(),
       Self::Cache(proxy) => proxy.run(),
       Self::Clean(proxy) => proxy.command.run(elevation),
