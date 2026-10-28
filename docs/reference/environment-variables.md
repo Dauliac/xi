@@ -126,7 +126,7 @@ and replace hyphens with underscores.
 | `XI_SOURCES_REMOTE`          | `remote`          | Remote git URL of the config repo                                       |
 | `XI_SOURCES_BRANCH`          | `branch`          | Branch to track (default `main`)                                        |
 | `XI_SOURCES_WORKING_DIR`     | `working-dir`     | Absolute path to your editable clone, so `xi switch` works from any CWD |
-| `XI_SOURCES_POLL_INTERVAL`   | `poll-interval`   | Gitops poll cadence, e.g. `60s`, `5m` (default `60s`)                   |
+| `XI_SOURCES_POLL_INTERVAL`   | `poll-interval`   | GitOps poll cadence, e.g. `60s`, `5m` (default `60s`)                   |
 | `XI_SOURCES_REQUIRE_SIGNED`  | `require-signed`  | Refuse to advance past unsigned commits                                 |
 | `XI_SOURCES_ALLOWED_SIGNERS` | `allowed-signers` | Absolute path to an SSH `allowed_signers` file                          |
 | `XI_SOURCES_SCOPE`           | `scope`           | `system` or `user`; disambiguates when both are configured              |

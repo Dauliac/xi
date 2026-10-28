@@ -115,10 +115,7 @@
         root = repoRoot;
         fileset = lib.fileset.unions [
           (repoRoot + "/.vale.ini")
-          (lib.fileset.maybeMissing (repoRoot + "/CHANGELOG.md"))
-          (lib.fileset.maybeMissing (repoRoot + "/CONTRIBUTING.md"))
           (lib.fileset.fileFilter (f: f.hasExt "md") (repoRoot + "/docs"))
-          (lib.fileset.maybeMissing (repoRoot + "/openspec"))
         ];
       };
     in

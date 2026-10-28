@@ -327,3 +327,5 @@ dev
 direnv
 Direnv
 zsh
+GitOps
+unparseable
