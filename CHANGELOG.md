@@ -22,6 +22,12 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- Vale prose linting is now scoped to `docs/` only. `openspec/**/*.md` was in
+  scope and contributed 1259 errors, which broke both the `Lint docs` and
+  `Deploy Documentation` workflows. Those files are internal design artifacts
+  rather than published prose. `CHANGELOG.md` and `CONTRIBUTING.md` also leave
+  Vale's scope as a result.
+
 ### Removed
 
 ## 4.4.0
