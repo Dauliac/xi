@@ -266,6 +266,7 @@ impl World {
     sync(&SyncRequest {
       sources_dir: &self.sources_dir,
       working_dir: &self.working_dir,
+      state_dir: &self.state_dir,
       force_dirty,
       what: "xi home sources sync",
     })
@@ -551,6 +552,7 @@ fn sc_x_007_prompt_announces_the_sync_and_leaves_the_working_dir_alone() {
     apply_auto_sync(
       SyncMode::Prompt,
       &world.sources_dir,
+      &world.state_dir,
       Some(&world.working_dir),
       WHAT,
     )
@@ -576,6 +578,7 @@ fn sc_x_010_auto_copy_syncs_a_clean_tree_and_defers_a_dirty_one() {
     apply_auto_sync(
       SyncMode::AutoCopy,
       &world.sources_dir,
+      &world.state_dir,
       Some(&world.working_dir),
       WHAT,
     )
@@ -592,6 +595,7 @@ fn sc_x_010_auto_copy_syncs_a_clean_tree_and_defers_a_dirty_one() {
   let applied = apply_auto_sync(
     SyncMode::AutoCopy,
     &world.sources_dir,
+    &world.state_dir,
     Some(&world.working_dir),
     WHAT,
   )
@@ -613,6 +617,7 @@ fn sc_x_010_auto_copy_syncs_a_clean_tree_and_defers_a_dirty_one() {
     apply_auto_sync(
       SyncMode::AutoCopy,
       &world.sources_dir,
+      &world.state_dir,
       Some(&world.working_dir),
       WHAT,
     )
@@ -651,6 +656,7 @@ fn sc_x_011_never_reports_the_sync_but_never_writes() {
       apply_auto_sync(
         SyncMode::Never,
         &world.sources_dir,
+        &world.state_dir,
         Some(&world.working_dir),
         WHAT,
       )
@@ -849,6 +855,7 @@ fn xi_5ytq_auto_copy_sync_does_not_make_the_next_switch_refuse_itself() {
   match apply_auto_sync(
     SyncMode::AutoCopy,
     &world.sources_dir,
+    &world.state_dir,
     Some(&world.working_dir),
     WHAT,
   )
