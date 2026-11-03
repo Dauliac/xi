@@ -28,13 +28,18 @@ use xi_sources_observability::{
 /// (`with_span_list(true)`) rather than [`subscriber::init_with_writer`]'s
 /// current-span-only shape, so this test can assert a phase close is
 /// nested under the tick, not just that it happened.
+///
+/// `FmtSpan::NONE`, not `CLOSE`: `fields::TickSpan`/`fields::PhaseSpan`
+/// now emit their own explicit `"close"` event while still entered (see
+/// `fields`'s top doc comment), so a second, `fmt`-synthesized close
+/// event here would double every count this file asserts on.
 fn init_with_ancestry(writer: CaptureWriter) -> tracing::subscriber::DefaultGuard {
   let layer = fmt::layer()
     .json()
     .flatten_event(true)
     .with_current_span(true)
     .with_span_list(true)
-    .with_span_events(fmt::format::FmtSpan::CLOSE)
+    .with_span_events(fmt::format::FmtSpan::NONE)
     .with_writer(writer)
     .with_filter(tracing_subscriber::filter::LevelFilter::from_level(
       LogLevel::Info.to_tracing(),
@@ -117,14 +122,11 @@ fn a_tick_that_stops_early_emits_only_the_phases_it_reached() {
 /// inside an explicitly entered phase carries the tick in its span
 /// ancestry.
 ///
-/// The close-synthesized events the other tests inspect do not
-/// populate `tracing_subscriber`'s span-list ancestry (its
-/// `with_event_from_span!` macro gives the synthetic event the closing
-/// span itself as parent, but by `on_close` time the registry's scope
-/// walk over it comes back empty) - this test uses a genuine
-/// contextual event instead, which is how a real daemon would log
-/// progress from inside a phase, to isolate and prove the parenting
-/// `fields::TickSpan::phase` establishes.
+/// Uses a manually logged event (rather than inspecting `finish`'s own
+/// `"close"` event, which by now is a genuine contextual event too -
+/// see `fields`'s top doc comment) only because it is the clearest way
+/// to isolate and prove the parenting `fields::TickSpan::phase`
+/// establishes, independent of anything `finish` does.
 #[test]
 fn a_phase_is_really_nested_under_its_tick() {
   let writer = CaptureWriter::new();
