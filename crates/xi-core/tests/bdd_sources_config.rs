@@ -38,6 +38,7 @@ use xi_core::sources::{
     ConfigError,
     DEFAULT_BRANCH,
     DEFAULT_POLL_INTERVAL,
+    Installer,
     Layers,
     Provenance,
     RebootWindow,
@@ -365,6 +366,7 @@ fn full_block_parses_into_every_field() {
   assert_eq!(config.poll_interval, Some(Duration::from_secs(300)));
   assert_eq!(config.require_signed, Some(true));
   assert_eq!(config.sync_mode, Some(SyncMode::AutoCopy));
+  assert_eq!(config.installer, Some(Installer::Lix));
 }
 
 /// Validation is a load-time concern, not a first-fetch one (SC-C-006),
@@ -631,7 +633,7 @@ fn written_blocks_round_trip_through_the_loader() {
     allowed_signers: Some(PathBuf::from("/etc/ssh/allowed_signers")),
     gpg_public_keys: Some(PathBuf::from("/etc/xi/gpg.asc")),
     sync_mode:       Some(SyncMode::Never),
-    installer:       None,
+    installer:       Some(Installer::Detsys),
     reboot_window:   Some(RebootWindow::Daily {
       start: 2 * 60,
       end:   4 * 60,
