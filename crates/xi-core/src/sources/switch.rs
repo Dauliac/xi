@@ -18,7 +18,14 @@ use tracing::{debug, info, warn};
 use super::{
   RefLineage,
   Scope,
-  config::{Installer, PositionalKind, ScopePaths, SourcesConfig, classify_positional},
+  config::{
+    DEFAULT_BRANCH,
+    Installer,
+    PositionalKind,
+    ScopePaths,
+    SourcesConfig,
+    classify_positional,
+  },
   conflict::{
     AutoSync,
     DIRTY_SOURCE_MARKER,
@@ -30,8 +37,6 @@ use super::{
   },
   lock::{ActorName, LockOptions, SourcesLock},
   read_state_file,
-  shadow::ShadowFetch,
-  transaction::Transaction,
   write_state_file,
 };
 use crate::installable::{Installable, InstallableArgs};
@@ -231,18 +236,17 @@ pub fn prepare(
 /// `ActorName::Switch` is the top of the spec's priority order, so an
 /// operator waiting at a terminal is granted ahead of a daemon tick
 /// that queues behind them. The wait budget is the library default of
-/// one lease unless the operator overrides it with `XI_SOURCES_LOCK_WAIT`
-/// (see xi-aiw7); a switch that cannot get the lock inside that reports
-/// the holder's record and the estimated wait rather than failing bare.
-/// While it waits, a status line naming the holder repeats every couple
-/// of seconds rather than leaving the terminal silent for the whole
-/// budget.
+/// one lease: a switch that cannot get the lock inside that reports the
+/// holder's record and the estimated wait rather than failing bare.
 fn take_lock(scope: Scope, paths: &ScopePaths) -> Result<SourcesLock> {
-  let intent = format!("xi {} switch", scope.as_str());
-  let opts = LockOptions::from_env(ActorName::Switch, intent)
-    .map_err(|err| eyre!("{err}"))?
-    .with_progress();
-  SourcesLock::acquire(&paths.state_dir, &opts).map_err(|err| eyre!("{err}"))
+  SourcesLock::acquire(
+    &paths.state_dir,
+    &LockOptions::new(
+      ActorName::Switch,
+      format!("xi {} switch", scope.as_str()),
+    ),
+  )
+  .map_err(|err| eyre!("{err}"))
 }
 
 /// Ask the conflict policy which tree to build, and turn it into an
@@ -368,9 +372,39 @@ fn apply_queued_sync(
 /// surprise it prevents. `sync_mode` is what resolves this properly once
 /// the machine is managed.
 fn warn_on_dirty_adoption(remote: &str, working_dir: Option<&Path>) {
-  let candidates = [working_dir, Some(Path::new("."))];
+  if let Some(message) = dirty_adoption_warning(remote, working_dir) {
+    warn!("{message}");
+  }
+}
 
-  for dir in candidates.into_iter().flatten() {
+/// The candidates checked for a dirty checkout tracking `remote`.
+///
+/// `working_dir` first, when configured, then the process's own CWD -
+/// adoption is frequently run from inside the checkout being adopted,
+/// before any `.xi.toml` has recorded a working dir at all.
+fn dirty_adoption_candidates(working_dir: Option<&Path>) -> [Option<&Path>; 2] {
+  [working_dir, Some(Path::new("."))]
+}
+
+/// The warning text for [`warn_on_dirty_adoption`], or `None` when
+/// nothing qualifies.
+///
+/// Separated from the `tracing` call so the detection logic - which
+/// candidate tracks `remote`, and whether it is dirty - is testable
+/// without capturing log output. Returns the *first* matching candidate
+/// only: `working_dir` and CWD are usually the same checkout, and
+/// stacking two warnings about one tree would read as two problems
+/// instead of one.
+///
+/// # Errors
+///
+/// None returned as an error: a candidate that is not a readable git
+/// checkout, or whose `origin` cannot be read, is silently skipped
+/// rather than surfaced, because adoption itself is what is being
+/// attempted and a probe of an unrelated directory failing is not its
+/// business.
+fn dirty_adoption_warning(remote: &str, working_dir: Option<&Path>) -> Option<String> {
+  for dir in dirty_adoption_candidates(working_dir).into_iter().flatten() {
     if !tracks_remote(dir, remote) {
       continue;
     }
@@ -381,15 +415,23 @@ fn warn_on_dirty_adoption(remote: &str, working_dir: Option<&Path>) {
       continue;
     }
 
-    warn!(
-      "{} has {} uncommitted change(s) against {remote}.\nAdoption deploys \
-       the committed state of that remote, not what is in that tree. Commit \
-       and push first if the difference matters.",
-      dir.display(),
-      tree.paths.len()
-    );
-    return;
+    return Some(format_dirty_adoption_warning(dir, remote, tree.paths.len()));
   }
+  None
+}
+
+/// Render the dirty-adoption warning for one checkout.
+///
+/// `count` is the number of dirty paths rather than the full
+/// [`super::conflict::DirtyTree`], so this stays a pure string builder a
+/// test can call without a filesystem.
+fn format_dirty_adoption_warning(dir: &Path, remote: &str, count: usize) -> String {
+  format!(
+    "{} has {count} uncommitted change(s) against {remote}.\nAdoption deploys \
+     the committed state of that remote, not what is in that tree. Commit \
+     and push first if the difference matters.",
+    dir.display()
+  )
 }
 
 /// Whether `dir` is a git checkout whose `origin` is `remote`.
@@ -437,22 +479,6 @@ fn recorded_remote(state_dir: &Path) -> Result<Option<String>> {
 /// machine and on a managed one. A *different* remote is refused
 /// without `force`, because silently repointing what a host deploys
 /// from is not something to do on a typo.
-///
-/// Runs inside a [`Transaction`], per the `xi-sources-crash-recovery`
-/// capability's transaction-boundary rule: the caller already holds the
-/// sources lock (see [`prepare`]), so this only has to open the
-/// transaction, do the work against shadow paths, and commit. The fetch
-/// itself lands in `<sources_dir>.incoming` via [`ShadowFetch`] rather
-/// than touching the live clone directly - on `--force` re-pointing,
-/// that also makes "set the new origin" and "fetch from it" a single
-/// atomic step instead of two, so a crash between them cannot leave the
-/// live clone's origin pointed at a remote its working tree never came
-/// from.
-///
-/// A crash anywhere in this function - mid-fetch, or between the
-/// promote and the state writes - leaves the sentinel this opens for
-/// `xi sources repair` to find and roll back; nothing here is visible at
-/// its final path until [`Transaction::commit`] runs.
 fn adopt(
   scope: Scope,
   remote: &str,
@@ -477,32 +503,24 @@ fn adopt(
     create_private_dir(dir)?;
   }
 
-  let mut txn = Transaction::begin(
-    &paths.state_dir,
-    ActorName::Switch.as_str(),
-    format!("xi {} switch: adopt {remote}", scope.as_str()),
-  )
-  .map_err(|err| eyre!("could not open transaction for adoption: {err}"))?;
-
-  let shadow = ShadowFetch::begin(&paths.sources_dir)
-    .map_err(|err| eyre!("could not stage fetch for adoption: {err}"))?;
-  // Registered before the fetch runs, so a fetch failure rolls the
-  // transaction back on the way out via `?` and `Drop` removes the
-  // half-populated shadow rather than leaving it dangling for repair to
-  // find later.
-  txn.promote(shadow.incoming(), shadow.target());
-
   if paths.sources_dir.join(".git").is_dir() {
+    // Under --force the existing clone still points at the old origin.
+    // Recording the new URL without moving origin would leave the two
+    // silently disagreeing, and every later fetch would quietly keep
+    // pulling the remote the operator just replaced.
+    if repointing {
+      info!("re-pointing origin at {remote}");
+      set_origin(&paths.sources_dir, remote)?;
+    }
     info!("updating {}", paths.sources_dir.display());
+    fetch_and_reset(&paths.sources_dir, branch)?;
   } else {
     info!("cloning {remote} into {}", paths.sources_dir.display());
+    clone(remote, branch, &paths.sources_dir)?;
   }
-  shadow
-    .fetch(remote, branch)
-    .map_err(|err| eyre!("{err}"))?;
-  let head = shadow.head_sha().ok();
 
-  txn.stage_state("remote-url", remote);
+  write_state_file(&paths.state_dir, "remote-url", remote)?;
+
   // The model says `sources_head` is `None` "only on a freshly-
   // initialised sources dir before any clone", so the clone that just
   // landed has to record it here.
@@ -511,13 +529,9 @@ fn adopt(
   // steps 1-5 of the entrypoint and activation is step 6. Until step 6
   // succeeds the honest answer from `xi <scope> sources status` is
   // `Pending` - see [`record_activation`].
-  if let Some(head) = &head {
-    txn.stage_state("sources-head", head);
+  if let Some(head) = git_head(&paths.sources_dir)? {
+    write_state_file(&paths.state_dir, "sources-head", &head)?;
   }
-
-  txn
-    .commit()
-    .map_err(|err| eyre!("could not commit adoption: {err}"))?;
   Ok(())
 }
 
@@ -636,6 +650,77 @@ fn create_private_dir(dir: &Path) -> Result<()> {
   Ok(())
 }
 
+/// `git clone` into a directory that may already exist but is empty.
+fn clone(remote: &str, branch: &str, dest: &Path) -> Result<()> {
+  // `GIT_TERMINAL_PROMPT=0` is deliberate: without it a missing
+  // credential makes git block on a prompt, turning a scripted switch
+  // into a hang instead of a clean failure.
+  let out = Command::new("git")
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .args(["clone", "--branch", branch, "--"])
+    .arg(remote)
+    .arg(dest)
+    .output()?;
+  if out.status.success() {
+    return Ok(());
+  }
+
+  let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+  // A missing branch is the single most likely adoption failure, because
+  // xi defaults to `main` and plenty of repos are still on `master`.
+  // Git's own message never says where the branch name came from.
+  if stderr.contains("Remote branch") && stderr.contains("not found") {
+    return Err(eyre!(
+      "the remote has no branch `{branch}`.\n\n{stderr}\n\nxi tracks \
+       `{DEFAULT_BRANCH}` unless told otherwise. Pick the branch with \
+       `--branch <name>`, `XI_SOURCES_BRANCH`, or `[sources] branch` in \
+       .xi.toml."
+    ));
+  }
+  Err(eyre!("git clone failed: {stderr}"))
+}
+
+/// Point an existing clone at a different origin.
+fn set_origin(repo: &Path, remote: &str) -> Result<()> {
+  let out = Command::new("git")
+    .arg("-C")
+    .arg(repo)
+    .args(["remote", "set-url", "origin"])
+    .arg(remote)
+    .output()?;
+  if out.status.success() {
+    return Ok(());
+  }
+  Err(eyre!(
+    "git remote set-url failed: {}",
+    String::from_utf8_lossy(&out.stderr).trim()
+  ))
+}
+
+/// Fast-forward an existing clone to the tracked branch.
+fn fetch_and_reset(repo: &Path, branch: &str) -> Result<()> {
+  for args in [
+    vec!["fetch", "origin", branch],
+    vec!["checkout", branch],
+    vec!["reset", "--hard", &format!("origin/{branch}")],
+  ] {
+    let out = Command::new("git")
+      .env("GIT_TERMINAL_PROMPT", "0")
+      .arg("-C")
+      .arg(repo)
+      .args(&args)
+      .output()?;
+    if !out.status.success() {
+      return Err(eyre!(
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+      ));
+    }
+  }
+  Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Installer pre-check
 // ---------------------------------------------------------------------------
@@ -718,250 +803,147 @@ pub fn sources_dir_for(scope: Scope) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Tests  -  xi-6lla: adoption runs inside a transaction
+// Tests  -  xi-zbll: warn on dirty adoption
 // ---------------------------------------------------------------------------
-//
-// `adopt` is the actor `xi-xhsn` ("Blocked on wiring, not on
-// implementation... Start here: switch.rs adopt()") names as the one not
-// yet wired into `xi-sources-crash-recovery`'s transaction boundary. These
-// prove it now is: a successful adoption commits and leaves no trace, a
-// failed fetch rolls back and leaves no trace either, and - the
-// acceptance criterion itself - a kill between the transaction opening
-// and its commit leaves an `AbandonedTransaction` finding that names the
-// `switch` actor, exactly as `xi sources repair` reports it.
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "Fine in tests")]
+#[expect(clippy::expect_used, clippy::unwrap_used, reason = "Fine in tests")]
 mod tests {
   use std::fs;
 
   use tempfile::TempDir;
 
   use super::*;
-  use crate::sources::{
-    repair::{self, Finding, RepairContext},
-    shadow::incoming_path,
-    transaction::{SENTINEL_NAME, Sentinel},
-  };
 
-  fn scope_paths(root: &Path) -> ScopePaths {
-    ScopePaths {
-      sources_dir: root.join("sources"),
-      state_dir:   root.join("state"),
-      config_file: root.join("sources.toml"),
-    }
-  }
+  const REMOTE: &str = "https://git.example/config";
 
-  fn repair_ctx(paths: &ScopePaths) -> RepairContext {
-    RepairContext {
-      scope:            Scope::User,
-      sources_dir:      paths.sources_dir.clone(),
-      state_dir:        paths.state_dir.clone(),
-      nix_conf:         None,
-      xi_conf:          None,
-      receipt_evidence: Vec::new(),
-      resume_sync:      false,
-    }
-  }
-
-  /// A git repo at `dir` with one commit on `main`, as a remote would
-  /// look. Returns the commit it produced.
-  fn remote_repo(dir: &Path) -> String {
-    fs::create_dir_all(dir).expect("mkdir remote");
-    fs::write(dir.join("flake.nix"), "# cfg\n").expect("write flake");
-    for args in [vec!["init", "-q", "-b", "main"], vec!["add", "-A"], vec![
-      "commit", "-q", "-m", "init",
-    ]] {
-      let ok = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.email=t@e", "-c", "user.name=t"])
-        .args(&args)
-        .status()
-        .expect("run git")
-        .success();
-      assert!(ok, "git {args:?} failed in {}", dir.display());
-    }
+  fn git(at: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
       .arg("-C")
-      .arg(dir)
-      .args(["rev-parse", "HEAD"])
+      .arg(at)
+      .args([
+        "-c",
+        "user.email=t@e",
+        "-c",
+        "user.name=t",
+        "-c",
+        "commit.gpgsign=false",
+      ])
+      .args(args)
       .output()
-      .expect("git rev-parse");
+      .expect("run git");
+    assert!(
+      out.status.success(),
+      "git {args:?} failed in {}: {}",
+      at.display(),
+      String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
   }
 
+  /// A git checkout with one commit, `origin` pointed at `origin_url`.
+  fn checkout(root: &Path, origin_url: &str) -> PathBuf {
+    let dir = root.join("checkout");
+    fs::create_dir_all(&dir).expect("mkdir checkout");
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { }; }\n")
+      .expect("write flake");
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["remote", "add", "origin", origin_url]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "base"]);
+    dir
+  }
+
+  // -- format_dirty_adoption_warning: pure formatting --------------------
+
   #[test]
-  fn a_successful_adoption_commits_and_leaves_no_transaction_or_shadow() {
-    let tmp = TempDir::new().expect("tempdir");
-    let remote = tmp.path().join("remote");
-    let head = remote_repo(&remote);
-    let paths = scope_paths(tmp.path());
-
-    adopt(
-      Scope::User,
-      &remote.display().to_string(),
-      "main",
-      &paths,
-      false,
-    )
-    .expect("adopt");
-
-    assert!(paths.sources_dir.join(".git").is_dir(), "the clone must land");
-    assert_eq!(
-      fs::read_to_string(paths.state_dir.join("sources-head"))
-        .expect("read sources-head")
-        .trim(),
-      head
-    );
-    assert_eq!(
-      fs::read_to_string(paths.state_dir.join("remote-url"))
-        .expect("read remote-url")
-        .trim(),
-      remote.display().to_string()
-    );
+  fn the_warning_names_the_remote_and_the_file_count() {
+    let message =
+      format_dirty_adoption_warning(Path::new("/home/op/dotfiles"), REMOTE, 3);
+    assert!(message.contains(REMOTE), "{message}");
+    assert!(message.contains('3'), "{message}");
+    assert!(message.contains("/home/op/dotfiles"), "{message}");
     assert!(
-      !paths.state_dir.join(SENTINEL_NAME).exists(),
-      "a committed adoption leaves no transaction sentinel"
-    );
-    assert!(
-      !incoming_path(&paths.sources_dir).exists(),
-      "a committed adoption leaves no shadow fetch"
+      message.contains("deploys"),
+      "must say adoption deploys committed state, got: {message}"
     );
   }
 
-  /// A fetch that fails (unknown branch) must roll the whole transaction
-  /// back: no half-made clone, no shadow, no sentinel, no recorded
-  /// remote - satisfying task 3.3 ("on fetch failure, remove `.incoming`")
-  /// as a side effect of the transaction boundary rather than a
-  /// special-cased cleanup.
+  // -- tracks_remote -------------------------------------------------------
+
   #[test]
-  fn a_failed_fetch_rolls_the_whole_adoption_back() {
-    let tmp = TempDir::new().expect("tempdir");
-    let remote = tmp.path().join("remote");
-    remote_repo(&remote); // only `main` exists.
-    let paths = scope_paths(tmp.path());
+  fn tracks_remote_is_true_for_the_exact_origin() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert!(tracks_remote(&dir, REMOTE));
+  }
 
-    let err = adopt(
-      Scope::User,
-      &remote.display().to_string(),
-      "no-such-branch",
-      &paths,
-      false,
-    )
-    .expect_err("an unknown branch must fail adoption");
+  #[test]
+  fn tracks_remote_canonicalises_equivalent_url_shapes() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), "git@git.example:config.git");
     assert!(
-      err.to_string().to_lowercase().contains("branch"),
-      "error should name the branch problem: {err}"
+      tracks_remote(&dir, "ssh://git.example/config"),
+      "scp-style and ssh:// spellings of the same remote must match"
     );
+  }
 
-    assert!(
-      !paths.sources_dir.join(".git").is_dir(),
-      "a failed adoption must not leave a clone"
-    );
-    assert!(
-      !incoming_path(&paths.sources_dir).exists(),
-      "a failed fetch's shadow must be rolled back, not left dangling"
-    );
-    assert!(
-      !paths.state_dir.join(SENTINEL_NAME).exists(),
-      "a rolled-back transaction leaves no sentinel"
-    );
+  #[test]
+  fn tracks_remote_is_false_for_a_different_remote() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert!(!tracks_remote(&dir, "https://git.example/other"));
+  }
+
+  #[test]
+  fn tracks_remote_is_false_for_a_non_repository() {
+    let tmp = TempDir::new().unwrap();
+    let not_a_repo = tmp.path().join("not-a-repo");
+    fs::create_dir_all(&not_a_repo).unwrap();
+    assert!(!tracks_remote(&not_a_repo, REMOTE));
+  }
+
+  // -- dirty_adoption_warning: the end-to-end check -----------------------
+
+  #[test]
+  fn a_dirty_checkout_tracking_the_remote_produces_a_warning() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { v = 2; }; }\n")
+      .expect("dirty the checkout");
+
+    let message = dirty_adoption_warning(REMOTE, Some(&dir))
+      .expect("a dirty checkout tracking the remote must warn");
+    assert!(message.contains(REMOTE), "{message}");
+    assert!(message.contains("1 uncommitted"), "{message}");
+  }
+
+  #[test]
+  fn a_clean_checkout_tracking_the_remote_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert_eq!(dirty_adoption_warning(REMOTE, Some(&dir)), None);
+  }
+
+  #[test]
+  fn a_dirty_checkout_tracking_a_different_remote_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), "https://git.example/unrelated");
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { v = 2; }; }\n")
+      .expect("dirty the checkout");
+
     assert_eq!(
-      read_state_file(&paths.state_dir, "remote-url").expect("read"),
+      dirty_adoption_warning(REMOTE, Some(&dir)),
       None,
-      "a failed adoption must not record the remote it never adopted"
+      "adoption of `{REMOTE}` must not warn about an unrelated checkout"
     );
   }
 
-  /// The acceptance criterion behind xi-6lla: a crash during `switch`'s
-  /// adoption leaves an `AbandonedTransaction` finding that names the
-  /// `switch` actor, which `xi sources repair` then clears along with the
-  /// shadow fetch it left dangling.
-  ///
-  /// `adopt` is driven for real up to the point a SIGKILL would land -
-  /// transaction open, shadow fetched and registered for promotion, state
-  /// staged - and then `mem::forget` stands in for the kill: it is the
-  /// one way short of an actual fork and signal to skip `Transaction`'s
-  /// own `Drop` rollback the way a killed process would. The owner pid is
-  /// then flipped to a dead one, because this test process is itself
-  /// alive and a live owner's sentinel must never be reported abandoned
-  /// (see `an_abandoned_sentinel_is_cleared_and_a_live_one_is_not` in
-  /// `bdd_sources_crash_recovery.rs`) - that substitution is the only
-  /// part a real kill does not need, since a real kill leaves the pid
-  /// dead on its own.
   #[test]
-  fn a_kill_before_commit_leaves_an_abandoned_transaction_naming_switch() {
-    let tmp = TempDir::new().expect("tempdir");
-    let remote = tmp.path().join("remote");
-    remote_repo(&remote);
-    let paths = scope_paths(tmp.path());
-
-    create_private_dir(&paths.sources_dir).expect("mkdir sources");
-    create_private_dir(&paths.state_dir).expect("mkdir state");
-
-    let mut txn = Transaction::begin(
-      &paths.state_dir,
-      ActorName::Switch.as_str(),
-      format!("xi user switch: adopt {}", remote.display()),
-    )
-    .expect("begin transaction");
-    let shadow =
-      ShadowFetch::begin(&paths.sources_dir).expect("begin shadow fetch");
-    txn.promote(shadow.incoming(), shadow.target());
-    shadow
-      .fetch(&remote.display().to_string(), "main")
-      .expect("fetch");
-    txn.stage_state("remote-url", &remote.display().to_string());
-    std::mem::forget(txn);
-
-    let ctx = repair_ctx(&paths);
-
-    // Still a live owner at this point: must not be reported abandoned.
-    assert!(
-      !repair::discover(&ctx)
-        .expect("discover")
-        .findings
-        .iter()
-        .any(|f| matches!(f, Finding::AbandonedTransaction { .. })),
-      "a live switch's transaction must not be reported abandoned"
-    );
-
-    let mut sentinel = Sentinel::load(&paths.state_dir)
-      .expect("load sentinel")
-      .expect("sentinel present");
-    assert_eq!(
-      sentinel.actor, "switch",
-      "adopt must open its transaction under the switch actor name"
-    );
-    sentinel.pid = 0x7FFF_FFFF; // Above any real pid: stands in for "gone".
-    fs::write(
-      paths.state_dir.join(SENTINEL_NAME),
-      serde_json::to_vec_pretty(&sentinel).expect("serialise sentinel"),
-    )
-    .expect("rewrite sentinel as abandoned");
-
-    let findings = repair::discover(&ctx).expect("discover").findings;
-    let abandoned = findings
-      .iter()
-      .find_map(|f| {
-        match f {
-          Finding::AbandonedTransaction { actor, .. } => Some(actor.clone()),
-          _ => None,
-        }
-      })
-      .expect("an abandoned transaction finding");
-    assert_eq!(abandoned, "switch");
-
-    let report = repair::execute(&ctx, false).expect("repair");
-    assert!(report.is_clean(), "failures: {:?}", report.failures);
-    assert!(
-      !paths.state_dir.join(SENTINEL_NAME).exists(),
-      "repair clears the abandoned sentinel"
-    );
-    assert!(
-      !incoming_path(&paths.sources_dir).exists(),
-      "repair also sweeps the shadow the abandoned adoption left dangling"
-    );
+  fn with_no_working_dir_and_a_non_tracking_cwd_nothing_warns() {
+    // The CWD fallback is exercised by passing `None`; the test process's
+    // own CWD does not track a fake `https://git.example` remote, so this
+    // must fall through to `None` rather than panic or false-positive.
+    assert_eq!(dirty_adoption_warning(REMOTE, None), None);
   }
 }
