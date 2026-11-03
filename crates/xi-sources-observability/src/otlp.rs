@@ -10,12 +10,25 @@
 //! [`tracing_subscriber::Layer`] a daemon can stack next to
 //! [`crate::subscriber::ndjson_layer`].
 //!
-//! This is task 6.1: the crate exists behind its feature flag and can
-//! build a working layer. Wiring it into an actual tick loop so that
-//! "when a tick completes, its root span crosses the wire within 5
-//! seconds" - batching behaviour, retry, and the failure counter the
-//! spec names (`xi_sources_otlp_export_failures_total`) - is task 6.2,
-//! owned elsewhere.
+//! Task 6.1 built the exporter pipeline behind its feature flag,
+//! already capped at the spec's 5-second batch latency ceiling
+//! ([`crate::config::OtlpConfig::new`]). Task 6.2, this module's
+//! [`FailureCounterLayer`], closes the remaining piece spec.md's
+//! "Opt-in OTLP export" requirement names: "export failures MUST NOT
+//! block the tick loop; they MUST be logged and counted via
+//! `xi_sources_otlp_export_failures_total`". The "not block the tick
+//! loop" half is structural - [`opentelemetry_sdk::trace::BatchSpanProcessor`]
+//! exports on its own background thread, so nothing in a tick's own
+//! call stack ever waits on an export, success or failure. The
+//! "logged and counted" half needs active wiring: an export failure
+//! surfaces only as the SDK's own internal `otel_error!` log event
+//! (gated behind this crate's `internal-logs` feature on the
+//! `opentelemetry` dependency - see `Cargo.toml`), never as a value
+//! this module's code receives directly, so [`FailureCounterLayer`] is
+//! a `tracing_subscriber` layer that watches for that specific event
+//! and increments whatever counter
+//! [`crate::metrics::Metrics::register_otlp_export_failures`] handed
+//! it.
 //!
 //! # Why the blocking HTTP transport
 //!
@@ -153,6 +166,63 @@ impl Trace {
 pub const SPEC_BATCH_LATENCY_CEILING: Duration =
   crate::config::MAX_OTLP_BATCH_LATENCY;
 
+/// The vendored SDK's own event name for a failed batch export.
+///
+/// Sourced from `opentelemetry_sdk`'s `span_processor.rs`
+/// (`BatchSpanProcessor::export_batch`'s `otel_error!(name:
+/// "BatchSpanProcessor.ExportError", ...)` call) - the one stable
+/// surface the SDK's internal logging exposes for this, since the crate
+/// does not otherwise return or call back on an export failure.
+const EXPORT_ERROR_EVENT_NAME: &str = "BatchSpanProcessor.ExportError";
+
+/// A `tracing_subscriber` layer that counts OTLP export failures.
+///
+/// Stack this on the same [`tracing_subscriber::Registry`] as
+/// [`Trace::layer`] (order does not matter: this layer only reacts to
+/// the SDK's own internal log event, not to anything
+/// [`tracing_opentelemetry::OpenTelemetryLayer`] does). Decoupled from
+/// [`crate::metrics::Metrics`] by taking a plain callback rather than a
+/// `Metrics` reference: this module's `otlp` feature does not depend on
+/// `daemon` (so `Metrics` may not even be compiled in), and the only
+/// thing this layer needs to do on a match is increment *something*.
+pub struct FailureCounterLayer {
+  on_failure: Box<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for FailureCounterLayer {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("FailureCounterLayer { .. }")
+  }
+}
+
+impl FailureCounterLayer {
+  /// Call `on_failure` every time an export-failure event is observed.
+  ///
+  /// A typical `on_failure` is `move || counter.inc()` for the
+  /// [`prometheus::Counter`] handle
+  /// [`crate::metrics::Metrics::register_otlp_export_failures`] returns.
+  pub fn new(on_failure: impl Fn() + Send + Sync + 'static) -> Self {
+    Self {
+      on_failure: Box::new(on_failure),
+    }
+  }
+}
+
+impl<S> tracing_subscriber::Layer<S> for FailureCounterLayer
+where
+  S: tracing::Subscriber,
+{
+  fn on_event(
+    &self,
+    event: &tracing::Event<'_>,
+    _ctx: tracing_subscriber::layer::Context<'_, S>,
+  ) {
+    if event.metadata().name() == EXPORT_ERROR_EVENT_NAME {
+      (self.on_failure)();
+    }
+  }
+}
+
 #[cfg(test)]
 #[expect(
   clippy::expect_used,
@@ -193,4 +263,53 @@ mod tests {
   fn the_batch_latency_ceiling_matches_the_spec_cap() {
     assert_eq!(SPEC_BATCH_LATENCY_CEILING, Duration::from_secs(5));
   }
+
+  // -- FailureCounterLayer: matching logic ---------------------------------
+
+  #[test]
+  fn an_export_error_event_increments_the_callback() {
+    use std::sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+    };
+
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&count);
+    let layer = FailureCounterLayer::new(move || {
+      counted.fetch_add(1, Ordering::SeqCst);
+    });
+    let subscriber = tracing_subscriber::Registry::default().with(layer);
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // The exact shape `opentelemetry_sdk`'s `otel_error!` macro expands
+    // to: a static event name set via `name:`, matching
+    // `EXPORT_ERROR_EVENT_NAME`.
+    tracing::error!(
+      name: "BatchSpanProcessor.ExportError",
+      error = "connection refused"
+    );
+    // An unrelated event, including one that merely mentions the same
+    // text in its message, must not be mistaken for a match.
+    tracing::error!("BatchSpanProcessor.ExportError happened, allegedly");
+    tracing::info!(
+      name: "BatchSpanProcessor.ExportingDueToForceFlush",
+      "flushing"
+    );
+
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+  }
+
+  // The end-to-end proof - a real `Trace` built against an unreachable
+  // endpoint, flushed via `Trace::shutdown`, observed through
+  // `FailureCounterLayer` installed as the process-global default so
+  // the SDK's background export thread is covered too - needs a
+  // process-global subscriber, which this module's other tests must
+  // not share a process with (each sets its own thread-local default;
+  // a stray global default would outlive any one test and could shadow
+  // a later test's thread-local one on the same thread, or simply fail
+  // to install a second time). It lives in its own file,
+  // `tests/bdd_sources_otlp_export.rs`, which cargo gives its own
+  // process the way every `tests/*.rs` file does.
 }
