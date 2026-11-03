@@ -5,6 +5,9 @@
 //!
 //! - [`singleton`]  -  one scheduler per `SourcesId`, so two ticks can never
 //!   race on the same sources dir.
+//! - [`control`]  -  the `pause`/`resume` control socket ([[xi-sources-race]]
+//!   section 4): an inbound `xi push` suspends the tick loop and reclaims the
+//!   lock for the duration of the push, then resumes it.
 //! - [`sentinel`]  -  the `.xi-managed` header, and the write guards that
 //!   refuse to touch a directory xi does not own.
 //! - [`health`]  -  the degraded-reason taxonomy and per-tick outcome.
@@ -29,6 +32,7 @@
 //! yet; [`tick::run`] stops once the sources dir has advanced or been
 //! refused. See the `xi-sources-gitops` change for the remaining work.
 
+pub mod control;
 pub mod exec;
 pub mod fetch;
 pub mod health;
