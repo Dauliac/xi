@@ -21,7 +21,8 @@ use std::path::Path;
 use xi_core::sources::{
   Sha,
   SourcesId,
-  conflict::{RefRelation, relate},
+  config::SyncMode,
+  conflict::{PostAdvance, RefRelation, post_advance, relate},
 };
 
 use crate::{
@@ -55,6 +56,13 @@ pub struct TickInputs<'a> {
   pub gpg_public_keys: Option<&'a Path>,
   /// Shell command to run after a successful advance, if any.
   pub on_advance:      Option<&'a str>,
+  /// The working-dir reconciliation policy, resolved the same way
+  /// `xi <scope> switch` resolves it. Governs what [`TickOutcome::Advanced`]
+  /// reports via [`xi_core::sources::conflict::post_advance`]; see that
+  /// function for the mapping. Defaults to [`SyncMode::Prompt`] in every
+  /// `TickInputs` built here so a caller that does not care still gets the
+  /// spec's default behaviour.
+  pub sync_mode:       SyncMode,
 }
 
 /// Run one tick against `inputs`.
@@ -69,6 +77,14 @@ pub struct TickInputs<'a> {
 /// 4. **Resolve** - fast-forward only: the fetched sha must be a descendant of
 ///    the sources dir's current `HEAD`, or the tick refuses and nothing moves.
 /// 5. **Hook** - `on_advance`, if the resolve step actually moved `HEAD`.
+/// 6. **Post-advance** - look up `sync_mode`'s
+///    [`xi_core::sources::conflict::post_advance`] and report it on the
+///    outcome. The tick itself never copies anything into a working dir -
+///    `QueueSync` is carried out by the next interactive command via
+///    `conflict::apply_auto_sync`, and `Announce` is carried out by `xi
+///    sources status` computing `sync_available` live. This step only
+///    makes the decision observable (so `never` can be logged) and leaves
+///    acting on it to the right owner.
 #[must_use]
 pub fn run(exec: &dyn Exec, inputs: &TickInputs<'_>) -> TickOutcome {
   if let Err(reason) = assert_writable(inputs.sources_dir, inputs.sources_id) {
@@ -152,10 +168,28 @@ fn advance(
     hooks::run(exec, inputs.state_dir, "on_advance", command).degraded_reason()
   });
 
+  let decision = post_advance(inputs.sync_mode);
+  if matches!(decision, PostAdvance::LogOnly) {
+    // `never`: nothing else in this binary will ever mention this sync.
+    // `prompt` is picked up by `xi sources status` computing
+    // `sync_available` live, and `auto-copy` is picked up by the next
+    // interactive command, so this is the only place `never`'s advance is
+    // ever recorded.
+    tracing::info!(
+      event = "sync-available-not-applied",
+      sources_id = %inputs.sources_id,
+      from = from.as_deref().unwrap_or("<none>"),
+      to = %to,
+      "sync_mode = never; a sync is available but the daemon will not apply \
+       it"
+    );
+  }
+
   TickOutcome::Advanced {
     from,
     to,
     hook: hook_reason,
+    post_advance: decision,
   }
 }
 
@@ -238,6 +272,7 @@ mod tests {
         allowed_signers: None,
         gpg_public_keys: None,
         on_advance:      None,
+        sync_mode:       SyncMode::Prompt,
       }
     }
   }
@@ -407,6 +442,95 @@ mod tests {
     assert!(
       world.sources_dir.join("flake.nix").exists(),
       "the advance itself must stand even though the hook failed"
+    );
+  }
+
+  /// 5b.2 / default config: `sync_mode = prompt` reports `Announce` so
+  /// `xi sources status` is the thing that surfaces the sync, not the
+  /// daemon writing anything.
+  #[test]
+  fn sync_mode_prompt_reports_announce_on_advance() {
+    let world = World::new();
+    let id = world.sources_id();
+    write_sentinel(&world, &id);
+    let exec = RecordingExec::always_ok();
+
+    let mut inputs = world.inputs(&id);
+    inputs.sync_mode = SyncMode::Prompt;
+    let outcome = run(&exec, &inputs);
+
+    match outcome {
+      TickOutcome::Advanced { post_advance, .. } => {
+        assert_eq!(post_advance, PostAdvance::Announce);
+      },
+      other => panic!("expected an advance, got {other:?}"),
+    }
+  }
+
+  /// 5b.2: `sync_mode = auto-copy` reports `QueueSync`. The daemon itself
+  /// does not touch the working dir - running the sync is the next
+  /// interactive command's job via `conflict::apply_auto_sync`.
+  #[test]
+  fn sync_mode_auto_copy_reports_queue_sync_on_advance() {
+    let world = World::new();
+    let id = world.sources_id();
+    write_sentinel(&world, &id);
+    let exec = RecordingExec::always_ok();
+
+    let mut inputs = world.inputs(&id);
+    inputs.sync_mode = SyncMode::AutoCopy;
+    let outcome = run(&exec, &inputs);
+
+    match outcome {
+      TickOutcome::Advanced { post_advance, .. } => {
+        assert_eq!(post_advance, PostAdvance::QueueSync);
+      },
+      other => panic!("expected an advance, got {other:?}"),
+    }
+  }
+
+  /// 5b.2: `sync_mode = never` reports `LogOnly` and the tick logs a
+  /// `sync-available-not-applied` event - this is the only place `never`'s
+  /// advance is ever recorded, since neither `xi sources status`'s
+  /// `sync_available` computation nor any interactive command is told
+  /// about it otherwise.
+  #[test]
+  fn sync_mode_never_reports_log_only_on_advance() {
+    let world = World::new();
+    let id = world.sources_id();
+    write_sentinel(&world, &id);
+    let exec = RecordingExec::always_ok();
+
+    let mut inputs = world.inputs(&id);
+    inputs.sync_mode = SyncMode::Never;
+    let outcome = run(&exec, &inputs);
+
+    match outcome {
+      TickOutcome::Advanced { post_advance, .. } => {
+        assert_eq!(post_advance, PostAdvance::LogOnly);
+      },
+      other => panic!("expected an advance, got {other:?}"),
+    }
+  }
+
+  /// A `NoChange` tick (nothing to advance to) must not report a
+  /// post-advance decision for a mode that never fired - there is no
+  /// `TickOutcome::Advanced` to carry one.
+  #[test]
+  fn a_no_change_tick_carries_no_post_advance_decision() {
+    let world = World::new();
+    let id = world.sources_id();
+    write_sentinel(&world, &id);
+    let exec = RecordingExec::always_ok();
+
+    let mut inputs = world.inputs(&id);
+    inputs.sync_mode = SyncMode::Never;
+    assert!(run(&exec, &inputs).advanced());
+
+    let outcome = run(&exec, &inputs);
+    assert!(
+      matches!(outcome, TickOutcome::NoChange { .. }),
+      "got {outcome:?}"
     );
   }
 }
