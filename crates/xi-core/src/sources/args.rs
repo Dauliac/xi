@@ -25,6 +25,7 @@ use super::{
   SourcesContext,
   SourcesId,
   SourcesStatusResponse,
+  cache_prestage::{self, PrestageOptions, PrestageStatus},
   config::{Layers, Provenance, ResolvedSources, ScopePaths, SourcesConfig},
   conflict::{
     ObservedRefs,
@@ -34,6 +35,8 @@ use super::{
     sync,
     three_way_diff,
   },
+  events::{self, EventKind, EventsQuery},
+  lock::{ActorName, LockOptions, SourcesLock},
   log::{self, Level as LogLevelFilter, TailFilter, TailRequest},
 };
 
@@ -52,8 +55,12 @@ pub enum SourcesCommand {
   Diff(DiffArgs),
   /// Copy the sources dir over the working dir, one way
   Sync(SyncArgs),
+  /// Prestage, unstage or inspect this scope's binary-cache config
+  Cache(CacheProxy),
   /// Read the gitops daemon's structured log for this scope
   Log(LogArgs),
+  /// List the gitops daemon's structured events for this scope
+  Events(EventsArgs),
 }
 
 /// `xi <scope> sources log` - the log-reading verb group.
@@ -94,6 +101,27 @@ pub struct LogTailArgs {
   pub level: Option<String>,
 }
 
+/// `xi <scope> sources events` - the event-store readout verb.
+#[derive(Debug, Clone, Args)]
+pub struct EventsArgs {
+  /// Only show events at or after this RFC 3339 timestamp.
+  #[arg(long)]
+  pub since: Option<String>,
+
+  /// Only show events of this kind (fetch|advance|verify|build|activate|
+  /// hook|lock-wait).
+  #[arg(long)]
+  pub kind: Option<String>,
+
+  /// Show at most this many events.
+  #[arg(long)]
+  pub limit: Option<u32>,
+
+  /// Emit the house JSON envelope instead of a plain table.
+  #[arg(long)]
+  pub json: bool,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct StatusArgs {
   /// Remote URL of the config repo.
@@ -131,6 +159,60 @@ pub struct SyncArgs {
   pub json: bool,
 }
 
+/// `xi <scope> sources cache ...`: prestage, unstage, status.
+#[derive(Debug, Clone, Args)]
+pub struct CacheProxy {
+  #[clap(subcommand)]
+  pub command: CacheCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum CacheCommand {
+  /// Discover this scope's declared caches and write them before the
+  /// first build
+  Prestage(CachePrestageArgs),
+  /// Reverse a prestage, restoring `nix.conf` byte-for-byte
+  Unstage(CacheUnstageArgs),
+  /// Report whether a prestage is active and what it put in effect
+  Status(CacheStatusArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CachePrestageArgs {
+  /// `<flake-ref>[#<attr>]` to pure-eval the cache settings from.
+  ///
+  /// Defaults to this scope's own sources dir, and the attribute path
+  /// defaults to the well-known candidates for this scope's hostname
+  /// and user when no `#<attr>` is given.
+  pub target: Option<String>,
+
+  /// Skip the HTTPS key check and take the flake's declared keys on
+  /// faith.
+  ///
+  /// For airgapped setups and caches with no metadata endpoint. Prints
+  /// a warning naming every key it waves through.
+  #[arg(long)]
+  pub trust_declared_keys: bool,
+
+  /// Emit the house JSON envelope instead of a human summary.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CacheUnstageArgs {
+  /// Emit the house JSON envelope instead of a human summary.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CacheStatusArgs {
+  /// Emit the house JSON envelope instead of a human summary.
+  #[arg(long)]
+  pub json: bool,
+}
+
 impl SourcesProxy {
   /// Dispatch the selected verb at `scope`.
   ///
@@ -145,7 +227,24 @@ impl SourcesProxy {
       SourcesCommand::Status(args) => args.run(scope),
       SourcesCommand::Diff(args) => args.run(scope),
       SourcesCommand::Sync(args) => args.run(scope),
+      SourcesCommand::Cache(proxy) => proxy.run(scope),
       SourcesCommand::Log(args) => args.run(scope),
+      SourcesCommand::Events(args) => args.run(scope),
+    }
+  }
+}
+
+impl CacheProxy {
+  /// Dispatch the selected cache verb at `scope`.
+  ///
+  /// # Errors
+  ///
+  /// Propagates lock, discovery, I/O and serialisation errors.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    match self.command {
+      CacheCommand::Prestage(args) => args.run(scope),
+      CacheCommand::Unstage(args) => args.run(scope),
+      CacheCommand::Status(args) => args.run(scope),
     }
   }
 }
@@ -160,6 +259,154 @@ impl LogArgs {
     match self.command {
       LogCommand::Tail(args) => args.run(scope),
     }
+  }
+}
+
+/// Take the sources lock for a cache mutation, or say who has it.
+///
+/// `ActorName::CachePrestage` is the lowest-priority actor: it only
+/// warms a cache, so it is correct for it to queue behind a human at a
+/// terminal, an inbound push, bootstrap or a daemon tick. See
+/// `openspec/changes/xi-sources-cache-prestage/design.md` and xi-wtrq.
+fn take_cache_lock(paths: &ScopePaths, intent: String) -> Result<SourcesLock> {
+  SourcesLock::acquire(
+    &paths.state_dir,
+    &LockOptions::new(ActorName::CachePrestage, intent),
+  )
+  .map_err(|err| eyre!("{err}"))
+}
+
+impl CachePrestageArgs {
+  /// Discover and write this scope's cache config.
+  ///
+  /// The sources lock is taken inside [`cache_prestage::Prestage::run`],
+  /// not here: it covers the read-only discovery too, so a write cannot
+  /// race a build triggered the moment it lands. Taking it a second time
+  /// at this layer would self-deadlock against the same lock file.
+  ///
+  /// # Errors
+  ///
+  /// Propagates the lock, the hostname lookup (when no `#<attr>` is
+  /// given), the discovery reader, the key guard and the write.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let target = self
+      .target
+      .unwrap_or_else(|| cache_prestage::default_flake_ref(scope));
+    let (flake_ref, attr) = cache_prestage::split_target(&target);
+    let candidates = cache_prestage::candidates_for(attr, None)?;
+
+    let live = cache_prestage::Prestage::live(scope);
+    let report = live
+      .as_prestage()
+      .run(&flake_ref, &candidates, &PrestageOptions {
+        trust_declared_keys: self.trust_declared_keys,
+      })
+      .map_err(|err| eyre!("{err}"))?;
+
+    if self.json {
+      println!("{}", serde_json::to_string_pretty(&report)?);
+      return Ok(());
+    }
+
+    match report.status {
+      PrestageStatus::Applied => {
+        println!(
+          "prestaged {} substituter(s) from {} ({}): wrote {}",
+          report.settings.substituters.len(),
+          flake_ref,
+          report.attr_path.as_deref().unwrap_or("?"),
+          report.paths.xi_conf.display()
+        );
+      },
+      PrestageStatus::Unchanged => {
+        println!(
+          "cache config from {flake_ref} already matches {}; nothing to do",
+          report.paths.xi_conf.display()
+        );
+      },
+      PrestageStatus::Missing => {
+        println!(
+          "{flake_ref} declares no cache settings at any well-known attribute \
+           path; nothing was written"
+        );
+      },
+    }
+    Ok(())
+  }
+}
+
+impl CacheUnstageArgs {
+  /// Reverse a prestage, restoring `nix.conf` byte-for-byte.
+  ///
+  /// # Errors
+  ///
+  /// Propagates the lock and [`cache_prestage::PrestageError`]: no
+  /// receipt to reverse, or `nix.conf` was edited since the prestage.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let paths = ScopePaths::resolve(scope);
+    let _lock = take_cache_lock(
+      &paths,
+      format!("xi {} sources cache unstage", scope.as_str()),
+    )?;
+
+    let live = cache_prestage::Prestage::live(scope);
+    let report = live.as_prestage().unstage().map_err(|err| eyre!("{err}"))?;
+
+    if self.json {
+      println!("{}", serde_json::to_string_pretty(&report)?);
+      return Ok(());
+    }
+
+    if report.include_removed || report.xi_conf_removed {
+      println!(
+        "restored {}; removed {}",
+        report.nix_conf.display(),
+        if report.xi_conf_removed {
+          "xi.conf"
+        } else {
+          "the !include line"
+        }
+      );
+    } else {
+      println!(
+        "{} was already clean; nothing to undo",
+        report.nix_conf.display()
+      );
+    }
+    Ok(())
+  }
+}
+
+impl CacheStatusArgs {
+  /// Report whether a prestage is active for this scope.
+  ///
+  /// Reads the fragment and the receipt rather than taking the lock:
+  /// like `sources status`, this is the reader path the race spec
+  /// exempts, so it stays answerable while a prestage or another
+  /// actor holds the lock.
+  ///
+  /// # Errors
+  ///
+  /// Propagates read failures from [`cache_prestage::Prestage::status`].
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let live = cache_prestage::Prestage::live(scope);
+    let report = live.as_prestage().status().map_err(|err| eyre!("{err}"))?;
+
+    if self.json {
+      println!("{}", serde_json::to_string_pretty(&report)?);
+      return Ok(());
+    }
+
+    if report.active {
+      println!(
+        "cache prestage active: {} substituter(s) via {}",
+        report.settings.substituters.len(),
+        report.xi_conf.display()
+      );
+    } else {
+      println!("cache prestage inactive for this scope");
+    }
+    Ok(())
   }
 }
 
@@ -202,6 +449,74 @@ impl LogTailArgs {
         )
       },
     )
+  }
+}
+
+impl EventsArgs {
+  /// List events from the resolved scope's event store.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `--since` or `--kind` fail to parse, if reading
+  /// the store fails, or if JSON serialisation fails.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let since: Option<DateTime<Utc>> = self
+      .since
+      .as_deref()
+      .map(|raw| {
+        DateTime::parse_from_rfc3339(raw)
+          .map(|dt| dt.with_timezone(&Utc))
+          .map_err(|e| eyre!("invalid '--since' value '{raw}': {e}"))
+      })
+      .transpose()?;
+    let kind = self
+      .kind
+      .as_deref()
+      .map(EventKind::parse)
+      .transpose()
+      .map_err(|e| eyre!(e))?;
+
+    let query = EventsQuery {
+      since,
+      kind,
+      limit: self.limit,
+    };
+    let paths = ScopePaths::resolve(scope);
+    let response = events::events(scope, &paths.state_dir, &query)
+      .map_err(|e| eyre!("reading the {scope} sources events failed: {e}"))?;
+
+    if self.json {
+      println!("{}", serde_json::to_string_pretty(&response)?);
+      return Ok(());
+    }
+
+    if response.events.is_empty() {
+      println!("no events recorded for {scope} scope yet");
+      return Ok(());
+    }
+
+    println!(
+      "{:<24} {:<10} {:<10} {:<8} {:<10}  MESSAGE",
+      "TIMESTAMP", "KIND", "OUTCOME", "MS", "SHA"
+    );
+    for event in &response.events {
+      let sha = event
+        .new_sha
+        .as_deref()
+        .map_or_else(String::new, |sha| sha.chars().take(10).collect());
+      println!(
+        "{:<24} {:<10} {:<10} {:<8} {:<10}  {}",
+        event.ts,
+        event.kind,
+        event.outcome.as_deref().unwrap_or("-"),
+        event
+          .duration_ms
+          .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
+        sha,
+        event.message.as_deref().unwrap_or(""),
+      );
+    }
+    Ok(())
   }
 }
 
@@ -266,12 +581,18 @@ impl DiffArgs {
 impl SyncArgs {
   /// Copy the sources dir over the working dir.
   ///
+  /// Takes the sources lock (`ActorName::Sync`) before the copy, which is
+  /// the first write: a daemon tick or a switch could otherwise observe
+  /// or produce a half-written working dir. Released by `Drop` once this
+  /// returns, success or failure alike.
+  ///
   /// # Errors
   ///
   /// Returns an error when no working dir is configured (there is
-  /// nothing to sync into), when the working dir is dirty and
-  /// `--force-dirty` was not given, and on any git or filesystem
-  /// failure during the copy.
+  /// nothing to sync into), when the sources lock is held by another
+  /// actor (the error names the holder and the estimated wait), when the
+  /// working dir is dirty and `--force-dirty` was not given, and on any
+  /// git or filesystem failure during the copy.
   pub fn run(self, scope: Scope) -> Result<()> {
     let paths = ScopePaths::resolve(scope);
     let resolved = resolve_layers(SourcesConfig::default(), &paths)?;
@@ -283,10 +604,16 @@ impl SyncArgs {
       ));
     };
 
+    let intent = format!("xi {} sources sync", scope.as_str());
+    let opts = LockOptions::from_env(ActorName::Sync, intent)
+      .map_err(|err| eyre!("{err}"))?
+      .with_progress();
+    let _lock = SourcesLock::acquire(&paths.state_dir, &opts)
+      .map_err(|err| eyre!("{err}"))?;
+
     let outcome = sync(&SyncRequest {
       sources_dir: &paths.sources_dir,
       working_dir: &working_dir,
-      state_dir:   &paths.state_dir,
       force_dirty: self.force_dirty,
       what:        &format!("xi {} sources sync", scope.as_str()),
     })

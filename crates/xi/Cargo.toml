@@ -45,6 +45,7 @@ xi-vm.workspace                 = true
 yansi.workspace                 = true
 
 [dev-dependencies]
+rusqlite.workspace    = true
 serial_test.workspace = true
 tempfile.workspace    = true
 
