@@ -474,3 +474,161 @@ fn a_switch_takes_the_sources_lock() {
      rather than naming a process that has exited"
   );
 }
+
+// -- Requirement: the cache prestage/unstage/status verbs are reachable ---
+// (openspec/changes/xi-sources-cache-prestage, bead xi-d1xr)
+
+/// A flake declaring one cache via the `nixCache.settings` fallback
+/// attribute, which is the one well-known path that needs neither a
+/// NixOS/home-manager module nor a guessed hostname.
+fn fixture_cache_flake(at: &std::path::Path) -> String {
+  std::fs::create_dir_all(at).expect("mkdir flake");
+  std::fs::write(
+    at.join("flake.nix"),
+    r#"{
+  outputs = _: {
+    nixCache.settings = {
+      substituters = [ "https://cache.example.org" ];
+      trusted-public-keys = [ "cache.example.org-1:QmFzZTY0S2V5VmFsdWVIZXJlRm9yVGVzdGluZz0=" ];
+    };
+  };
+}
+"#,
+  )
+  .expect("write flake");
+  format!("path:{}#nixCache.settings", at.display())
+}
+
+impl Machine {
+  /// Run `xi home sources cache <args...>`, merging stdout and stderr
+  /// like [`Machine::switch`].
+  fn cache(&self, args: &[&str]) -> (String, bool) {
+    let out = Command::new(xi())
+      .args(["home", "sources", "cache"])
+      .args(args)
+      .env("XI_NO_CHECKS", "1")
+      .env("HOME", &self.home)
+      .env("XDG_DATA_HOME", self.home.join(".local/share"))
+      .env("XDG_STATE_HOME", self.home.join(".local/state"))
+      .env("XDG_CONFIG_HOME", self.home.join(".config"))
+      .env_remove("XI_SOURCES_REMOTE")
+      .current_dir(self.home.join("proj"))
+      .output()
+      .expect("spawn xi");
+    let merged = format!(
+      "{}{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
+    (merged, out.status.success())
+  }
+
+  fn xi_conf(&self) -> Option<String> {
+    std::fs::read_to_string(self.home.join(".config/nix/xi.conf")).ok()
+  }
+}
+
+/// Every scope verb mounts `sources cache` with all three verbs.
+#[test]
+fn cache_subcommands_are_reachable_from_every_scope_verb() {
+  for verb in ["home", "system", "nixos", "darwin"] {
+    let (out, ok) = run(&[verb, "sources", "cache", "--help"]);
+    assert!(ok, "`xi {verb} sources cache --help` failed: {out}");
+    for sub in ["prestage", "unstage", "status"] {
+      assert!(
+        out.contains(sub),
+        "`xi {verb} sources cache` should expose `{sub}`, got: {out}"
+      );
+    }
+  }
+}
+
+/// SC-K-004 half: a machine that was never prestaged reports inactive
+/// rather than erroring, under `--json`.
+#[test]
+fn cache_status_on_an_untouched_machine_is_inactive() {
+  let m = Machine::new();
+  let (out, ok) = m.cache(&["status", "--json"]);
+  assert!(ok, "`cache status` on a clean machine must not fail: {out}");
+  assert!(out.contains("\"active\": false"), "got: {out}");
+  assert!(out.contains("\"receipt_present\": false"), "got: {out}");
+}
+
+/// `cache unstage` with no prior prestage has nothing to reverse and
+/// says so, rather than silently succeeding.
+#[test]
+fn cache_unstage_without_a_prior_prestage_fails() {
+  let m = Machine::new();
+  let (out, ok) = m.cache(&["unstage"]);
+  assert!(!ok, "unstage with no receipt must fail: {out}");
+  assert!(out.contains("no cache prestage to reverse"), "got: {out}");
+}
+
+/// SC-K-001/002/003/006: the full prestage -> status -> unstage round
+/// trip through the binary, exercising the fallback attribute path and
+/// the `!include` amend together with the CLI wiring.
+#[test]
+fn cache_prestage_status_unstage_round_trip() {
+  let m = Machine::new();
+  let target = fixture_cache_flake(&m.tmp.path().join("cache-flake"));
+
+  let (out, ok) =
+    m.cache(&["prestage", &target, "--trust-declared-keys", "--json"]);
+  assert!(ok, "`cache prestage` failed: {out}");
+  assert!(out.contains("\"status\": \"applied\""), "got: {out}");
+  assert!(
+    out.contains("cache.example.org"),
+    "the envelope should name the discovered substituter: {out}"
+  );
+  let xi_conf = m.xi_conf().expect("xi.conf written");
+  assert!(xi_conf.contains("extra-substituters = https://cache.example.org"));
+
+  let (status_out, status_ok) = m.cache(&["status", "--json"]);
+  assert!(status_ok, "`cache status` failed: {status_out}");
+  assert!(status_out.contains("\"active\": true"), "got: {status_out}");
+
+  let (unstage_out, unstage_ok) = m.cache(&["unstage", "--json"]);
+  assert!(unstage_ok, "`cache unstage` failed: {unstage_out}");
+  assert!(
+    unstage_out.contains("\"include_removed\": true"),
+    "got: {unstage_out}"
+  );
+  assert!(
+    unstage_out.contains("\"xi_conf_removed\": true"),
+    "got: {unstage_out}"
+  );
+  assert!(m.xi_conf().is_none(), "xi.conf must be gone after unstage");
+
+  let (after_out, after_ok) = m.cache(&["status", "--json"]);
+  assert!(after_ok, "`cache status` after unstage failed: {after_out}");
+  assert!(after_out.contains("\"active\": false"), "got: {after_out}");
+}
+
+/// A prestage takes the sources lock, like switch and sync do: it
+/// writes `nix.conf` and the state dir, both of which other sources
+/// actors also write. Asserted on the lock's on-disk footprint, as
+/// `a_switch_takes_the_sources_lock` does above, for the same reason -
+/// contention cannot be driven through the binary within a bounded test.
+#[test]
+fn cache_prestage_takes_the_sources_lock() {
+  let m = Machine::new();
+  let target = fixture_cache_flake(&m.tmp.path().join("cache-flake"));
+
+  let (out, ok) =
+    m.cache(&["prestage", &target, "--trust-declared-keys", "--json"]);
+  assert!(ok, "`cache prestage` failed: {out}");
+
+  let state_dir = m.home.join(".local/state/xi");
+  assert!(
+    state_dir.join("lock").is_file(),
+    "the prestage must have taken the lock, which creates {}",
+    state_dir.join("lock").display()
+  );
+  assert_eq!(
+    std::fs::read_to_string(state_dir.join("lock"))
+      .expect("read the lock file")
+      .trim(),
+    "",
+    "a released lock leaves an empty record"
+  );
+}
