@@ -45,7 +45,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
-use super::{Scope, config::ScopePaths};
+use super::{
+  Scope,
+  config::ScopePaths,
+  lock::{ActorName, LockOptions, SourcesLock},
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -961,6 +965,11 @@ pub enum PrestageError {
   /// build would still use the old substituters.
   #[error("cache config written, but the nix-daemon reload failed: {0}")]
   Reload(String),
+
+  /// The sources lock could not be acquired: another actor holds it, or
+  /// `XI_SOURCES_LOCK_WAIT` is unparsable.
+  #[error("{0}")]
+  Lock(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,15 +1105,22 @@ pub struct PrestageOptions {
 /// and no `/etc`.
 pub struct Prestage<'a> {
   /// Which half of the machine.
-  pub scope:      Scope,
+  pub scope:          Scope,
   /// Where the files live.
-  pub paths:      ConfPaths,
+  pub paths:          ConfPaths,
+  /// `ScopePaths::state_dir` for this scope - where the sources lock
+  /// lives. Named explicitly rather than re-derived from `scope` inside
+  /// [`Prestage::run`]: `ScopePaths::resolve` reads the process
+  /// environment and falls back to real system paths
+  /// (`/var/lib/xi/state`), which a test's `Scope::System` fixture must
+  /// never touch.
+  pub lock_state_dir: PathBuf,
   /// How to read flake attributes.
-  pub reader:     &'a dyn AttrReader,
+  pub reader:         &'a dyn AttrReader,
   /// How to check declared keys.
-  pub advertiser: &'a dyn KeyAdvertiser,
+  pub advertiser:     &'a dyn KeyAdvertiser,
   /// How to make the daemon re-read its config.
-  pub reload:     &'a dyn DaemonReload,
+  pub reload:         &'a dyn DaemonReload,
 }
 
 impl fmt::Debug for Prestage<'_> {
@@ -1123,6 +1139,7 @@ impl Prestage<'_> {
     LiveParts {
       scope,
       paths: ConfPaths::resolve(scope),
+      lock_state_dir: ScopePaths::resolve(scope).state_dir,
       reader: NixAttrReader,
       advertiser: HttpsKeyAdvertiser,
       systemctl: SystemctlReload,
@@ -1138,16 +1155,31 @@ impl Prestage<'_> {
   /// recorded before the reload so a reload failure still leaves a
   /// reversible machine.
   ///
+  /// Takes the sources lock (`ActorName::CachePrestage`) for the whole
+  /// call, including the read-only discovery: a build triggered the
+  /// moment the write lands would otherwise be able to race it. Released
+  /// by `Drop` once this returns. (`BootstrapPlan`'s own `CachePrestage`
+  /// phase does not call this yet - see its `apply` arm - so there is no
+  /// double-acquisition to worry about from that direction today.)
+  ///
   /// # Errors
   ///
   /// See [`PrestageError`]. `Missing` is a status, not an error: a flake
-  /// that declares no caches is a normal flake.
+  /// that declares no caches is a normal flake. [`PrestageError::Lock`]
+  /// when the sources lock is held by another actor or
+  /// `XI_SOURCES_LOCK_WAIT` is unparsable.
   pub fn run(
     &self,
     flake_ref: &str,
     candidates: &[String],
     opts: &PrestageOptions,
   ) -> Result<PrestageReport, PrestageError> {
+    let lock_opts =
+      LockOptions::from_env(ActorName::CachePrestage, "cache prestage")
+        .map_err(PrestageError::Lock)?;
+    let _lock = SourcesLock::acquire(&self.lock_state_dir, &lock_opts)
+      .map_err(|err| PrestageError::Lock(err.to_string()))?;
+
     let found = discover(self.reader, flake_ref, candidates)
       .map_err(PrestageError::Reader)?;
 
@@ -1424,12 +1456,13 @@ impl Prestage<'_> {
 /// Something has to own the live ones; this is that something.
 #[derive(Debug)]
 pub struct LiveParts {
-  scope:      Scope,
-  paths:      ConfPaths,
-  reader:     NixAttrReader,
-  advertiser: HttpsKeyAdvertiser,
-  systemctl:  SystemctlReload,
-  no_reload:  NoReload,
+  scope:          Scope,
+  paths:          ConfPaths,
+  lock_state_dir: PathBuf,
+  reader:         NixAttrReader,
+  advertiser:     HttpsKeyAdvertiser,
+  systemctl:      SystemctlReload,
+  no_reload:      NoReload,
 }
 
 impl LiveParts {
@@ -1437,11 +1470,12 @@ impl LiveParts {
   #[must_use]
   pub fn as_prestage(&self) -> Prestage<'_> {
     Prestage {
-      scope:      self.scope,
-      paths:      self.paths.clone(),
-      reader:     &self.reader,
-      advertiser: &self.advertiser,
-      reload:     if scope_needs_reload(self.scope) {
+      scope:          self.scope,
+      paths:          self.paths.clone(),
+      lock_state_dir: self.lock_state_dir.clone(),
+      reader:         &self.reader,
+      advertiser:     &self.advertiser,
+      reload:         if scope_needs_reload(self.scope) {
         &self.systemctl as &dyn DaemonReload
       } else {
         &self.no_reload as &dyn DaemonReload

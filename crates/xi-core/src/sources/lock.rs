@@ -123,6 +123,23 @@ pub const GRANT_TTL: Duration = Duration::from_secs(5);
 /// How often a blocked acquirer re-checks the lock.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How often a progress-enabled wait repeats its status line.
+///
+/// Independent of [`POLL_INTERVAL`]: the poll has to be fast so release is
+/// prompt, but a line every 100ms would flood the terminal. The first line
+/// prints immediately regardless of this, so the operator never stares at
+/// silence even for the first interval.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The env var naming how long an acquirer is willing to block, overriding
+/// [`LockOptions::wait`].
+///
+/// Env-only, like `XI_SOURCES_STATE_DIR`
+/// ([`super::config::STATE_DIR_ENV`]): how long an operator's own command
+/// blocks their own terminal is not something a config repo gets to decide,
+/// so this is not a `[sources]` key. Read with [`wait_override_from`].
+pub const LOCK_WAIT_ENV: &str = "XI_SOURCES_LOCK_WAIT";
+
 // ---------------------------------------------------------------------------
 // ActorName  -  who is allowed to hold the lock, and in what order
 // ---------------------------------------------------------------------------
@@ -660,6 +677,30 @@ fn grant_next(waiters_dir: &Path, exclude: u32) -> io::Result<Option<u32>> {
   }
 }
 
+/// Parse [`LOCK_WAIT_ENV`] from an arbitrary lookup, or `None` when unset or
+/// empty.
+///
+/// Taking the lookup as a closure rather than reading the process
+/// environment directly keeps this testable without mutating process state
+/// no test can touch safely in parallel, the same reason
+/// [`super::config::SourcesConfig::from_env_with`] does.
+///
+/// # Errors
+///
+/// The variable is set to something [`humantime::parse_duration`] cannot
+/// read, e.g. `XI_SOURCES_LOCK_WAIT=soon`.
+pub fn wait_override_from(
+  lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<Duration>, String> {
+  let Some(raw) = lookup(LOCK_WAIT_ENV).filter(|v| !v.trim().is_empty())
+  else {
+    return Ok(None);
+  };
+  humantime::parse_duration(raw.trim())
+    .map(Some)
+    .map_err(|err| format!("invalid {LOCK_WAIT_ENV} value '{raw}': {err}"))
+}
+
 // ---------------------------------------------------------------------------
 // Acquisition options
 // ---------------------------------------------------------------------------
@@ -679,11 +720,18 @@ pub struct LockOptions {
   pub dead_pid_grace: Duration,
   /// Keep [`ALIVE_FILE`] fresh on a background thread while held.
   pub refresh:        bool,
+  /// Print a status line naming the holder while this acquisition blocks.
+  ///
+  /// Off by default: a daemon tick or another background actor has no
+  /// terminal to print to, and would otherwise spray its own log. Set by
+  /// [`LockOptions::with_progress`] for the foreground commands an
+  /// operator is sitting in front of.
+  pub progress:       bool,
 }
 
 impl LockOptions {
   /// Spec defaults: wait up to one lease, 15-minute lease, 10-second grace,
-  /// liveness refreshed for you.
+  /// liveness refreshed for you, no progress output.
   #[must_use]
   pub fn new(actor: ActorName, intent: impl Into<String>) -> Self {
     Self {
@@ -693,7 +741,44 @@ impl LockOptions {
       lease: DEFAULT_LEASE,
       dead_pid_grace: DEAD_PID_GRACE,
       refresh: true,
+      progress: false,
     }
+  }
+
+  /// [`LockOptions::new`], with [`LOCK_WAIT_ENV`] honoured when it names a
+  /// valid duration.
+  ///
+  /// Every mutating actor wants this applied, not just the ones that also
+  /// want [`LockOptions::with_progress`]: the wait budget is the
+  /// operator's call to make, independent of whether the actor asking has
+  /// a terminal to report progress to.
+  ///
+  /// # Errors
+  ///
+  /// A set but unparsable [`LOCK_WAIT_ENV`], naming the variable and the
+  /// value so the operator can see what was wrong without guessing.
+  pub fn from_env(
+    actor: ActorName,
+    intent: impl Into<String>,
+  ) -> Result<Self, String> {
+    let mut opts = Self::new(actor, intent);
+    if let Some(wait) = wait_override_from(&|key| std::env::var(key).ok())? {
+      opts.wait = wait;
+    }
+    Ok(opts)
+  }
+
+  /// Print a status line naming the holder while this acquisition blocks,
+  /// repeating every [`PROGRESS_INTERVAL`] until it succeeds or gives up.
+  ///
+  /// For a foreground command an operator is waiting on, e.g. `switch` or
+  /// `sources sync`: without this a contended lock blocks silently for up
+  /// to the whole wait budget, which reads as a hang even though
+  /// [`SourcesLock::acquire`] is doing exactly what it was asked.
+  #[must_use]
+  pub const fn with_progress(mut self) -> Self {
+    self.progress = true;
+    self
   }
 
   /// Give up after `wait` instead of after a full lease.
@@ -838,12 +923,16 @@ impl SourcesLock {
 
     let started = Instant::now();
     let mut stale: Option<LockRecord> = None;
+    // `None` so the very first contended poll reports immediately rather
+    // than waiting out a whole `PROGRESS_INTERVAL` in silence.
+    let mut last_progress: Option<Instant> = None;
 
     loop {
       if !grant_allows(&waiters_dir, record.pid) {
         if started.elapsed() >= opts.wait {
           return Err(Self::give_up(state_dir, &lock_path, started, opts));
         }
+        report_wait(opts, &lock_path, started, &mut last_progress);
         thread::sleep(POLL_INTERVAL);
         continue;
       }
@@ -912,6 +1001,7 @@ impl SourcesLock {
       if started.elapsed() >= opts.wait {
         return Err(Self::give_up(state_dir, &lock_path, started, opts));
       }
+      report_wait(opts, &lock_path, started, &mut last_progress);
       thread::sleep(POLL_INTERVAL);
     }
   }
@@ -1071,6 +1161,45 @@ impl Drop for SourcesLock {
     {
       warn!("could not cleanly release the sources lock: {err}");
     }
+  }
+}
+
+/// Print a status line naming the current holder, throttled to
+/// [`PROGRESS_INTERVAL`] and a no-op unless [`LockOptions::progress`] asked
+/// for it.
+///
+/// Goes to stderr via `eprintln!` rather than through `tracing`: the
+/// default filter is `WARN`, and the whole point is that an operator
+/// watching a plain `xi switch` with no `-v` sees this without having to
+/// ask for more logging than they otherwise would. Read failures are
+/// swallowed - a progress line is a courtesy, not a result the acquisition
+/// depends on, and `acquire`'s own next read reports a real I/O error.
+fn report_wait(
+  opts: &LockOptions,
+  lock_path: &Path,
+  started: Instant,
+  last: &mut Option<Instant>,
+) {
+  if !opts.progress {
+    return;
+  }
+  if last.is_some_and(|at| at.elapsed() < PROGRESS_INTERVAL) {
+    return;
+  }
+  *last = Some(Instant::now());
+
+  let elapsed = humantime::format_duration(started.elapsed());
+  match read_record(lock_path) {
+    Ok(Some(holder)) => {
+      eprintln!(
+        "xi: waiting for the sources lock - held by {} (pid {}) since {}: \
+         {} [{elapsed} elapsed]",
+        holder.actor_name, holder.pid, holder.started_at, holder.intent
+      );
+    },
+    Ok(None) | Err(_) => {
+      eprintln!("xi: waiting for the sources lock [{elapsed} elapsed]");
+    },
   }
 }
 

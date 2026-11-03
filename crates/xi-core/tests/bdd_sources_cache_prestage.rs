@@ -21,6 +21,7 @@
 
 use std::{cell::RefCell, collections::BTreeMap, fs};
 
+use serial_test::serial;
 use tempfile::TempDir;
 use xi_core::sources::{
   Scope,
@@ -41,7 +42,44 @@ use xi_core::sources::{
     parse_xi_conf,
     scope_needs_reload,
   },
+  lock::{ActorName, LOCK_FILE, LockOptions, SourcesLock},
 };
+
+/// Sets `XI_SOURCES_LOCK_WAIT` for the duration of a test and restores
+/// whatever was there before on drop.
+///
+/// Mutating process env is only safe here because every test that uses
+/// this is `#[serial]`: `LockOptions::from_env` reads `std::env::var`
+/// directly (it has no closure-injection escape hatch the way
+/// `xi_core::sources::config` does), so there is no way to exercise
+/// xi-wtrq's lock-contention path without it.
+struct LockWaitEnv {
+  previous: Option<String>,
+}
+
+impl LockWaitEnv {
+  fn set(value: &str) -> Self {
+    let previous = std::env::var("XI_SOURCES_LOCK_WAIT").ok();
+    // SAFETY: serialised against every other mutator of this process's
+    // environment by `#[serial]` on every test that constructs this.
+    unsafe {
+      std::env::set_var("XI_SOURCES_LOCK_WAIT", value);
+    }
+    Self { previous }
+  }
+}
+
+impl Drop for LockWaitEnv {
+  fn drop(&mut self) {
+    // SAFETY: see `LockWaitEnv::set`.
+    unsafe {
+      match &self.previous {
+        Some(value) => std::env::set_var("XI_SOURCES_LOCK_WAIT", value),
+        None => std::env::remove_var("XI_SOURCES_LOCK_WAIT"),
+      }
+    }
+  }
+}
 
 const CACHE: &str = "https://cache.example.org";
 const KEY: &str =
@@ -154,9 +192,12 @@ impl DaemonReload for Reloader {
 
 /// One machine: a `nix` directory, a state directory, and the doubles.
 struct Machine {
-  _tmp:   TempDir,
-  paths:  ConfPaths,
-  reload: Reloader,
+  _tmp:      TempDir,
+  paths:     ConfPaths,
+  /// Also where the sources lock lives for this fixture: a test's
+  /// `Scope::System` must never resolve to the real `/var/lib/xi/state`.
+  state_dir: std::path::PathBuf,
+  reload:    Reloader,
 }
 
 impl Machine {
@@ -168,8 +209,9 @@ impl Machine {
       fs::create_dir_all(dir).expect("mkdir");
     }
     Self {
-      paths:  ConfPaths::under(&nix_dir, &state_dir),
-      _tmp:   tmp,
+      paths: ConfPaths::under(&nix_dir, &state_dir),
+      state_dir,
+      _tmp: tmp,
       reload: Reloader::default(),
     }
   }
@@ -183,6 +225,7 @@ impl Machine {
     Prestage {
       scope,
       paths: self.paths.clone(),
+      lock_state_dir: self.state_dir.clone(),
       reader,
       advertiser,
       reload: &self.reload,
@@ -743,4 +786,66 @@ fn the_fragment_round_trips_through_its_renderer() {
   // An empty fragment parses to empty rather than to a one-element list
   // of the empty string, which is what a naive split would give.
   assert!(parse_xi_conf("").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// xi-wtrq: cache prestage takes the sources lock
+// ---------------------------------------------------------------------------
+
+/// xi-wtrq: `Prestage::run` takes the sources lock (`ActorName::CachePrestage`)
+/// before reading the flake and releases it once it returns.
+#[test]
+fn prestage_takes_the_sources_lock_and_releases_it() {
+  let machine = Machine::new();
+  let reader = TableReader::declaring(&nixos_attr());
+  let advertiser = Advertiser::vouching_for(KEY);
+
+  machine
+    .prestage(&reader, &advertiser, Scope::User)
+    .run(FLAKE, &candidates(), &PrestageOptions::default())
+    .expect("prestage");
+
+  let lock_path = machine.state_dir.join(LOCK_FILE);
+  assert!(
+    lock_path.is_file(),
+    "run must have taken the lock, which creates {}",
+    lock_path.display()
+  );
+  assert_eq!(
+    fs::read_to_string(&lock_path).expect("read lock").trim(),
+    "",
+    "a released lock leaves an empty record"
+  );
+}
+
+/// A prestage cannot run while another actor holds the sources lock: the
+/// error names the holder rather than racing it.
+#[test]
+#[serial]
+fn prestage_refuses_a_held_lock_and_names_the_holder() {
+  let _env = LockWaitEnv::set("50ms");
+  let machine = Machine::new();
+  let reader = TableReader::declaring(&nixos_attr());
+  let advertiser = Advertiser::vouching_for(KEY);
+
+  let held = SourcesLock::acquire(
+    &machine.state_dir,
+    &LockOptions::new(ActorName::Daemon, "tick").without_refresh(),
+  )
+  .expect("the test takes the free lock first");
+
+  let err = machine
+    .prestage(&reader, &advertiser, Scope::User)
+    .run(FLAKE, &candidates(), &PrestageOptions::default())
+    .expect_err("a held lock must refuse the run");
+  let PrestageError::Lock(message) = &err else {
+    panic!("expected PrestageError::Lock, got {err:?}");
+  };
+  assert!(message.contains("daemon"), "got: {message}");
+  assert!(
+    machine.xi_conf().is_none(),
+    "a run refused on the lock must not have written anything"
+  );
+
+  held.release().expect("release");
 }
