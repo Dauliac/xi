@@ -1,76 +1,33 @@
 //! The redaction boundary every observable surface sits behind.
 //!
-//! Three layers, because one is not enough:
+//! Two layers, because one is not enough:
 //!
-//! 1. [`Credential`] has no `Serialize` impl and prints `<redacted>` in
-//!    `Debug`. A field that tries to log one does not compile, which is the
-//!    only guarantee that survives a refactor.
+//! 1. [`xi_core::sources::credentials::Secret`] has no `Serialize` impl and
+//!    prints `<redacted>` in `Debug`. A field that tries to log one does not
+//!    compile, which is the only guarantee that survives a refactor. That
+//!    type lives in `xi-core` ([[xi-sources-credentials]] owns *which*
+//!    credentials exist and where they come from); earlier revisions of this
+//!    module defined a second, weaker newtype of its own
+//!    (`Credential`, `String`-backed, no `with_secret` closure) for the same
+//!    job. It is gone: `xi-sources-observability` already depends on
+//!    `xi-core`, so there is no cycle in depending on `Secret` directly, and
+//!    two opaque-credential types is how a future leak gets written against
+//!    the weaker one instead of the one that is actually enforced.
 //! 2. [`Scrubber`] handles the text a credential *leaks into* rather than the
 //!    credential itself: a git error that echoes a URL with userinfo, a hook's
 //!    stderr tail. Compile-time typing cannot reach that text, so it is
 //!    filtered on the way to the sink.
-//! 3. [`lint`] scans the tree for log and metric calls that name a
-//!    secret-shaped key, catching the case where someone converts a credential
-//!    to a `String` first and defeats layer 1.
 //!
-//! `xi-sources-credentials` owns *which* credentials exist and where
-//! they come from; this module owns the type they travel in.
+//! [`lint`] cuts across both: it scans the tree for log and metric calls
+//! that name a secret-shaped key, catching the case where someone reads a
+//! [`xi_core::sources::credentials::Secret`] through `with_secret` and then
+//! logs the resulting `&str` directly, which defeats layer 1 without
+//! defeating the type system.
 
-use std::fmt;
-
-/// An opaque credential value.
-///
-/// Deliberately missing:
-///
-/// - no `Serialize`, so no serde-backed sink (ndjson log, event store, OTLP
-///   attribute, JSON envelope) can ever encode it,
-/// - no `Display`, so it cannot reach a format string by accident,
-/// - no `Deref<Target = str>`, so it cannot be coerced into one.
-///
-/// Reading the secret is a single, greppable call:
-/// [`Credential::expose`]. Everything else about this type is designed
-/// to be inconvenient.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Credential(String);
-
-impl Credential {
-  /// Wrap a secret value.
-  #[must_use]
-  pub const fn new(secret: String) -> Self {
-    Self(secret)
-  }
-
-  /// Read the secret. The one sanctioned way out of the newtype.
-  ///
-  /// Call this at the moment of use (handing a token to git, writing an
-  /// askpass file) and never bind the result to a long-lived variable.
-  #[must_use]
-  pub fn expose(&self) -> &str {
-    &self.0
-  }
-
-  /// Length of the secret, for a "configured / not configured" readout
-  /// that must not reveal the value.
-  #[must_use]
-  pub const fn len(&self) -> usize {
-    self.0.len()
-  }
-
-  /// Whether the configured secret is the empty string.
-  #[must_use]
-  pub const fn is_empty(&self) -> bool {
-    self.0.is_empty()
-  }
-}
+use xi_core::sources::credentials::Secret;
 
 /// The placeholder every surface prints in place of a secret.
 pub const REDACTED: &str = "<redacted>";
-
-impl fmt::Debug for Credential {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.write_str(REDACTED)
-  }
-}
 
 /// Replaces registered secret values with [`REDACTED`] in free text.
 ///
@@ -105,13 +62,18 @@ impl Scrubber {
   /// rejected: the caller is wiring up config, and a too-short token is
   /// a config problem for `xi-sources-credentials` to report, not a
   /// reason for the logger to refuse to start.
-  pub fn register(&mut self, credential: &Credential) {
-    let secret = credential.expose();
-    if secret.len() >= MIN_SCRUBBABLE_LEN
-      && !self.secrets.iter().any(|s| s == secret)
-    {
-      self.secrets.push(secret.to_owned());
-    }
+  ///
+  /// Takes the secret through [`Secret::with_secret`] rather than
+  /// exposing it to the caller first, so registering a credential never
+  /// requires a call site to hold the bare value outside this function.
+  pub fn register(&mut self, credential: &Secret) {
+    credential.with_secret(|secret| {
+      if secret.len() >= MIN_SCRUBBABLE_LEN
+        && !self.secrets.iter().any(|s| s == secret)
+      {
+        self.secrets.push(secret.to_owned());
+      }
+    });
   }
 
   /// How many secrets are registered.
@@ -308,25 +270,15 @@ pub mod lint {
 mod tests {
   use super::*;
 
-  #[test]
-  fn debug_never_prints_the_secret() {
-    let credential = Credential::new("ghp_supersecretvalue".to_owned());
-    let rendered = format!("{credential:?}");
-    assert_eq!(rendered, REDACTED);
-    assert!(!rendered.contains("supersecret"));
-  }
-
-  #[test]
-  fn expose_is_the_only_way_out() {
-    let credential = Credential::new("ghp_supersecretvalue".to_owned());
-    assert_eq!(credential.expose(), "ghp_supersecretvalue");
-    assert_eq!(credential.len(), 20);
-    assert!(!credential.is_empty());
-  }
+  // `Secret`'s own redaction guarantees (`Debug` prints [`REDACTED`],
+  // `with_secret` is the only way out) are xi-core's to test; see
+  // `crates/xi-core/src/sources/credentials.rs`. These tests cover what
+  // this module adds on top: scrubbing free text that a `Secret`'s value
+  // leaked into.
 
   #[test]
   fn scrubber_replaces_registered_secrets() {
-    let credential = Credential::new("ghp_supersecretvalue".to_owned());
+    let credential = Secret::new("ghp_supersecretvalue".to_owned());
     let mut scrubber = Scrubber::new();
     scrubber.register(&credential);
 
@@ -340,8 +292,8 @@ mod tests {
   #[test]
   fn scrubber_prefers_the_longer_secret() {
     let mut scrubber = Scrubber::new();
-    scrubber.register(&Credential::new("abcdef".to_owned()));
-    scrubber.register(&Credential::new("abcdefghij".to_owned()));
+    scrubber.register(&Secret::new("abcdef".to_owned()));
+    scrubber.register(&Secret::new("abcdefghij".to_owned()));
 
     let scrubbed = scrubber.scrub("value=abcdefghij end");
     assert_eq!(scrubbed, format!("value={REDACTED} end"));
@@ -350,7 +302,7 @@ mod tests {
   #[test]
   fn scrubber_ignores_values_too_short_to_be_secrets() {
     let mut scrubber = Scrubber::new();
-    scrubber.register(&Credential::new("ok".to_owned()));
+    scrubber.register(&Secret::new("ok".to_owned()));
     assert!(scrubber.is_empty());
     assert_eq!(scrubber.scrub("ok then"), "ok then");
   }
@@ -358,8 +310,8 @@ mod tests {
   #[test]
   fn scrubber_registers_a_value_once() {
     let mut scrubber = Scrubber::new();
-    scrubber.register(&Credential::new("abcdef".to_owned()));
-    scrubber.register(&Credential::new("abcdef".to_owned()));
+    scrubber.register(&Secret::new("abcdef".to_owned()));
+    scrubber.register(&Secret::new("abcdef".to_owned()));
     assert_eq!(scrubber.len(), 1);
   }
 

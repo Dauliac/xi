@@ -18,10 +18,10 @@
 //! - **traces** - `otlp` batches tick root spans out to a collector when (and
 //!   only when) an operator names one.
 //!
-//! [`redact`] cuts across all four: a credential has no `Serialize`
-//! impl, free text is scrubbed on the way to a sink, and
-//! [`redact::lint`] scans the tree for log calls that try to smuggle one
-//! through anyway.
+//! [`redact`] cuts across all four: the credential type
+//! (`xi_core::sources::credentials::Secret`) has no `Serialize` impl,
+//! free text is scrubbed on the way to a sink, and [`redact::lint`]
+//! scans the tree for log calls that try to smuggle one through anyway.
 //!
 //! # Crate layout and features
 //!
@@ -57,4 +57,4 @@ pub mod rotating;
 
 pub use config::{LogLevel, ObservabilityConfig};
 pub use fields::{Outcome, Phase, PhaseSpan, TickSpan};
-pub use redact::{Credential, Scrubber};
+pub use redact::Scrubber;
