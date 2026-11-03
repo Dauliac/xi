@@ -13,14 +13,13 @@
 //!    ([`xi_core::sources::args::resolve_layers`]), so a daemon started by the
 //!    Nix module and a `switch` run by the operator never disagree about what
 //!    the remote, the branch, or `require_signed` are.
-//! 2. For every configured remote ([`ResolvedSources::effective_remotes`]) that
-//!    is due per its own `poll_interval` ([`Scheduler`]), run one
-//!    [`xi_sources_daemon::tick::run`], serialised through a [`Singleton`] gate
-//!    so a slow fetch cannot stack with the next one.
-//! 3. Sleep until the next remote becomes due and repeat, unless `--once`
-//!    asked for a single pass over every configured remote (used by operators
-//!    to drive the daemon by hand, and by integration tests that do not want
-//!    to wait out a real interval).
+//! 2. For every configured remote ([`ResolvedSources::effective_remotes`]), run
+//!    one [`xi_sources_daemon::tick::run`], serialised through a [`Singleton`]
+//!    gate so a slow fetch cannot stack with the next one.
+//! 3. Sleep for the shortest configured `poll_interval` and repeat, unless
+//!    `--once` asked for a single pass (used by operators to drive the daemon
+//!    by hand, and by integration tests that do not want to wait out a real
+//!    interval).
 
 use std::{
   path::PathBuf,
@@ -31,18 +30,18 @@ use std::{
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::{Result, eyre::eyre};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use xi_core::sources::{
   Scope,
   SourcesId,
   args::resolve_layers,
   config::{ScopePaths, SourcesConfig},
-  repair,
+  pause::{DEFAULT_PAUSE_TIMEOUT, TickGate},
 };
 use xi_sources_daemon::{
+  control::{self, ControlServer},
   exec::SystemExec,
   health::TickOutcome,
-  schedule::Scheduler,
   singleton::Singleton,
   tick::{self, TickInputs},
 };
@@ -99,21 +98,6 @@ fn main() -> Result<()> {
   setup_logging(cli.verbosity)?;
 
   let scope: Scope = cli.scope.into();
-
-  // Before anything else, including the first `ScopePaths::resolve`
-  // below: a crashed predecessor's leftovers (a dangling shadow fetch,
-  // an abandoned transaction sentinel, a stale receipt) have to be
-  // cleaned up before this process decides what the pre-lock world
-  // looks like. See `xi-sources-crash-recovery`'s "Daemon auto-repair
-  // on startup" requirement. `auto_repair` logs its own plan and report
-  // (WARN for anything destructive); a repair I/O failure is not fatal
-  // to the daemon starting, since the daemon's own first tick will
-  // surface the same problem more specifically if repair could not
-  // actually fix it.
-  if let Err(err) = repair::auto_repair(scope) {
-    warn!(%scope, error = %err, "startup repair failed; continuing anyway");
-  }
-
   let paths = ScopePaths::resolve(scope);
   let sources_dir =
     cli.sources_dir.unwrap_or_else(|| paths.sources_dir.clone());
@@ -149,38 +133,48 @@ fn main() -> Result<()> {
 
   let gate = Singleton::new();
   let exec = SystemExec;
-
-  // Each remote polls on its own configured `poll_interval`, not on the
-  // shortest one across the set: see [`xi_sources_daemon::schedule`].
-  let poll_intervals: Vec<Duration> =
-    remotes.iter().map(|remote| remote.poll_interval).collect();
-  let mut scheduler = Scheduler::new(Instant::now(), &poll_intervals);
+  let control_socket = control::socket_path(&paths.state_dir);
+  let control = ControlServer::spawn(control_socket, DEFAULT_PAUSE_TIMEOUT)?;
 
   loop {
-    let due = scheduler.due(Instant::now());
+    for remote in &remotes {
+      // An inbound `xi push` (or the pause timeout) may have asked the tick
+      // loop to stand down. `gate` also polls auto-resume, so a daemon that
+      // only ever asks this question before a tick cannot forget to check
+      // whether a stale pause has expired - see `xi-sources-race` section 4.
+      if matches!(control.gate(Instant::now()), TickGate::Hold) {
+        debug!(remote = %remote.url, "tick held: daemon is paused");
+        continue;
+      }
 
-    for index in due {
-      let remote = &remotes[index];
-      let _permit = gate.enter();
+      let outcome = {
+        let _permit = gate.enter();
+        control.begin_tick();
 
-      let tick_span = TickSpan::start(&sources_id.to_string(), &remote.url);
-      let inputs = TickInputs {
-        sources_id:      &sources_id,
-        sources_dir:     &sources_dir,
-        state_dir:       &paths.state_dir,
-        remote_url:      &remote.url,
-        branch:          &remote.branch,
-        require_signed:  resolved.require_signed,
-        allowed_signers: resolved.allowed_signers.as_deref(),
-        gpg_public_keys: resolved.gpg_public_keys.as_deref(),
-        on_advance:      resolved.on_advance.as_deref(),
-        sync_mode:       resolved.sync_mode,
+        let tick_span = TickSpan::start(&sources_id.to_string(), &remote.url);
+        let inputs = TickInputs {
+          sources_id:      &sources_id,
+          sources_dir:     &sources_dir,
+          state_dir:       &paths.state_dir,
+          remote_url:      &remote.url,
+          branch:          &remote.branch,
+          require_signed:  resolved.require_signed,
+          allowed_signers: resolved.allowed_signers.as_deref(),
+          gpg_public_keys: resolved.gpg_public_keys.as_deref(),
+          on_advance:      resolved.on_advance.as_deref(),
+        };
+
+        let outcome = tick::run(&exec, &inputs);
+        let span_outcome = span_outcome_for(&outcome);
+        let duration_ms = tick_span.finish(span_outcome);
+        tracing::debug!(remote = %remote.url, duration_ms, "tick finished");
+        outcome
+        // `_permit` drops here, before `control.end_tick()` below -
+        // the ordering `xi-sources-race` task 4.2 pins: a `pause` caller
+        // must not be told it is safe to acquire until the tick that held
+        // the lock has actually released it.
       };
-
-      let outcome = tick::run(&exec, &inputs);
-      let span_outcome = span_outcome_for(&outcome);
-      let duration_ms = tick_span.finish(span_outcome);
-      tracing::debug!(remote = %remote.url, duration_ms, "tick finished");
+      control.end_tick();
 
       match &outcome {
         TickOutcome::Degraded(reason) => {
@@ -194,22 +188,21 @@ fn main() -> Result<()> {
         },
         TickOutcome::NoChange { .. } | TickOutcome::Deferred { .. } => {},
       }
-
-      // Measured from completion, not from when it became due: a tick
-      // slower than its own interval must not read as immediately due
-      // again. The permit from this iteration's `gate.enter()` is still
-      // held here, so this remote's own next-due bookkeeping is itself
-      // serialised with every other remote's tick.
-      scheduler.mark_ticked(index, Instant::now());
     }
 
     if cli.once {
       break;
     }
 
-    let sleep_for = scheduler.sleep_duration(Instant::now());
+    let sleep_for = remotes
+      .iter()
+      .map(|r| r.poll_interval)
+      .min()
+      .unwrap_or(resolved.poll_interval);
     thread::sleep(sleep_for.max(Duration::from_secs(1)));
   }
+
+  control.shutdown();
 
   Ok(())
 }
