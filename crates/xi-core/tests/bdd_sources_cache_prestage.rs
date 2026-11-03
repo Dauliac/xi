@@ -43,6 +43,9 @@ use xi_core::sources::{
     scope_needs_reload,
   },
   lock::{ActorName, LOCK_FILE, LockOptions, SourcesLock},
+  receipt::Receipt,
+  repair::{self, Finding, RepairContext, WRITE_XI_CONF_ACTION},
+  transaction::{SENTINEL_NAME, Sentinel, Transaction},
 };
 
 /// Sets `XI_SOURCES_LOCK_WAIT` for the duration of a test and restores
@@ -848,4 +851,161 @@ fn prestage_refuses_a_held_lock_and_names_the_holder() {
   );
 
   held.release().expect("release");
+}
+
+// ---------------------------------------------------------------------------
+// xi-spbi: the receipt write runs inside the crash-recovery transaction
+// ---------------------------------------------------------------------------
+
+fn repair_ctx(m: &Machine) -> RepairContext {
+  RepairContext {
+    scope:            Scope::System,
+    sources_dir:      m.state_dir.join("sources"),
+    state_dir:        m.state_dir.clone(),
+    nix_conf:         None,
+    xi_conf:          None,
+    receipt_evidence: Vec::new(),
+    resume_sync:      false,
+  }
+}
+
+/// xi-spbi: a successful prestage leaves no transaction sentinel behind,
+/// and records `write-xi-conf` in the generic crash-recovery receipt -
+/// the fact `repair::ReceiptEvidence`'s `MissingReceiptEntry` check
+/// needs so a healthy, uninterrupted run is never mistaken for one that
+/// got killed before its receipt landed.
+#[test]
+fn a_successful_prestage_records_the_generic_receipt_and_leaves_no_sentinel() {
+  let m = Machine::new();
+  let reader = TableReader::declaring(&nixos_attr());
+  let advertiser = Advertiser::vouching_for(KEY);
+
+  let report = m
+    .prestage(&reader, &advertiser, Scope::System)
+    .run(FLAKE, &candidates(), &PrestageOptions::default())
+    .expect("prestage");
+  assert_eq!(report.status, PrestageStatus::Applied);
+
+  assert!(
+    !m.state_dir.join(SENTINEL_NAME).exists(),
+    "the per-run transaction must have committed and cleared its sentinel"
+  );
+  assert!(
+    Receipt::load(&m.state_dir)
+      .expect("load the generic receipt")
+      .records(WRITE_XI_CONF_ACTION),
+    "a successful write must record the generic receipt entry itself, not \
+     rely on `xi sources repair` to reconstruct it later"
+  );
+}
+
+/// A second prestage run - here, one that changes the declared settings,
+/// so `changed` is true again and the receipt-store branch runs twice -
+/// must not grow a second `write-xi-conf` entry in the generic receipt.
+/// `Transaction::commit` appends unconditionally; staging is what has to
+/// stay idempotent.
+#[test]
+fn a_second_prestage_does_not_duplicate_the_generic_receipt_entry() {
+  let m = Machine::new();
+  let advertiser = Advertiser::vouching_for(KEY);
+
+  let first_reader = TableReader::declaring(&nixos_attr());
+  m.prestage(&first_reader, &advertiser, Scope::System)
+    .run(FLAKE, &candidates(), &PrestageOptions::default())
+    .expect("first prestage");
+
+  // A second cache added on the second run, so `changed` is true again
+  // and the receipt-store branch is re-entered, not skipped as
+  // `Unchanged`. The original `CACHE` stays declared too, so `KEY`
+  // (which names `cache.example.org`) still ties back to a declared
+  // substituter and the key guard passes.
+  let second_reader = TableReader::new(&[
+    (
+      &format!("{}.substituters", nixos_attr()),
+      &format!("{CACHE} https://cache2.example"),
+    ),
+    (&format!("{}.trusted-public-keys", nixos_attr()), KEY),
+  ]);
+  let second_advertiser = Advertiser::vouching_for(KEY);
+  let second = m
+    .prestage(&second_reader, &second_advertiser, Scope::System)
+    .run(FLAKE, &candidates(), &PrestageOptions::default())
+    .expect("second prestage");
+  assert_eq!(
+    second.status,
+    PrestageStatus::Applied,
+    "the second run must have actually changed the fragment"
+  );
+
+  let receipt = Receipt::load(&m.state_dir).expect("load the generic receipt");
+  assert_eq!(
+    receipt
+      .entries
+      .iter()
+      .filter(|e| e.action == WRITE_XI_CONF_ACTION)
+      .count(),
+    1,
+    "the generic receipt must record the action once, not once per run: \
+     {:?}",
+    receipt.entries
+  );
+}
+
+/// The acceptance criterion behind xi-spbi for cache-prestage: a kill
+/// between the receipt write and the transaction committing leaves an
+/// `AbandonedTransaction` finding naming the `cache-prestage` actor,
+/// which `xi sources repair` then clears - the same contract
+/// `switch::tests::a_kill_before_commit_leaves_an_abandoned_transaction_
+/// naming_switch` and bootstrap's equivalent test prove for their own
+/// actors. `mem::forget` stands in for the SIGKILL a real crash would
+/// be, for the reason both of those tests give: this process is itself
+/// alive, and a live owner's sentinel must never be reported abandoned.
+#[test]
+fn a_kill_before_commit_leaves_an_abandoned_transaction_naming_cache_prestage()
+{
+  let m = Machine::new();
+
+  let txn = Transaction::begin(
+    &m.state_dir,
+    ActorName::CachePrestage.as_str(),
+    "xi system sources cache prestage",
+  )
+  .expect("begin transaction");
+  std::mem::forget(txn);
+
+  let mut sentinel = Sentinel::load(&m.state_dir)
+    .expect("load sentinel")
+    .expect("sentinel present");
+  assert_eq!(
+    sentinel.actor, "cache-prestage",
+    "cache prestage must open its transaction under the cache-prestage \
+     actor name"
+  );
+  sentinel.pid = 0x7FFF_FFFF; // Above any real pid: stands in for "gone".
+  fs::write(
+    m.state_dir.join(SENTINEL_NAME),
+    serde_json::to_vec_pretty(&sentinel).expect("serialise sentinel"),
+  )
+  .expect("rewrite sentinel as abandoned");
+
+  let ctx = repair_ctx(&m);
+  let abandoned = repair::discover(&ctx)
+    .expect("discover")
+    .findings
+    .into_iter()
+    .find_map(|f| {
+      match f {
+        Finding::AbandonedTransaction { actor, .. } => Some(actor),
+        _ => None,
+      }
+    })
+    .expect("an abandoned transaction finding naming cache-prestage");
+  assert_eq!(abandoned, "cache-prestage");
+
+  let report = repair::execute(&ctx, false).expect("repair");
+  assert!(report.is_clean(), "failures: {:?}", report.failures);
+  assert!(
+    !m.state_dir.join(SENTINEL_NAME).exists(),
+    "repair clears the abandoned sentinel a killed prestage left behind"
+  );
 }

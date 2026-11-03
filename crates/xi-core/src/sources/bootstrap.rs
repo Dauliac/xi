@@ -1540,6 +1540,20 @@ impl BootstrapPlan {
   /// crash or a power loss halfway through still leaves something
   /// `xi system uninstall` can reverse.
   ///
+  /// Per the `xi-sources-crash-recovery` capability's "receipt
+  /// consistency" rule, each phase runs inside its own
+  /// [`super::transaction::Transaction`]: the sentinel is published
+  /// before [`Action::apply`] runs and the receipt save - the phase's
+  /// one write that matters to `xi system uninstall` - is the last thing
+  /// that happens before the transaction commits and clears it. A crash
+  /// between a phase's physical effect landing and its receipt entry
+  /// being written leaves that sentinel behind, naming the `bootstrap`
+  /// actor and the phase, for `xi sources repair` to find; nothing here
+  /// depends on `Transaction`'s shadow-promotion machinery, since a
+  /// bootstrap phase's effect (an installed Nix, a cloned sources dir) is
+  /// not a file this process can stage beside its destination the way
+  /// `switch`'s adoption can.
+  ///
   /// Takes the sources lock (`ActorName::Bootstrap`) before the first
   /// phase and holds it for every phase, not just `CloneSources`: a
   /// concurrent daemon tick or switch must not race the machine's own
@@ -1569,9 +1583,16 @@ impl BootstrapPlan {
       let kind = action.kind();
       debug!("phase {kind}: {}", action.describe());
 
+      let txn = super::transaction::Transaction::begin(
+        &self.lock_state_dir,
+        ActorName::Bootstrap.as_str(),
+        format!("xi {} bootstrap: {}", self.scope.as_str(), action.describe()),
+      )?;
+
       match action.apply(runner, facts) {
         Ok(None) => {
           info!("phase {kind} was a no-op");
+          txn.commit()?;
         },
         Ok(Some(reversal)) => {
           let mut entry = ReceiptEntry::now(kind, reversal);
@@ -1579,11 +1600,21 @@ impl BootstrapPlan {
             entry = entry.installed_by(*backend);
           }
           receipt.entries.push(entry);
+          // The receipt save is the last write before the sentinel
+          // comes off: a kill between here and `commit` still leaves
+          // the entry on disk (the save below already finished), so
+          // there is nothing for repair to reconstruct for this phase -
+          // only a harmless abandoned sentinel to clear.
           receipt.save(&self.receipt_path)?;
+          txn.commit()?;
         },
         Err(e) => {
           // Persist what did happen before surfacing the failure, so
-          // the operator can reverse a partial bootstrap.
+          // the operator can reverse a partial bootstrap. The
+          // transaction for *this* phase is dropped without committing,
+          // which rolls it back (clears the sentinel): the phase itself
+          // failed, not merely crashed, so there is nothing abandoned
+          // to find on the next run.
           if !receipt.entries.is_empty() {
             receipt.save(&self.receipt_path)?;
           }
@@ -2368,6 +2399,101 @@ mod tests {
       ActionKind::WriteReceipt,
     ]);
     assert_eq!(receipt.remote.as_deref(), Some("https://git.example/cfg"));
+  }
+
+  /// xi-spbi: every phase's receipt save runs inside the transaction
+  /// boundary `xi-sources-crash-recovery` requires, and a fully
+  /// successful run leaves no trace of it - each phase's sentinel is
+  /// published, then cleared on that same phase's commit.
+  #[test]
+  fn a_successful_execute_leaves_no_transaction_sentinel_behind() {
+    let tmp = TempDir::new().unwrap();
+    let runner = RecordingRunner::new().with_program("nix");
+
+    full_plan(&tmp).execute(&runner, &facts()).expect("the plan must run");
+
+    assert!(
+      !tmp
+        .path()
+        .join("state")
+        .join(super::super::transaction::SENTINEL_NAME)
+        .exists(),
+      "every phase's transaction must have committed and cleared its own \
+       sentinel"
+    );
+  }
+
+  /// xi-spbi, the acceptance criterion itself: a kill between a phase's
+  /// receipt save and its transaction committing - the narrowest window
+  /// the receipt-consistency rule defines - leaves an
+  /// `AbandonedTransaction` finding naming the `bootstrap` actor, which
+  /// `xi sources repair` then clears. Driven the same way
+  /// `switch::tests::a_kill_before_commit_leaves_an_abandoned_
+  /// transaction_naming_switch` is: `mem::forget` stands in for the
+  /// SIGKILL a real crash would be, because this test process is itself
+  /// alive and a live owner's sentinel must never be reported abandoned.
+  #[test]
+  fn a_kill_mid_phase_leaves_an_abandoned_transaction_naming_bootstrap() {
+    use super::super::{
+      repair::{self, Finding, RepairContext},
+      transaction::{SENTINEL_NAME, Sentinel, Transaction},
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let state_dir = tmp.path().join("state");
+
+    let txn = Transaction::begin(
+      &state_dir,
+      ActorName::Bootstrap.as_str(),
+      "xi system bootstrap: install Nix",
+    )
+    .expect("begin transaction");
+    std::mem::forget(txn);
+
+    let mut sentinel = Sentinel::load(&state_dir)
+      .expect("load sentinel")
+      .expect("sentinel present");
+    assert_eq!(
+      sentinel.actor, "bootstrap",
+      "a bootstrap phase must open its transaction under the bootstrap \
+       actor name"
+    );
+    sentinel.pid = 0x7FFF_FFFF; // Above any real pid: stands in for "gone".
+    fs::write(
+      state_dir.join(SENTINEL_NAME),
+      serde_json::to_vec_pretty(&sentinel).expect("serialise sentinel"),
+    )
+    .expect("rewrite sentinel as abandoned");
+
+    let ctx = RepairContext {
+      scope: Scope::System,
+      sources_dir: tmp.path().join("sources"),
+      state_dir: state_dir.clone(),
+      nix_conf: None,
+      xi_conf: None,
+      receipt_evidence: Vec::new(),
+      resume_sync: false,
+    };
+
+    let abandoned = repair::discover(&ctx)
+      .expect("discover")
+      .findings
+      .into_iter()
+      .find_map(|f| {
+        match f {
+          Finding::AbandonedTransaction { actor, .. } => Some(actor),
+          _ => None,
+        }
+      })
+      .expect("an abandoned transaction finding naming bootstrap");
+    assert_eq!(abandoned, "bootstrap");
+
+    let report = repair::execute(&ctx, false).expect("repair");
+    assert!(report.is_clean(), "failures: {:?}", report.failures);
+    assert!(
+      !state_dir.join(SENTINEL_NAME).exists(),
+      "repair clears the abandoned sentinel a killed phase left behind"
+    );
   }
 
   /// xi-wtrq: `execute` takes the sources lock (`ActorName::Bootstrap`)

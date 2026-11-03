@@ -1251,6 +1251,29 @@ impl Prestage<'_> {
       .or_else(|| prior.as_ref().and_then(|r| r.appended_suffix.clone()));
 
     if changed || prior.is_none() {
+      // Per `xi-sources-crash-recovery`'s receipt-consistency rule: the
+      // receipt write runs inside a transaction, and the generic
+      // crash-recovery receipt entry - what lets `xi sources repair`
+      // tell "this action already happened" from "it was interrupted
+      // before its receipt landed" (see `repair::ReceiptEvidence`) -
+      // is staged so its append is structurally the last thing that
+      // happens before the sentinel comes off. The write-pass above
+      // (xi.conf, the `nix.conf` amend) is not staged as a shadow: both
+      // already go through `write_atomic`, which is itself crash-safe
+      // per file, so this transaction's job is only the sentinel and
+      // the receipt ordering, same as `bootstrap`'s per-phase one.
+      let mut txn = super::transaction::Transaction::begin(
+        &self.lock_state_dir,
+        ActorName::CachePrestage.as_str(),
+        format!("xi {} sources cache prestage", self.scope),
+      )
+      .map_err(|source| {
+        PrestageError::Io {
+          path: self.lock_state_dir.clone(),
+          source,
+        }
+      })?;
+
       CacheReceipt {
         schema_version: CACHE_SCHEMA_VERSION,
         scope: self.scope,
@@ -1264,6 +1287,31 @@ impl Prestage<'_> {
         settings: found.settings.clone(),
       }
       .store(&self.paths.receipt)?;
+
+      // Staged once, not every run: `Transaction::commit` appends
+      // unconditionally, and the generic receipt only needs to say
+      // once that this action has happened, not carry one entry per
+      // invocation of a capability that can legitimately re-run.
+      let already_recorded = super::receipt::Receipt::load(&self.lock_state_dir)
+        .map_err(|source| {
+          PrestageError::Io {
+            path: self.lock_state_dir.clone(),
+            source,
+          }
+        })?
+        .records(super::repair::WRITE_XI_CONF_ACTION);
+      if !already_recorded {
+        txn.stage_receipt(super::receipt::ReceiptEntry::new(
+          super::repair::WRITE_XI_CONF_ACTION,
+        ));
+      }
+
+      txn.commit().map_err(|source| {
+        PrestageError::Io {
+          path: self.lock_state_dir.clone(),
+          source,
+        }
+      })?;
     }
 
     let reloaded = changed && self.reload_if_needed()?;
