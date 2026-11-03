@@ -71,12 +71,12 @@ have() {
 curl_is_snap() {
   _curl=$(command -v curl 2>/dev/null) || return 1
   case "$_curl" in
-    /snap/* | */snap/bin/*) return 0 ;;
+  /snap/* | */snap/bin/*) return 0 ;;
   esac
   if [ -L "$_curl" ] && have readlink; then
     _resolved=$(readlink -f "$_curl" 2>/dev/null || printf '%s' "$_curl")
     case "$_resolved" in
-      /snap/*) return 0 ;;
+    /snap/*) return 0 ;;
     esac
   fi
   return 1
@@ -85,9 +85,9 @@ curl_is_snap() {
 detect_os() {
   _uname_s=$(uname -s)
   case "$_uname_s" in
-    Linux) printf 'linux' ;;
-    Darwin) printf 'darwin' ;;
-    *) die "unsupported operating system '$_uname_s'" ;;
+  Linux) printf 'linux' ;;
+  Darwin) printf 'darwin' ;;
+  *) die "unsupported operating system '$_uname_s'" ;;
   esac
 }
 
@@ -99,26 +99,26 @@ detect_arch() {
   _os=$1
   _uname_m=$(uname -m)
   case "$_uname_m" in
-    x86_64 | amd64)
-      if [ "$_os" = darwin ] && have sysctl &&
-        [ "$(sysctl -n hw.optional.arm64 2>/dev/null || printf 0)" = 1 ]; then
-        printf 'aarch64'
-      else
-        printf 'x86_64'
-      fi
-      ;;
-    aarch64 | arm64) printf 'aarch64' ;;
-    *) die "unsupported architecture '$_uname_m'" ;;
+  x86_64 | amd64)
+    if [ "$_os" = darwin ] && have sysctl &&
+      [ "$(sysctl -n hw.optional.arm64 2>/dev/null || printf 0)" = 1 ]; then
+      printf 'aarch64'
+    else
+      printf 'x86_64'
+    fi
+    ;;
+  aarch64 | arm64) printf 'aarch64' ;;
+  *) die "unsupported architecture '$_uname_m'" ;;
   esac
 }
 
 expected_sha256() {
   case "$1" in
-    linux-x86_64) printf '%s' "$XI_SHA256_LINUX_X86_64" ;;
-    linux-aarch64) printf '%s' "$XI_SHA256_LINUX_AARCH64" ;;
-    darwin-x86_64) printf '%s' "$XI_SHA256_DARWIN_X86_64" ;;
-    darwin-aarch64) printf '%s' "$XI_SHA256_DARWIN_AARCH64" ;;
-    *) die "no published binary for '$1'" ;;
+  linux-x86_64) printf '%s' "$XI_SHA256_LINUX_X86_64" ;;
+  linux-aarch64) printf '%s' "$XI_SHA256_LINUX_AARCH64" ;;
+  darwin-x86_64) printf '%s' "$XI_SHA256_DARWIN_X86_64" ;;
+  darwin-aarch64) printf '%s' "$XI_SHA256_DARWIN_AARCH64" ;;
+  *) die "no published binary for '$1'" ;;
   esac
 }
 
@@ -134,17 +134,17 @@ download() {
   _dest=$2
 
   case "$_url" in
-    file://*)
-      _path=$(printf '%s' "$_url" | sed -e 's|^file://||')
-      [ -f "$_path" ] || die "no such file: $_path"
-      cp "$_path" "$_dest"
-      return 0
-      ;;
-    /*)
-      [ -f "$_url" ] || die "no such file: $_url"
-      cp "$_url" "$_dest"
-      return 0
-      ;;
+  file://*)
+    _path=$(printf '%s' "$_url" | sed -e 's|^file://||')
+    [ -f "$_path" ] || die "no such file: $_path"
+    cp "$_path" "$_dest"
+    return 0
+    ;;
+  /*)
+    [ -f "$_url" ] || die "no such file: $_url"
+    cp "$_url" "$_dest"
+    return 0
+    ;;
   esac
 
   if have curl && ! curl_is_snap; then
@@ -155,7 +155,12 @@ download() {
   fi
 
   if have curl; then
-    say "ignoring snap-packaged curl (it cannot write outside \$HOME)"
+    # The literal name of the variable, not its value: a snap-confined
+    # curl cannot write outside the operator's home at all. Spelled with
+    # a directive rather than `\$HOME` in double quotes because shfmt
+    # rewrites that back to this form, and the two would fight.
+    # shellcheck disable=SC2016
+    say 'ignoring snap-packaged curl (it cannot write outside $HOME)'
   fi
 
   if have wget; then
@@ -202,10 +207,10 @@ target="$os-$arch"
 # way past the templated hash, and it still has to match.
 expected="${XI_BOOTSTRAP_SHA256:-$(expected_sha256 "$target")}"
 case "$expected" in
-  '@SHA256_'*)
-    die "this stub was not templated at release time: no sha256 for \
+'@SHA256_'*)
+  die "this stub was not templated at release time: no sha256 for \
 $target. Set XI_BOOTSTRAP_SHA256 if you are running it from a checkout."
-    ;;
+  ;;
 esac
 
 XI_TMPDIR=$(mktemp -d 2>/dev/null || mktemp -d -t xi-bootstrap)

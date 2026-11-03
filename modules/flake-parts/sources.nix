@@ -49,19 +49,19 @@ in
     # condition that reads `config` while the module system is still
     # collecting config keys is an infinite recursion.
     xi.settings.sources =
-      lib.throwIf missingTrustRoot ''
-        xi.sources.requireSigned needs a trust root: set
-        xi.sources.allowedSigners to an SSH allowed_signers file, or
-        xi.sources.gpgPublicKeys to a non-empty list of GPG public keys.
-        Verifying against an empty trust root is worse than not
-        verifying, because it looks safe.
-      ''
+      lib.throwIf missingTrustRoot
+        ''
+          xi.sources.requireSigned needs a trust root: set
+          xi.sources.allowedSigners to an SSH allowed_signers file, or
+          xi.sources.gpgPublicKeys to a non-empty list of GPG public keys.
+          Verifying against an empty trust root is worse than not
+          verifying, because it looks safe.
+        ''
         (
           lib.filterAttrs (_: v: v != null) {
             inherit (cfg.sources) remote branch;
             installer = cfg.sources.bootstrap.installer;
-            working-dir =
-              if cfg.sources.workingDir == null then null else toString cfg.sources.workingDir;
+            working-dir = if cfg.sources.workingDir == null then null else toString cfg.sources.workingDir;
             poll-interval = cfg.sources.pollInterval;
             require-signed = cfg.sources.requireSigned;
             allowed-signers =

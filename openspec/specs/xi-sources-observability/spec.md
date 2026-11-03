@@ -4,8 +4,8 @@
 
 `xi-sources-observability` is the capability an operator reaches for when they
 have to answer "what did the daemon just do, and why did it stop working". It
-owns three operator-facing surfaces (structured logs, a queryable event store,
-a Prometheus exporter) and one machine-facing surface (a health probe), and it
+owns three operator-facing surfaces (structured logs, a queryable event store, a
+Prometheus exporter) and one machine-facing surface (a health probe), and it
 fixes the field vocabulary every other `xi-sources-*` capability emits so a log
 line from the fetch loop and a log line from the activation step can be joined
 on the same keys.
@@ -24,14 +24,14 @@ secret.
   build, activate, hook), carrying the phase's outcome and duration.
 - **Log sink** - where structured ndjson lands for a scope: the journal at
   system scope, a daily-rotating file under the state dir at user scope.
-- **Event** - one row in the daemon's sqlite event store: a timestamped,
-  typed record of something that happened, queryable long after the log that
-  described it has rotated away.
+- **Event** - one row in the daemon's sqlite event store: a timestamped, typed
+  record of something that happened, queryable long after the log that described
+  it has rotated away.
 - **Metric registry** - the fixed set of Prometheus counters, histograms, and
   gauges the exporter publishes. The set is closed, and every label is a fixed
   enumeration.
-- **Health verdict** - the single boolean a container probe or systemd
-  watchdog needs, plus the reason behind it.
+- **Health verdict** - the single boolean a container probe or systemd watchdog
+  needs, plus the reason behind it.
 - **Redaction boundary** - the compile-time and run-time rules that keep a
   credential out of every surface above.
 
@@ -39,8 +39,8 @@ secret.
 
 ### Requirement: Structured tracing per tick
 
-Every daemon tick MUST emit exactly one root span (`xi.sources.tick`) with
-these fixed fields:
+Every daemon tick MUST emit exactly one root span (`xi.sources.tick`) with these
+fixed fields:
 
 - `sources_id` (string)
 - `remote` (string)
@@ -48,8 +48,8 @@ these fixed fields:
 - `outcome` ("ok" | "degraded" | "failed")
 - `duration_ms` (integer)
 
-A tick that reaches each phase MUST emit a child span per phase, each with
-fixed fields:
+A tick that reaches each phase MUST emit a child span per phase, each with fixed
+fields:
 
 - `phase` ("fetch" | "verify" | "resolve" | "build" | "activate" | "hook")
 - `outcome` ("ok" | "degraded" | "failed")
@@ -74,8 +74,8 @@ outside it records an event instead, so a log consumer can rely on the key set.
 
 - **GIVEN** a daemon with the observability panic hook installed
 - **WHEN** a tick panics
-- **THEN** an error-level event is emitted carrying the panic payload, the
-  panic location, and a backtrace
+- **THEN** an error-level event is emitted carrying the panic payload, the panic
+  location, and a backtrace
 - **AND** the tick's outcome is recorded as `failed`
 
 ### Requirement: Log destinations by scope
@@ -109,11 +109,10 @@ Default log level is `info`, configurable via
 
 The capability MUST provide:
 
-- `xi <scope> sources log tail [--follow] [--since <ts>] [--level <l>]`:
-  streams the configured sink's log, filtered as specified. Resolves the sink
-  per scope.
-- `xi <scope> sources events [--since <ts>] [--kind <k>] [--limit <n>]`:
-  returns structured events from the daemon's lightweight sqlite event store at
+- `xi <scope> sources log tail [--follow] [--since <ts>] [--level <l>]`: streams
+  the configured sink's log, filtered as specified. Resolves the sink per scope.
+- `xi <scope> sources events [--since <ts>] [--kind <k>] [--limit <n>]`: returns
+  structured events from the daemon's lightweight sqlite event store at
   `<state_dir>/events.db`.
 
 Event kinds include: `fetch`, `advance`, `verify`, `build`, `activate`, `hook`,
@@ -132,22 +131,22 @@ other `xi <scope> sources` subcommand.
 
 - **GIVEN** any event query
 - **WHEN** the result is printed
-- **THEN** the output is a two-row envelope: a schema version header followed
-  by body rows, sorted descending by time
+- **THEN** the output is a two-row envelope: a schema version header followed by
+  body rows, sorted descending by time
 
 ### Requirement: Prometheus exporter
 
 When `xi.sources.observability.prometheus.port` is a non-null integer in the
-range 1024-65535, the daemon MUST start a Prometheus text-exposition HTTP
-server bound to `127.0.0.1:<port>`. Non-loopback binds MUST be refused with a
-clear error.
+range 1024-65535, the daemon MUST start a Prometheus text-exposition HTTP server
+bound to `127.0.0.1:<port>`. Non-loopback binds MUST be refused with a clear
+error.
 
 The exporter MUST expose these metrics with these names:
 
 - `xi_sources_fetch_total{outcome}` (counter)
 - `xi_sources_fetch_duration_seconds` (histogram)
-- `xi_sources_sources_head_age_seconds` (gauge, equals now minus last
-  successful fetch time)
+- `xi_sources_sources_head_age_seconds` (gauge, equals now minus last successful
+  fetch time)
 - `xi_sources_build_duration_seconds` (histogram)
 - `xi_sources_build_total{outcome}` (counter)
 - `xi_sources_activation_total{outcome}` (counter)
@@ -155,14 +154,14 @@ The exporter MUST expose these metrics with these names:
 - `xi_sources_lock_wait_duration_seconds` (histogram)
 - `xi_sources_hook_total{hook,outcome}` (counter)
 
-The server MUST serve `/metrics` and `/healthz` and nothing else; any other
-path is a 404.
+The server MUST serve `/metrics` and `/healthz` and nothing else; any other path
+is a 404.
 
 #### Scenario: Non-loopback port refused
 
 - **GIVEN** `xi.sources.observability.prometheus.port = 9321` AND
-  `xi.sources.observability.prometheus.bind = "0.0.0.0"` (via a
-  future-expansion key or by env override)
+  `xi.sources.observability.prometheus.bind = "0.0.0.0"` (via a future-expansion
+  key or by env override)
 - **WHEN** the daemon starts
 - **THEN** startup fails with an error naming the non-loopback bind
 
@@ -226,9 +225,9 @@ OTLP is enabled).
 
 ### Requirement: Redaction
 
-Every observable surface (tracing field, metric label value, event-store
-column, OTLP span attribute) MUST reject any credential value, token file
-content, or GPG signature body. The opaque credential newtype from
+Every observable surface (tracing field, metric label value, event-store column,
+OTLP span attribute) MUST reject any credential value, token file content, or
+GPG signature body. The opaque credential newtype from
 [[xi-sources-credentials]] refuses `Serialize`, so a field attempting to log a
 credential fails at compile time.
 

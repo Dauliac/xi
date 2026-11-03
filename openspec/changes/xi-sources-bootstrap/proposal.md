@@ -3,7 +3,7 @@
 ## Why
 
 The user asked for a one-liner that turns a bare machine into a running
-NixOS/darwin/home-manager host managed by `xi`: "boostrap a machine with a curl
+NixOS/darwin/home-manager host managed by `xi`: "bootstrap a machine with a curl
 | sh that: download xi in a tmp dir, and run xi system switch
 https:mynixRepo.git to install a fresh machin with just a curl".
 

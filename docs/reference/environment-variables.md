@@ -138,7 +138,7 @@ records what xi already deployed, so letting a repo-committed config redirect it
 would let a config repo rewrite the history of its own deployment.
 
 Values are validated when the config loads, not when the remote is first
-contacted: a malformed URL, a relative `working-dir`, or an unparseable
+contacted: a malformed URL, a relative `working-dir`, or an unparsable
 `poll-interval` fails immediately and names the variable.
 
 ### Precedence

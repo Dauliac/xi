@@ -148,7 +148,7 @@ in
       gpgPublicKeys = lib.mkOption {
         type = lib.types.listOf lib.types.path;
         default = [ ];
-        example = lib.literalExpression ''[ ./keys/release.asc ]'';
+        example = lib.literalExpression "[ ./keys/release.asc ]";
         description = ''
           GPG public key files accepted as signing trust roots, as an
           alternative or a complement to `allowedSigners`. These are
