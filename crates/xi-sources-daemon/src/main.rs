@@ -32,6 +32,7 @@ use xi_core::sources::{
   SourcesId,
   args::resolve_layers,
   config::{ScopePaths, SourcesConfig},
+  repair,
 };
 use xi_sources_daemon::{
   exec::SystemExec,
@@ -92,6 +93,21 @@ fn main() -> Result<()> {
   setup_logging(cli.verbosity)?;
 
   let scope: Scope = cli.scope.into();
+
+  // Before anything else, including the first `ScopePaths::resolve`
+  // below: a crashed predecessor's leftovers (a dangling shadow fetch,
+  // an abandoned transaction sentinel, a stale receipt) have to be
+  // cleaned up before this process decides what the pre-lock world
+  // looks like. See `xi-sources-crash-recovery`'s "Daemon auto-repair
+  // on startup" requirement. `auto_repair` logs its own plan and report
+  // (WARN for anything destructive); a repair I/O failure is not fatal
+  // to the daemon starting, since the daemon's own first tick will
+  // surface the same problem more specifically if repair could not
+  // actually fix it.
+  if let Err(err) = repair::auto_repair(scope) {
+    warn!(%scope, error = %err, "startup repair failed; continuing anyway");
+  }
+
   let paths = ScopePaths::resolve(scope);
   let sources_dir =
     cli.sources_dir.unwrap_or_else(|| paths.sources_dir.clone());
