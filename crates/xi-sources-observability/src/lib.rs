@@ -10,7 +10,8 @@
 //!
 //! - **structured logs** - [`fields`] fixes the span vocabulary,
 //!   [`subscriber`] builds the ndjson tracing stack, [`rotating`] is the
-//!   user-scope daily-rotating sink, `readout` reads either sink back.
+//!   user-scope daily-rotating sink, [`journald`] is the system-scope one,
+//!   `readout` reads either sink back.
 //! - **events** - `events` is a tiny sqlite store that outlives the log it
 //!   describes, queried by `xi <scope> sources events`.
 //! - **metrics** - `metrics` is the closed Prometheus set and `server` exposes
@@ -42,20 +43,22 @@
 //!
 //! # Implementation status
 //!
-//! Five of the modules the layout above describes exist: [`config`],
+//! Six of the modules the layout above describes exist: [`config`],
 //! [`fields`], [`redact`], [`rotating`] and the `daemon`-gated
-//! [`subscriber`]. The rest  -  `events`, `health`, `otlp`, `readout`,
-//! and the `daemon`-gated `metrics`, `panic_hook`, `server`  -  are
-//! still to be written, and are declared here only once their file
-//! lands. The doc above is the target shape, not a description of what
-//! compiles today; see the `xi-sources-observability` change for the
-//! remaining work.
+//! [`subscriber`] and [`journald`]. The rest  -  `events`, `health`,
+//! `otlp`, `readout`, and the `daemon`-gated `metrics`, `panic_hook`,
+//! `server`  -  are still to be written, and are declared here only
+//! once their file lands. The doc above is the target shape, not a
+//! description of what compiles today; see the
+//! `xi-sources-observability` change for the remaining work.
 
 pub mod config;
 pub mod fields;
 pub mod redact;
 pub mod rotating;
 
+#[cfg(all(feature = "daemon", unix))]
+pub mod journald;
 #[cfg(feature = "daemon")]
 pub mod subscriber;
 
