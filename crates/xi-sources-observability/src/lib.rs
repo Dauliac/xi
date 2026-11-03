@@ -12,10 +12,10 @@
 //!   [`subscriber`] builds the ndjson tracing stack, [`rotating`] is the
 //!   user-scope daily-rotating sink, [`journald`] is the system-scope one,
 //!   `readout` reads either sink back.
-//! - **events** - `events` is a tiny sqlite store that outlives the log it
-//!   describes, queried by `xi <scope> sources events`.
-//! - **metrics** - [`metrics`] is the closed Prometheus set and `server`
-//!   exposes it on loopback alongside `health`.
+//! - **events** - [`events`] is a tiny sqlite store that outlives the log
+//!   it describes, queried by `xi <scope> sources events`.
+//! - **metrics** - [`metrics`] is the closed Prometheus set and
+//!   [`server`] exposes it on loopback alongside `health`.
 //! - **traces** - `otlp` batches tick root spans out to a collector when
 //!   (and only when) an operator names one.
 //!
@@ -47,19 +47,20 @@
 //!
 //! # Implementation status
 //!
-//! Nine of the modules the layout above describes exist: [`config`],
-//! [`fields`], [`redact`], [`rotating`], the `daemon`-gated
+//! Ten of the modules the layout above describes exist: [`config`],
+//! [`events`], [`fields`], [`redact`], [`rotating`], the `daemon`-gated
 //! [`subscriber`], [`journald`], [`metrics`] and [`server`], and the
 //! `otlp`-gated `otlp` (off by default; see "Crate layout and
-//! features"). The rest - `events`, `health`, `readout`, and the
-//! `daemon`-gated `panic_hook` - are still to be written, and are
-//! declared here only once their file lands. [`server`] today only
-//! answers `/metrics`; `/healthz` and the "nothing else" closed-route
-//! guarantee are task 5.3, not yet landed. The doc above is the target
-//! shape, not a description of what compiles today; see the
+//! features"). The rest - `health`, `readout`, and the `daemon`-gated
+//! `panic_hook` - are still to be written, and are declared here only
+//! once their file lands. [`server`] today only answers `/metrics`;
+//! `/healthz` and the "nothing else" closed-route guarantee are task
+//! 5.3, not yet landed. The doc above is the target shape, not a
+//! description of what compiles today; see the
 //! `xi-sources-observability` change for the remaining work.
 
 pub mod config;
+pub mod events;
 pub mod fields;
 pub mod redact;
 pub mod rotating;

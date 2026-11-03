@@ -35,6 +35,7 @@ use super::{
     sync,
     three_way_diff,
   },
+  events::{self, EventKind, EventsQuery},
   lock::{ActorName, LockOptions, SourcesLock},
   log::{self, Level as LogLevelFilter, TailFilter, TailRequest},
 };
@@ -58,6 +59,8 @@ pub enum SourcesCommand {
   Cache(CacheProxy),
   /// Read the gitops daemon's structured log for this scope
   Log(LogArgs),
+  /// List the gitops daemon's structured events for this scope
+  Events(EventsArgs),
 }
 
 /// `xi <scope> sources log` - the log-reading verb group.
@@ -96,6 +99,27 @@ pub struct LogTailArgs {
   /// Only show lines at or above this level (trace|debug|info|warn|error).
   #[arg(long)]
   pub level: Option<String>,
+}
+
+/// `xi <scope> sources events` - the event-store readout verb.
+#[derive(Debug, Clone, Args)]
+pub struct EventsArgs {
+  /// Only show events at or after this RFC 3339 timestamp.
+  #[arg(long)]
+  pub since: Option<String>,
+
+  /// Only show events of this kind (fetch|advance|verify|build|activate|
+  /// hook|lock-wait).
+  #[arg(long)]
+  pub kind: Option<String>,
+
+  /// Show at most this many events.
+  #[arg(long)]
+  pub limit: Option<u32>,
+
+  /// Emit the house JSON envelope instead of a plain table.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -205,6 +229,7 @@ impl SourcesProxy {
       SourcesCommand::Sync(args) => args.run(scope),
       SourcesCommand::Cache(proxy) => proxy.run(scope),
       SourcesCommand::Log(args) => args.run(scope),
+      SourcesCommand::Events(args) => args.run(scope),
     }
   }
 }
@@ -424,6 +449,74 @@ impl LogTailArgs {
         )
       },
     )
+  }
+}
+
+impl EventsArgs {
+  /// List events from the resolved scope's event store.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `--since` or `--kind` fail to parse, if reading
+  /// the store fails, or if JSON serialisation fails.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let since: Option<DateTime<Utc>> = self
+      .since
+      .as_deref()
+      .map(|raw| {
+        DateTime::parse_from_rfc3339(raw)
+          .map(|dt| dt.with_timezone(&Utc))
+          .map_err(|e| eyre!("invalid '--since' value '{raw}': {e}"))
+      })
+      .transpose()?;
+    let kind = self
+      .kind
+      .as_deref()
+      .map(EventKind::parse)
+      .transpose()
+      .map_err(|e| eyre!(e))?;
+
+    let query = EventsQuery {
+      since,
+      kind,
+      limit: self.limit,
+    };
+    let paths = ScopePaths::resolve(scope);
+    let response = events::events(scope, &paths.state_dir, &query)
+      .map_err(|e| eyre!("reading the {scope} sources events failed: {e}"))?;
+
+    if self.json {
+      println!("{}", serde_json::to_string_pretty(&response)?);
+      return Ok(());
+    }
+
+    if response.events.is_empty() {
+      println!("no events recorded for {scope} scope yet");
+      return Ok(());
+    }
+
+    println!(
+      "{:<24} {:<10} {:<10} {:<8} {:<10}  MESSAGE",
+      "TIMESTAMP", "KIND", "OUTCOME", "MS", "SHA"
+    );
+    for event in &response.events {
+      let sha = event
+        .new_sha
+        .as_deref()
+        .map_or_else(String::new, |sha| sha.chars().take(10).collect());
+      println!(
+        "{:<24} {:<10} {:<10} {:<8} {:<10}  {}",
+        event.ts,
+        event.kind,
+        event.outcome.as_deref().unwrap_or("-"),
+        event
+          .duration_ms
+          .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
+        sha,
+        event.message.as_deref().unwrap_or(""),
+      );
+    }
+    Ok(())
   }
 }
 
