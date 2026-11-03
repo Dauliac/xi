@@ -7,12 +7,24 @@
 //! crate offers - `info` is the floor).
 //!
 //! The layer always emits ndjson. [`crate::fields::TickSpan`] and
-//! [`crate::fields::PhaseSpan`] declare their fields up
-//! front and record them before closing; this module's job is only to
-//! turn "a span closed" into one JSON line carrying those fields, via
-//! [`tracing_subscriber::fmt::format::FmtSpan::CLOSE`]. A plain
-//! `info!("message")` call still produces its own line the same way
-//! every `tracing_subscriber::fmt` consumer expects.
+//! [`crate::fields::PhaseSpan`] declare their fields up front and
+//! record them before closing; this module's job is only to turn each
+//! event - including the explicit `"close"` event
+//! [`crate::fields::TickSpan::finish`]/[`crate::fields::PhaseSpan::finish`]
+//! emit while still entered - into one JSON line carrying the current
+//! span's recorded fields, via
+//! [`tracing_subscriber::fmt::format::FmtSpan::NONE`] plus
+//! `with_current_span(true)`. A plain `info!("message")` call still
+//! produces its own line the same way every `tracing_subscriber::fmt`
+//! consumer expects.
+//!
+//! Deliberately *not* [`tracing_subscriber::fmt::format::FmtSpan::CLOSE`]:
+//! that synthesizes an equivalent-looking event straight from span-close
+//! bookkeeping, but only for whichever `fmt` layer did the synthesizing -
+//! a sibling layer such as `tracing_journald::Layer` never sees it (see
+//! `crate::journald`'s module doc). Relying on the explicit event from
+//! `fields` instead means every layer stacked on the registry - this
+//! one, `journald`, a future `otlp` - sees the same line.
 
 use tracing_subscriber::{
   Layer as _,
@@ -42,7 +54,7 @@ where
     .flatten_event(true)
     .with_current_span(true)
     .with_span_list(false)
-    .with_span_events(FmtSpan::CLOSE)
+    .with_span_events(FmtSpan::NONE)
     .with_writer(writer)
 }
 
