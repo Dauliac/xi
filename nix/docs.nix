@@ -70,14 +70,17 @@
       '';
     in
     {
-      legacyPackages.docs = pkgs.runCommandLocal "xi-docs" {
-        nativeBuildInputs = [ pkgs.mdbook ];
-      } ''
-        cp -r ${mdbookInput}/. build/
-        chmod -R u+w build/
-        cd build
-        mdbook build
-        mv book $out
-      '';
+      legacyPackages.docs =
+        pkgs.runCommandLocal "xi-docs"
+          {
+            nativeBuildInputs = [ pkgs.mdbook ];
+          }
+          ''
+            cp -r ${mdbookInput}/. build/
+            chmod -R u+w build/
+            cd build
+            mdbook build
+            mv book $out
+          '';
     };
 }

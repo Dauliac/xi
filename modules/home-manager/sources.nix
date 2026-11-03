@@ -39,11 +39,15 @@ in
   config = lib.mkIf (cfg.enable && cfg.sources.enable) {
     assertions = [
       {
-        assertion = cfg.sources.requireSigned != true || cfg.sources.allowedSigners != null;
+        assertion =
+          cfg.sources.requireSigned != true
+          || cfg.sources.allowedSigners != null
+          || cfg.sources.gpgPublicKeys != [ ];
         message = ''
-          programs.xi.sources.requireSigned requires
-          programs.xi.sources.allowedSigners to point at an SSH
-          allowed_signers file. Verifying against an empty trust root is
+          programs.xi.sources.requireSigned needs a trust root: set
+          programs.xi.sources.allowedSigners to an SSH allowed_signers
+          file, or programs.xi.sources.gpgPublicKeys to a non-empty list
+          of GPG public keys. Verifying against an empty trust root is
           worse than not verifying, because it looks safe.
         '';
       }
