@@ -372,9 +372,39 @@ fn apply_queued_sync(
 /// surprise it prevents. `sync_mode` is what resolves this properly once
 /// the machine is managed.
 fn warn_on_dirty_adoption(remote: &str, working_dir: Option<&Path>) {
-  let candidates = [working_dir, Some(Path::new("."))];
+  if let Some(message) = dirty_adoption_warning(remote, working_dir) {
+    warn!("{message}");
+  }
+}
 
-  for dir in candidates.into_iter().flatten() {
+/// The candidates checked for a dirty checkout tracking `remote`.
+///
+/// `working_dir` first, when configured, then the process's own CWD -
+/// adoption is frequently run from inside the checkout being adopted,
+/// before any `.xi.toml` has recorded a working dir at all.
+fn dirty_adoption_candidates(working_dir: Option<&Path>) -> [Option<&Path>; 2] {
+  [working_dir, Some(Path::new("."))]
+}
+
+/// The warning text for [`warn_on_dirty_adoption`], or `None` when
+/// nothing qualifies.
+///
+/// Separated from the `tracing` call so the detection logic - which
+/// candidate tracks `remote`, and whether it is dirty - is testable
+/// without capturing log output. Returns the *first* matching candidate
+/// only: `working_dir` and CWD are usually the same checkout, and
+/// stacking two warnings about one tree would read as two problems
+/// instead of one.
+///
+/// # Errors
+///
+/// None returned as an error: a candidate that is not a readable git
+/// checkout, or whose `origin` cannot be read, is silently skipped
+/// rather than surfaced, because adoption itself is what is being
+/// attempted and a probe of an unrelated directory failing is not its
+/// business.
+fn dirty_adoption_warning(remote: &str, working_dir: Option<&Path>) -> Option<String> {
+  for dir in dirty_adoption_candidates(working_dir).into_iter().flatten() {
     if !tracks_remote(dir, remote) {
       continue;
     }
@@ -385,15 +415,23 @@ fn warn_on_dirty_adoption(remote: &str, working_dir: Option<&Path>) {
       continue;
     }
 
-    warn!(
-      "{} has {} uncommitted change(s) against {remote}.\nAdoption deploys \
-       the committed state of that remote, not what is in that tree. Commit \
-       and push first if the difference matters.",
-      dir.display(),
-      tree.paths.len()
-    );
-    return;
+    return Some(format_dirty_adoption_warning(dir, remote, tree.paths.len()));
   }
+  None
+}
+
+/// Render the dirty-adoption warning for one checkout.
+///
+/// `count` is the number of dirty paths rather than the full
+/// [`super::conflict::DirtyTree`], so this stays a pure string builder a
+/// test can call without a filesystem.
+fn format_dirty_adoption_warning(dir: &Path, remote: &str, count: usize) -> String {
+  format!(
+    "{} has {count} uncommitted change(s) against {remote}.\nAdoption deploys \
+     the committed state of that remote, not what is in that tree. Commit \
+     and push first if the difference matters.",
+    dir.display()
+  )
 }
 
 /// Whether `dir` is a git checkout whose `origin` is `remote`.
@@ -762,4 +800,150 @@ pub const fn install_command(backend: Installer) -> &'static str {
 #[must_use]
 pub fn sources_dir_for(scope: Scope) -> PathBuf {
   ScopePaths::resolve(scope).sources_dir
+}
+
+// ---------------------------------------------------------------------------
+// Tests  -  xi-zbll: warn on dirty adoption
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[expect(clippy::expect_used, clippy::unwrap_used, reason = "Fine in tests")]
+mod tests {
+  use std::fs;
+
+  use tempfile::TempDir;
+
+  use super::*;
+
+  const REMOTE: &str = "https://git.example/config";
+
+  fn git(at: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+      .arg("-C")
+      .arg(at)
+      .args([
+        "-c",
+        "user.email=t@e",
+        "-c",
+        "user.name=t",
+        "-c",
+        "commit.gpgsign=false",
+      ])
+      .args(args)
+      .output()
+      .expect("run git");
+    assert!(
+      out.status.success(),
+      "git {args:?} failed in {}: {}",
+      at.display(),
+      String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+  }
+
+  /// A git checkout with one commit, `origin` pointed at `origin_url`.
+  fn checkout(root: &Path, origin_url: &str) -> PathBuf {
+    let dir = root.join("checkout");
+    fs::create_dir_all(&dir).expect("mkdir checkout");
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { }; }\n")
+      .expect("write flake");
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["remote", "add", "origin", origin_url]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "base"]);
+    dir
+  }
+
+  // -- format_dirty_adoption_warning: pure formatting --------------------
+
+  #[test]
+  fn the_warning_names_the_remote_and_the_file_count() {
+    let message =
+      format_dirty_adoption_warning(Path::new("/home/op/dotfiles"), REMOTE, 3);
+    assert!(message.contains(REMOTE), "{message}");
+    assert!(message.contains('3'), "{message}");
+    assert!(message.contains("/home/op/dotfiles"), "{message}");
+    assert!(
+      message.contains("deploys"),
+      "must say adoption deploys committed state, got: {message}"
+    );
+  }
+
+  // -- tracks_remote -------------------------------------------------------
+
+  #[test]
+  fn tracks_remote_is_true_for_the_exact_origin() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert!(tracks_remote(&dir, REMOTE));
+  }
+
+  #[test]
+  fn tracks_remote_canonicalises_equivalent_url_shapes() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), "git@git.example:config.git");
+    assert!(
+      tracks_remote(&dir, "ssh://git.example/config"),
+      "scp-style and ssh:// spellings of the same remote must match"
+    );
+  }
+
+  #[test]
+  fn tracks_remote_is_false_for_a_different_remote() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert!(!tracks_remote(&dir, "https://git.example/other"));
+  }
+
+  #[test]
+  fn tracks_remote_is_false_for_a_non_repository() {
+    let tmp = TempDir::new().unwrap();
+    let not_a_repo = tmp.path().join("not-a-repo");
+    fs::create_dir_all(&not_a_repo).unwrap();
+    assert!(!tracks_remote(&not_a_repo, REMOTE));
+  }
+
+  // -- dirty_adoption_warning: the end-to-end check -----------------------
+
+  #[test]
+  fn a_dirty_checkout_tracking_the_remote_produces_a_warning() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { v = 2; }; }\n")
+      .expect("dirty the checkout");
+
+    let message = dirty_adoption_warning(REMOTE, Some(&dir))
+      .expect("a dirty checkout tracking the remote must warn");
+    assert!(message.contains(REMOTE), "{message}");
+    assert!(message.contains("1 uncommitted"), "{message}");
+  }
+
+  #[test]
+  fn a_clean_checkout_tracking_the_remote_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert_eq!(dirty_adoption_warning(REMOTE, Some(&dir)), None);
+  }
+
+  #[test]
+  fn a_dirty_checkout_tracking_a_different_remote_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), "https://git.example/unrelated");
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { v = 2; }; }\n")
+      .expect("dirty the checkout");
+
+    assert_eq!(
+      dirty_adoption_warning(REMOTE, Some(&dir)),
+      None,
+      "adoption of `{REMOTE}` must not warn about an unrelated checkout"
+    );
+  }
+
+  #[test]
+  fn with_no_working_dir_and_a_non_tracking_cwd_nothing_warns() {
+    // The CWD fallback is exercised by passing `None`; the test process's
+    // own CWD does not track a fake `https://git.example` remote, so this
+    // must fall through to `None` rather than panic or false-positive.
+    assert_eq!(dirty_adoption_warning(REMOTE, None), None);
+  }
 }
