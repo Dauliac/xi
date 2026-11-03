@@ -6,8 +6,8 @@
 //! (a daemon with logging disabled, which is not a configuration this
 //! crate offers - `info` is the floor).
 //!
-//! The layer always emits ndjson. [`fields::TickSpan`] and
-//! [`fields::PhaseSpan`] (see [`crate::fields`]) declare their fields up
+//! The layer always emits ndjson. [`crate::fields::TickSpan`] and
+//! [`crate::fields::PhaseSpan`] declare their fields up
 //! front and record them before closing; this module's job is only to
 //! turn "a span closed" into one JSON line carrying those fields, via
 //! [`tracing_subscriber::fmt::format::FmtSpan::CLOSE`]. A plain
@@ -28,8 +28,8 @@ use crate::config::LogLevel;
 ///
 /// Span life cycle only ever surfaces at `CLOSE`: an "open" line would
 /// double the volume of every tick for no benefit, because
-/// [`fields::TickSpan`] and [`fields::PhaseSpan`] declare their fields
-/// as [`tracing::field::Empty`] until the phase is actually done, so an
+/// [`crate::fields::TickSpan`] and [`crate::fields::PhaseSpan`] declare
+/// their fields as [`tracing::field::Empty`] until the phase is actually done, so an
 /// open-time line would carry half the field set anyway.
 pub fn ndjson_layer<W>(
   writer: W,
