@@ -1608,6 +1608,148 @@ impl ResolvedSources {
   }
 }
 
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
+mod multi_remote_tests {
+  //! Owned by `xi-sources-gitops` section 5.1: the `[[sources.remote]]`
+  //! array and its per-entry fallback to the `[sources]`-level `branch`
+  //! and `poll-interval` lives here because it is parsed alongside every
+  //! other `[sources]` key, but "every remote to poll, with per-entry
+  //! gaps filled" is the multi-remote fan-in capability's own
+  //! requirement, not the config loader's.
+  //!
+  //! `effective_remotes` had no test coverage at all before this change -
+  //! neither the TOML array-of-tables parse path nor the fallback
+  //! arithmetic.
+
+  use std::time::Duration;
+
+  use tempfile::TempDir;
+
+  use super::{Layers, RemoteSpec, SourcesConfig};
+
+  fn toml_layer(body: &str) -> SourcesConfig {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = tmp.path().join(".xi.toml");
+    std::fs::write(&path, body).expect("write");
+    SourcesConfig::from_toml_file(&path).expect("parse")
+  }
+
+  #[test]
+  fn an_unconfigured_source_has_no_remotes_to_poll() {
+    let resolved = Layers::default().resolve();
+    assert!(
+      resolved.effective_remotes().is_empty(),
+      "nothing configured means nothing to fetch"
+    );
+  }
+
+  #[test]
+  fn a_scalar_remote_yields_exactly_one_resolved_entry() {
+    let toml = toml_layer(
+      "[sources]\nremote = \"https://example.org/cfg\"\nbranch = \
+       \"trunk\"\npoll-interval = \"2m\"\n",
+    );
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].url, "https://example.org/cfg");
+    assert_eq!(remotes[0].branch, "trunk");
+    assert_eq!(remotes[0].poll_interval, Duration::from_secs(120));
+  }
+
+  /// SC-G-005: two remotes, each independently resolvable, is the shape
+  /// the daemon schedules against.
+  #[test]
+  fn an_array_of_tables_parses_into_two_remote_specs() {
+    let toml = toml_layer(
+      "[sources]\nbranch = \"main\"\npoll-interval = \"1m\"\n\n\
+       [[sources.remote]]\nurl = \"https://github.example/cfg\"\n\n\
+       [[sources.remote]]\nurl = \"https://gitlab.example/cfg-mirror\"\n\
+       branch = \"mirror\"\npoll-interval = \"5m\"\n",
+    );
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes.len(), 2, "both entries must parse");
+
+    // The first entry names neither `branch` nor `poll-interval`, so
+    // both fall back to the `[sources]`-level values.
+    assert_eq!(remotes[0].url, "https://github.example/cfg");
+    assert_eq!(remotes[0].branch, "main");
+    assert_eq!(remotes[0].poll_interval, Duration::from_secs(60));
+
+    // The second entry overrides both, and its own values win.
+    assert_eq!(remotes[1].url, "https://gitlab.example/cfg-mirror");
+    assert_eq!(remotes[1].branch, "mirror");
+    assert_eq!(remotes[1].poll_interval, Duration::from_secs(300));
+  }
+
+  /// The inline-array spelling (`remote = [{ url = "..." }]`) is TOML's
+  /// other way of writing the same array of tables, and
+  /// `parse_remote_item` accepts both; `effective_remotes` must not care
+  /// which one the operator used.
+  #[test]
+  fn the_inline_array_spelling_resolves_identically_to_the_table_array() {
+    let toml = toml_layer(
+      "[sources]\nbranch = \"main\"\nremote = [{ url = \
+       \"https://example.org/one\" }, { url = \"https://example.org/two\", \
+       branch = \"dev\" }]\n",
+    );
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes.len(), 2);
+    assert_eq!(remotes[0].branch, "main");
+    assert_eq!(remotes[1].branch, "dev");
+  }
+
+  /// A remote spec built directly (as the Nix-module layer or `xi
+  /// sources init` would) round-trips through `effective_remotes` the
+  /// same way a parsed one does - the fallback logic does not depend on
+  /// having come from TOML.
+  #[test]
+  fn effective_remotes_fills_gaps_from_the_scope_level_defaults() {
+    let toml = SourcesConfig {
+      branch: Some("main".to_owned()),
+      poll_interval: Some(Duration::from_secs(60)),
+      remotes: Some(vec![
+        RemoteSpec::plain("https://example.org/a".to_owned()),
+        RemoteSpec {
+          url:           "https://example.org/b".to_owned(),
+          branch:        Some("staging".to_owned()),
+          poll_interval: Some(Duration::from_secs(30)),
+        },
+      ]),
+      ..SourcesConfig::default()
+    };
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes[0].branch, "main");
+    assert_eq!(remotes[0].poll_interval, Duration::from_secs(60));
+    assert_eq!(remotes[1].branch, "staging");
+    assert_eq!(remotes[1].poll_interval, Duration::from_secs(30));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Writing the block back out  -  `xi sources init`
 // ---------------------------------------------------------------------------
