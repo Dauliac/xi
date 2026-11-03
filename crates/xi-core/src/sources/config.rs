@@ -389,6 +389,147 @@ fn parse_hhmm(raw: &str) -> Result<u32, String> {
   Ok(hours * 60 + minutes)
 }
 
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
+mod reboot_window_tests {
+  //! Owned by `xi-sources-gitops` section 10.1: [`RebootWindow`] lives in
+  //! this file because it is parsed alongside every other `[sources]`
+  //! key, but the daily-window semantics it encodes - and the daemon's
+  //! reboot-gate behaviour that reads them - belong to the gitops
+  //! capability. These tests pin the type on its own, ahead of the
+  //! daemon actually consulting it (`xi-sources-gitops` section 10.2,
+  //! not yet written).
+
+  use super::RebootWindow;
+
+  #[test]
+  fn the_literal_always_parses_to_no_gate() {
+    assert_eq!(
+      RebootWindow::parse("always").expect("parse"),
+      RebootWindow::Always
+    );
+    assert_eq!(
+      RebootWindow::parse("ALWAYS").expect("case-insensitive"),
+      RebootWindow::Always
+    );
+  }
+
+  #[test]
+  fn a_non_wrapping_window_parses_to_its_minutes() {
+    let window = RebootWindow::parse("02:00-04:00").expect("parse");
+    assert_eq!(window, RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    });
+  }
+
+  #[test]
+  fn a_malformed_window_is_rejected_with_a_message_naming_the_value() {
+    let err =
+      RebootWindow::parse("not-a-window").expect_err("garbage must not parse");
+    assert!(err.contains("HH:MM"), "got: {err}");
+  }
+
+  #[test]
+  fn a_window_with_no_separator_is_rejected_with_the_full_value() {
+    let err =
+      RebootWindow::parse("garbage").expect_err("no '-' must not parse");
+    assert!(err.contains("garbage"), "got: {err}");
+  }
+
+  #[test]
+  fn an_out_of_range_hour_or_minute_is_rejected() {
+    assert!(RebootWindow::parse("24:00-01:00").is_err());
+    assert!(RebootWindow::parse("01:60-02:00").is_err());
+  }
+
+  /// A window whose start equals its end is ambiguous (read as "all day"
+  /// or "never" depending on direction), so the parser refuses it and
+  /// asks the operator to say what they meant.
+  #[test]
+  fn a_zero_width_window_is_rejected() {
+    let err =
+      RebootWindow::parse("02:00-02:00").expect_err("zero-width must fail");
+    assert!(err.contains("always"), "got: {err}");
+  }
+
+  #[test]
+  fn always_admits_every_minute() {
+    assert!(RebootWindow::Always.admits(0));
+    assert!(RebootWindow::Always.admits(1439));
+  }
+
+  #[test]
+  fn a_non_wrapping_window_admits_only_its_range() {
+    let window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    assert!(!window.admits(119));
+    assert!(window.admits(120), "start is inclusive");
+    assert!(window.admits(239));
+    assert!(!window.admits(240), "end is exclusive");
+  }
+
+  /// SC-G-009's `02:00-04:00` example, and the midnight-wrapping case the
+  /// spec's `admits` doc calls out (`22:00-02:00` admits 23:00 and 01:00).
+  #[test]
+  fn a_wrapping_window_admits_both_sides_of_midnight() {
+    let window = RebootWindow::Daily {
+      start: 22 * 60,
+      end:   2 * 60,
+    };
+    assert!(window.admits(23 * 60), "23:00 is inside 22:00-02:00");
+    assert!(window.admits(60), "01:00 is inside 22:00-02:00");
+    assert!(!window.admits(12 * 60), "noon is outside 22:00-02:00");
+  }
+
+  #[test]
+  fn minutes_until_open_is_zero_when_already_inside_the_window() {
+    let window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    assert_eq!(window.minutes_until_open(150), 0);
+    assert_eq!(RebootWindow::Always.minutes_until_open(999), 0);
+  }
+
+  /// SC-G-009: "activation deferred until 02:00 the following day" from
+  /// 14:00 with a `02:00-04:00` window - 12 hours.
+  #[test]
+  fn minutes_until_open_counts_forward_to_the_next_window_start() {
+    let window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    assert_eq!(window.minutes_until_open(14 * 60), 12 * 60);
+  }
+
+  #[test]
+  fn minutes_until_open_wraps_correctly_across_midnight() {
+    let window = RebootWindow::Daily {
+      start: 22 * 60,
+      end:   2 * 60,
+    };
+    // At 23:30, already inside the window.
+    assert_eq!(window.minutes_until_open(23 * 60 + 30), 0);
+    // At 10:00, the window opens at 22:00 - 12 hours away.
+    assert_eq!(window.minutes_until_open(10 * 60), 12 * 60);
+  }
+
+  #[test]
+  fn display_round_trips_through_parse() {
+    for raw in ["always", "02:00-04:00", "22:00-02:00"] {
+      let window = RebootWindow::parse(raw).expect("parse");
+      assert_eq!(window.to_string(), raw);
+      assert_eq!(
+        RebootWindow::parse(&window.to_string()).expect("reparse"),
+        window
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // RemoteSpec  -  one entry of the multi-remote fan-in
 // ---------------------------------------------------------------------------
