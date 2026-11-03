@@ -14,8 +14,8 @@
 //!   `readout` reads either sink back.
 //! - **events** - `events` is a tiny sqlite store that outlives the log it
 //!   describes, queried by `xi <scope> sources events`.
-//! - **metrics** - `metrics` is the closed Prometheus set and `server` exposes
-//!   it on loopback alongside `health`.
+//! - **metrics** - [`metrics`] is the closed Prometheus set and `server`
+//!   exposes it on loopback alongside `health`.
 //! - **traces** - `otlp` batches tick root spans out to a collector when (and
 //!   only when) an operator names one.
 //!
@@ -43,10 +43,10 @@
 //!
 //! # Implementation status
 //!
-//! Six of the modules the layout above describes exist: [`config`],
+//! Seven of the modules the layout above describes exist: [`config`],
 //! [`fields`], [`redact`], [`rotating`] and the `daemon`-gated
-//! [`subscriber`] and [`journald`]. The rest  -  `events`, `health`,
-//! `otlp`, `readout`, and the `daemon`-gated `metrics`, `panic_hook`,
+//! [`subscriber`], [`journald`] and [`metrics`]. The rest  -  `events`,
+//! `health`, `otlp`, `readout`, and the `daemon`-gated `panic_hook`,
 //! `server`  -  are still to be written, and are declared here only
 //! once their file lands. The doc above is the target shape, not a
 //! description of what compiles today; see the
@@ -59,6 +59,8 @@ pub mod rotating;
 
 #[cfg(all(feature = "daemon", unix))]
 pub mod journald;
+#[cfg(feature = "daemon")]
+pub mod metrics;
 #[cfg(feature = "daemon")]
 pub mod subscriber;
 
