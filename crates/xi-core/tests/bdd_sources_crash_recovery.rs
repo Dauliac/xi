@@ -162,6 +162,21 @@ fn head_of(repo: &Path) -> String {
   String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// A clone of `from`, so the two share object history the way a real
+/// sources dir and working dir do - `conflict::sync`'s `reset --soft`
+/// needs the sha it is resetting to be an object the destination repo
+/// actually has.
+fn clone_repo(from: &Path, to: &Path) {
+  let ok = Command::new("git")
+    .args(["clone", "-q"])
+    .arg(from)
+    .arg(to)
+    .status()
+    .expect("run git clone")
+    .success();
+  assert!(ok, "clone {} into {} failed", from.display(), to.display());
+}
+
 /// Every file under `root`, as path to bytes, `.git` included.
 fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
   fn walk(
@@ -768,6 +783,116 @@ fn sc_y_005_a_sync_can_be_left_to_resume_instead_of_rolled_back() {
       })
     }),
     "leaving a sync alone destroys nothing"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// xi-xhsn: `conflict::sync` publishes and clears SC-Y-005's sentinel
+// itself
+// ---------------------------------------------------------------------------
+//
+// The two tests above construct the SC-Y-005 state by hand, which proves
+// repair's half of the contract but not the sync actor's: nothing in
+// `sources::conflict` wrote `SYNC_SENTINEL_NAME` before xi-xhsn. These
+// drive the real `conflict::sync` entrypoint instead, so the sentinel
+// existing (or not) is `sync`'s own behaviour, not a test fixture.
+
+/// A completed sync leaves no sentinel behind: the claim/clear pair that
+/// makes `AbandonedSync` mean something disappears on the success path
+/// precisely because the copy reached its last step.
+#[test]
+fn a_completed_sync_leaves_no_sentinel_behind() {
+  let m = Machine::new();
+  m.repo_at(m.sources_dir(), "v1");
+  let working = m.root.join("working");
+  clone_repo(m.sources_dir(), &working);
+
+  xi_core::sources::conflict::sync(&xi_core::sources::conflict::SyncRequest {
+    sources_dir: m.sources_dir(),
+    working_dir: &working,
+    state_dir:   m.state_dir(),
+    force_dirty: false,
+    what:        "test sync",
+  })
+  .expect("sync");
+
+  assert!(
+    !m.state_dir().join(SYNC_SENTINEL_NAME).exists(),
+    "a completed sync must clear the sentinel it published"
+  );
+  assert!(
+    !m.plan()
+      .iter()
+      .any(|f| matches!(f, Finding::AbandonedSync { .. })),
+    "a machine right after a clean sync must have no abandoned sync to \
+     repair: {:?}",
+    m.plan()
+  );
+}
+
+/// The acceptance criterion behind xi-xhsn for the `sync` actor: a crash
+/// mid-copy (simulated here by a blocked write, for the same reason
+/// `switch::tests::a_kill_before_commit_leaves_an_abandoned_transaction_
+/// naming_switch` uses `mem::forget` rather than a real SIGKILL - see
+/// that module's doc comment) leaves the sentinel `conflict::sync`
+/// itself published, naming the real working dir, and `xi sources
+/// repair` clears it exactly as SC-Y-005 already proves for a
+/// hand-planted one.
+#[test]
+fn a_sync_that_fails_mid_copy_leaves_a_real_abandoned_sync_finding() {
+  let m = Machine::new();
+  m.repo_at(m.sources_dir(), "v1");
+  let working = m.root.join("working");
+  clone_repo(m.sources_dir(), &working);
+
+  // Block the one tracked file's write: a directory sitting where
+  // `write_pass` wants to write a plain file. `inspect_working_tree`
+  // then sees `flake.nix` as deleted, so `force_dirty` is needed to
+  // reach the copy at all - this is standing in for "the operator
+  // already had local edits", not for the failure itself.
+  fs::remove_file(working.join("flake.nix")).expect("remove flake.nix");
+  fs::create_dir_all(working.join("flake.nix")).expect("block the write");
+
+  let err = xi_core::sources::conflict::sync(
+    &xi_core::sources::conflict::SyncRequest {
+      sources_dir: m.sources_dir(),
+      working_dir: &working,
+      state_dir:   m.state_dir(),
+      force_dirty: true,
+      what:        "test sync",
+    },
+  )
+  .expect_err("a blocked write must fail the sync");
+  assert!(
+    !err.to_string().is_empty(),
+    "the failure should at least say something"
+  );
+
+  assert!(
+    m.state_dir().join(SYNC_SENTINEL_NAME).exists(),
+    "sync must have published its own sentinel before the blocked write, \
+     not relied on a test to plant one"
+  );
+
+  let findings = m.plan();
+  let recorded_working_dir = findings.iter().find_map(|f| {
+    match f {
+      Finding::AbandonedSync { working_dir, .. } => Some(working_dir.clone()),
+      _ => None,
+    }
+  });
+  assert_eq!(
+    recorded_working_dir,
+    Some(Some(working.clone())),
+    "repair must be able to name the real working dir sync was mid-copy \
+     into, not just that a sync was abandoned: {findings:?}"
+  );
+
+  let report = m.repair();
+  assert!(report.is_clean(), "failures: {:?}", report.failures);
+  assert!(
+    !m.state_dir().join(SYNC_SENTINEL_NAME).exists(),
+    "repair clears the sentinel the failed sync left behind"
   );
 }
 

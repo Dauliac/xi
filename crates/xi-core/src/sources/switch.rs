@@ -338,7 +338,13 @@ fn apply_queued_sync(
   working_dir: Option<&Path>,
 ) {
   let what = format!("xi {} sources sync", scope.as_str());
-  match apply_auto_sync(sync_mode, &paths.sources_dir, working_dir, &what) {
+  match apply_auto_sync(
+    sync_mode,
+    &paths.sources_dir,
+    &paths.state_dir,
+    working_dir,
+    &what,
+  ) {
     Ok(AutoSync::Applied(outcome)) => {
       info!(
         "auto-copy synced {} file(s) into {}; HEAD now {}",
