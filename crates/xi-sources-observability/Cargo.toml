@@ -34,6 +34,12 @@ otlp = [
 chrono.workspace              = true
 opentelemetry                 = { version = "0.33.1", default-features = false, optional = true, features = [
   "trace",
+  # The SDK logs its own export failures through this feature's
+  # `otel_error!`/`otel_warn!` macros (as a real `tracing` event, target
+  # `opentelemetry_sdk`) rather than through any return value this
+  # crate's code sees - `otlp::FailureCounterLayer` is the one way to
+  # observe them and is built against this feature being on.
+  "internal-logs",
 ] }
 opentelemetry-otlp            = { version = "0.33.1", default-features = false, optional = true, features = [
   "trace",
@@ -42,6 +48,13 @@ opentelemetry-otlp            = { version = "0.33.1", default-features = false, 
 ] }
 opentelemetry_sdk             = { version = "0.33.1", default-features = false, optional = true, features = [
   "trace",
+  # `otel_error!`'s `#[cfg(feature = "internal-logs")]` gate resolves
+  # against the crate it is textually expanded into (`opentelemetry_sdk`,
+  # since that is where `span_processor.rs` calls it) - enabling this
+  # feature only on the `opentelemetry` dependency above is not enough;
+  # this crate's own same-named feature (which just forwards to
+  # `opentelemetry/internal-logs`) has to be on too.
+  "internal-logs",
 ] }
 prometheus                    = { default-features = false, optional = true, version = "0.14.0" }
 reqwest                       = { optional = true, workspace = true }
@@ -61,6 +74,30 @@ tracing-journald = { optional = true, version = "0.3.2" }
 [dev-dependencies]
 serial_test.workspace = true
 tempfile.workspace    = true
+
+# Integration tests that exercise `daemon`- or `otlp`-gated modules
+# cannot build at all without those features - `cargo test
+# --no-default-features` (the "reader" build's own test run; see the
+# `daemon` feature's doc comment above) would otherwise fail to compile
+# the whole crate's test suite over files that were never reachable from
+# a reader build in the first place. `required-features` skips building
+# each file's test binary unless the feature it needs is active, the
+# same way `#[cfg(feature = "...")]` does inside `src/`.
+[[test]]
+name                 = "bdd_sources_tracing"
+required-features    = [ "daemon" ]
+
+[[test]]
+name                 = "bdd_sources_redaction"
+required-features    = [ "daemon" ]
+
+[[test]]
+name                 = "bdd_sources_metrics_endpoint"
+required-features    = [ "daemon" ]
+
+[[test]]
+name                 = "bdd_sources_otlp_export"
+required-features    = [ "otlp" ]
 
 [lints]
 workspace = true
