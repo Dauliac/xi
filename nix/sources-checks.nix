@@ -299,6 +299,46 @@ let
       userActivation = userHappy.home.activation.xiSourcesDirs.data;
       projectSources = projectHappy.xi.settings.sources;
 
+      # A second, execution-based fixture alongside the string-matching
+      # cases below. Those cases prove the activation script CONTAINS the
+      # right mkdir/chmod invocation; this one actually runs it and
+      # stats the result, so a quoting or ordering bug that still
+      # happens to contain the right substrings cannot slip through.
+      #
+      # The real `xdg.dataHome`/`xdg.stateHome` point under the real
+      # user's home, which a sandboxed build cannot write to, so this
+      # fixture re-evaluates the head against a second stub whose XDG
+      # roots are a relative, build-writable directory instead. `run` is
+      # home-manager's own activation-script helper (defined by
+      # home-manager's activation wrapper, not by this head); since
+      # there is no home-manager input here to supply the real one, the
+      # test shims it as a plain passthrough so the exact script the
+      # head emits runs unmodified.
+      homeManagerActivationHome = "home-real";
+
+      homeManagerStubForActivation = homeManagerStub // {
+        config = homeManagerStub.config // {
+          xdg.dataHome = "${homeManagerActivationHome}/.local/share";
+          xdg.stateHome = "${homeManagerActivationHome}/.local/state";
+        };
+      };
+
+      userActivatedForReal =
+        (evalHead {
+          head = homeManagerHead;
+          stub = homeManagerStubForActivation;
+          specialArgs = {
+            lib = hmLib;
+            inherit pkgs;
+          };
+          modules = [ enabledUser ];
+        }).config;
+
+      homeManagerActivation = {
+        home = homeManagerActivationHome;
+        script = userActivatedForReal.home.activation.xiSourcesDirs.data;
+      };
+
       cases = [
         {
           name = "system scope refuses workingDir";
@@ -421,14 +461,14 @@ let
       broken = lib.filter (case: !case.ok) cases;
     in
     {
-      inherit systemHappy broken;
+      inherit systemHappy broken homeManagerActivation;
     };
 in
 {
   perSystem =
     { pkgs, ... }:
     let
-      inherit (fixtures pkgs) systemHappy broken;
+      inherit (fixtures pkgs) systemHappy broken homeManagerActivation;
     in
     {
       checks = {
@@ -486,6 +526,35 @@ in
               ! grep -q 'gitops\|secrets\|credentials\|prestage' "$sourcesToml"
 
               cp "$sourcesToml" "$out"
+            '';
+
+        # SC-N-003, execution-based: runs the home-manager head's own
+        # activation script (not a string match on it) against a
+        # build-writable fake XDG tree, and stats the real result. `run`
+        # is shimmed as a passthrough since home-manager's activation
+        # wrapper, which normally defines it, is not part of this flake.
+        xi-sources-home-manager-activation =
+          pkgs.runCommand "xi-sources-home-manager-activation"
+            {
+              activationScript = homeManagerActivation.script;
+              home = homeManagerActivation.home;
+            }
+            ''
+              run() { "$@"; }
+              export -f run
+
+              mkdir -p "$home"
+              bash -eu -c "$activationScript"
+
+              sourcesDir="$home/.local/share/xi/sources"
+              stateDir="$home/.local/state/xi"
+
+              test -d "$sourcesDir"
+              test -d "$stateDir"
+              test 700 = "$(stat -c %a "$sourcesDir")"
+              test 700 = "$(stat -c %a "$stateDir")"
+
+              touch "$out"
             '';
       }
       // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
