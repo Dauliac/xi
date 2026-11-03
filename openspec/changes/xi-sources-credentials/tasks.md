@@ -55,8 +55,8 @@ Live state in beads under `change:xi-sources-credentials`.
       an opaque newtype that redacts in `Debug` and refuses `Serialize`.
       [[xi-sources-observability]] ships the newtype
       (`xi_sources_observability::redact::Credential`) and the lint
-      (`xi_sources_observability::redact::lint`) so every sink enforces the
-      same boundary; this capability populates it from the resolved config.
+      (`xi_sources_observability::redact::lint`) so every sink enforces the same
+      boundary; this capability populates it from the resolved config.
 - [ ] 7.2 `xi sources status --explain` prints only the credential mode name and
       the configured path, never the file contents.
 

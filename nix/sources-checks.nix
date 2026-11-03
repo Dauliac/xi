@@ -15,7 +15,8 @@ let
   # `nix-lib.lib.*` plumbing, so these fixtures can evaluate a single
   # head in isolation instead of dragging in the whole module tree.
   mkSourcesFile =
-    (import (repoRoot + "/modules/shared/lib/sources.nix") { inherit lib; }).nix-lib.lib.mkSourcesFile.fn;
+    (import (repoRoot + "/modules/shared/lib/sources.nix") { inherit lib; })
+    .nix-lib.lib.mkSourcesFile.fn;
 
   unspecifiedAttrs = lib.mkOption {
     type = lib.types.attrsOf lib.types.unspecified;
@@ -57,6 +58,10 @@ let
     hm.dag.entryAfter = after: data: { inherit after data; };
   };
 
+  # The fixture user's home, named once so the activation expectations
+  # below and the XDG roots the stub answers with cannot drift apart.
+  userHome = "/home/anon";
+
   homeManagerStub = {
     options = {
       assertions = assertionsOption;
@@ -69,8 +74,8 @@ let
     };
     config = {
       lib = { inherit mkSourcesFile; };
-      xdg.dataHome = "/home/anon/.local/share";
-      xdg.stateHome = "/home/anon/.local/state";
+      xdg.dataHome = "${userHome}/.local/share";
+      xdg.stateHome = "${userHome}/.local/state";
     };
   };
 
@@ -133,7 +138,15 @@ let
           # `attrsOf` hides a name level that the option paths should
           # show, so it is spelled explicitly rather than collapsed.
           subPrefix =
-            if lib.elem value.type.name [ "attrsOf" "lazyAttrsOf" ] then path ++ [ "<name>" ] else path;
+            if
+              lib.elem value.type.name [
+                "attrsOf"
+                "lazyAttrsOf"
+              ]
+            then
+              path ++ [ "<name>" ]
+            else
+              path;
         in
         [
           {
@@ -204,192 +217,227 @@ let
   # Behaviour fixtures
   # ---------------------------------------------------------------------
 
-  nixosWith =
-    settings:
-    (evalHead {
-      head = nixosHead;
-      stub = nixosStub;
-      modules = [ settings ];
-    }).config;
-
-  homeManagerWith =
-    settings:
-    (evalHead {
-      head = homeManagerHead;
-      stub = homeManagerStub;
-      specialArgs.lib = hmLib;
-      modules = [ settings ];
-    }).config;
-
-  flakePartsWith =
-    settings:
-    (evalHead {
-      head = flakePartsHead;
-      stub = flakePartsStub;
-      modules = [ settings ];
-    }).config;
-
-  failures = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
-
-  failsWith =
-    config: needle:
+  # Every head below writes a store path through `mkSourcesFile`, which
+  # needs `pkgs`. The fixtures are therefore a function of the system's
+  # package set rather than top-level `let` bindings: a stub cannot
+  # conjure `pkgs` into `_module.args`, and reading `config` without it
+  # fails the whole flake eval (the devshell pulls `config.checks` in).
+  fixtures =
+    pkgs:
     let
-      messages = failures config;
-    in
-    messages != [ ] && lib.any (m: lib.hasInfix needle m) messages;
+      nixosWith =
+        settings:
+        (evalHead {
+          head = nixosHead;
+          stub = nixosStub;
+          specialArgs = { inherit pkgs; };
+          modules = [ settings ];
+        }).config;
 
-  enabledSystem = {
-    programs.xi.enable = true;
-    programs.xi.sources.enable = true;
-    programs.xi.sources.remote = "git@github.com:you/nix-config.git";
-  };
-
-  enabledUser = {
-    programs.xi.enable = true;
-    programs.xi.sources.enable = true;
-    programs.xi.sources.remote = "git@github.com:you/dotfiles.git";
-  };
-
-  systemHappy = nixosWith (
-    lib.recursiveUpdate enabledSystem {
-      programs.xi.sources.pollInterval = "5m";
-      programs.xi.sources.bootstrap.installer = "lix";
-    }
-  );
-
-  userHappy = homeManagerWith (
-    lib.recursiveUpdate enabledUser { programs.xi.sources.workingDir = "/home/anon/src/dotfiles"; }
-  );
-
-  projectHappy = flakePartsWith {
-    xi.enable = true;
-    xi.sources.enable = true;
-    xi.sources.remote = "git@github.com:you/nix-config.git";
-    xi.sources.syncMode = "never";
-    xi.sources.bootstrap.installer = "detsys";
-  };
-
-  userActivation = userHappy.home.activation.xiSourcesDirs.data;
-  projectSources = projectHappy.xi.settings.sources;
-
-  cases = [
-    {
-      name = "system scope refuses workingDir";
-      ok = failsWith (nixosWith (
-        lib.recursiveUpdate enabledSystem { programs.xi.sources.workingDir = "/root/dotfiles"; }
-      )) "user scope only";
-    }
-
-    {
-      name = "requireSigned without a trust root is refused at system scope";
-      ok = failsWith (nixosWith (
-        lib.recursiveUpdate enabledSystem { programs.xi.sources.requireSigned = true; }
-      )) "needs a trust root";
-    }
-
-    {
-      name = "requireSigned without a trust root is refused at user scope";
-      ok = failsWith (homeManagerWith (
-        lib.recursiveUpdate enabledUser { programs.xi.sources.requireSigned = true; }
-      )) "needs a trust root";
-    }
-
-    {
-      name = "gpgPublicKeys alone satisfies requireSigned";
-      ok =
-        failures (nixosWith (
-          lib.recursiveUpdate enabledSystem {
-            programs.xi.sources.requireSigned = true;
-            programs.xi.sources.gpgPublicKeys = [ (repoRoot + "/flake.nix") ];
-          }
-        )) == [ ];
-    }
-
-    {
-      name = "dual-scope gitops on the same remote is refused";
-      ok = failsWith (nixosWith (
-        lib.recursiveUpdate enabledSystem {
-          programs.xi.sources.gitops.enable = true;
-          home-manager.users.anon.programs.xi.sources = {
-            enable = true;
-            remote = "git@github.com:you/nix-config.git";
-            gitops.enable = true;
+      homeManagerWith =
+        settings:
+        (evalHead {
+          head = homeManagerHead;
+          stub = homeManagerStub;
+          specialArgs = {
+            lib = hmLib;
+            inherit pkgs;
           };
+          modules = [ settings ];
+        }).config;
+
+      flakePartsWith =
+        settings:
+        (evalHead {
+          head = flakePartsHead;
+          stub = flakePartsStub;
+          modules = [ settings ];
+        }).config;
+
+      failures = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
+
+      failsWith =
+        config: needle:
+        let
+          messages = failures config;
+        in
+        messages != [ ] && lib.any (m: lib.hasInfix needle m) messages;
+
+      enabledSystem = {
+        programs.xi.enable = true;
+        programs.xi.sources.enable = true;
+        programs.xi.sources.remote = "git@github.com:you/nix-config.git";
+      };
+
+      enabledUser = {
+        programs.xi.enable = true;
+        programs.xi.sources.enable = true;
+        programs.xi.sources.remote = "git@github.com:you/dotfiles.git";
+      };
+
+      systemHappy = nixosWith (
+        lib.recursiveUpdate enabledSystem {
+          programs.xi.sources.pollInterval = "5m";
+          programs.xi.sources.bootstrap.installer = "lix";
         }
-      )) "Two daemons polling the same remote";
-    }
+      );
 
-    {
-      name = "dual-scope gitops on different remotes is accepted";
-      ok =
-        failures (nixosWith (
-          lib.recursiveUpdate enabledSystem {
-            programs.xi.sources.gitops.enable = true;
-            home-manager.users.anon.programs.xi.sources = {
-              enable = true;
-              remote = "git@github.com:you/dotfiles.git";
-              gitops.enable = true;
+      userHappy = homeManagerWith (
+        lib.recursiveUpdate enabledUser {
+          programs.xi.sources.workingDir = "${userHome}/src/dotfiles";
+        }
+      );
+
+      projectHappy = flakePartsWith {
+        xi.enable = true;
+        xi.sources.enable = true;
+        xi.sources.remote = "git@github.com:you/nix-config.git";
+        xi.sources.syncMode = "never";
+        xi.sources.bootstrap.installer = "detsys";
+      };
+
+      userActivation = userHappy.home.activation.xiSourcesDirs.data;
+      projectSources = projectHappy.xi.settings.sources;
+
+      cases = [
+        {
+          name = "system scope refuses workingDir";
+          ok = failsWith (nixosWith (
+            lib.recursiveUpdate enabledSystem { programs.xi.sources.workingDir = "/root/dotfiles"; }
+          )) "user scope only";
+        }
+
+        {
+          name = "requireSigned without a trust root is refused at system scope";
+          ok = failsWith (nixosWith (
+            lib.recursiveUpdate enabledSystem { programs.xi.sources.requireSigned = true; }
+          )) "needs a trust root";
+        }
+
+        {
+          name = "requireSigned without a trust root is refused at user scope";
+          ok = failsWith (homeManagerWith (
+            lib.recursiveUpdate enabledUser { programs.xi.sources.requireSigned = true; }
+          )) "needs a trust root";
+        }
+
+        {
+          name = "gpgPublicKeys alone satisfies requireSigned";
+          ok =
+            failures (
+              nixosWith (
+                lib.recursiveUpdate enabledSystem {
+                  programs.xi.sources.requireSigned = true;
+                  programs.xi.sources.gpgPublicKeys = [ (repoRoot + "/flake.nix") ];
+                }
+              )
+            ) == [ ];
+        }
+
+        {
+          name = "dual-scope gitops on the same remote is refused";
+          ok = failsWith (nixosWith (
+            lib.recursiveUpdate enabledSystem {
+              programs.xi.sources.gitops.enable = true;
+              home-manager.users.anon.programs.xi.sources = {
+                enable = true;
+                remote = "git@github.com:you/nix-config.git";
+                gitops.enable = true;
+              };
+            }
+            # The needle stays inside one line of the message: an
+            # assertion keeps the line wrapping of its source literal, so
+            # a phrase that reads as contiguous in the module is not
+            # contiguous in the string.
+          )) "would race on activation";
+        }
+
+        {
+          name = "dual-scope gitops on different remotes is accepted";
+          ok =
+            failures (
+              nixosWith (
+                lib.recursiveUpdate enabledSystem {
+                  programs.xi.sources.gitops.enable = true;
+                  home-manager.users.anon.programs.xi.sources = {
+                    enable = true;
+                    remote = "git@github.com:you/dotfiles.git";
+                    gitops.enable = true;
+                  };
+                }
+              )
+            ) == [ ];
+        }
+
+        {
+          name = "system head asserts nothing on the happy path";
+          ok = failures systemHappy == [ ];
+        }
+
+        {
+          name = "system head creates the sources and state dirs 0700 root:root";
+          ok = lib.all (rule: lib.elem rule systemHappy.systemd.tmpfiles.rules) [
+            "d /var/lib/xi/sources 0700 root root -"
+            "d /var/lib/xi/state 0700 root root -"
+          ];
+        }
+
+        {
+          name = "user head creates the XDG dirs with mode 700";
+          ok =
+            let
+              # `escapeShellArg` quotes only an argument that needs it, so
+              # the expectation is spelled with the same helper the head
+              # uses rather than hard-coding one of the two renderings.
+              dirs = lib.escapeShellArgs [
+                "${userHome}/.local/share/xi/sources"
+                "${userHome}/.local/state/xi"
+              ];
+            in
+            lib.hasInfix "mkdir -p ${dirs}" userActivation && lib.hasInfix "chmod 700 ${dirs}" userActivation;
+        }
+
+        {
+          name = "user head runs after the home-manager write boundary";
+          ok = userHappy.home.activation.xiSourcesDirs.after == [ "writeBoundary" ];
+        }
+
+        {
+          name = "user head renders the XDG sources.toml";
+          ok = userHappy.xdg.configFile ? "xi/sources.toml";
+        }
+
+        {
+          name = "flake-parts head folds kebab-case keys into the wrapper settings";
+          ok =
+            projectSources == {
+              remote = "git@github.com:you/nix-config.git";
+              sync-mode = "never";
+              installer = "detsys";
             };
-          }
-        )) == [ ];
-    }
-
-    {
-      name = "system head asserts nothing on the happy path";
-      ok = failures systemHappy == [ ];
-    }
-
-    {
-      name = "system head creates the sources and state dirs 0700 root:root";
-      ok = lib.all (rule: lib.elem rule systemHappy.systemd.tmpfiles.rules) [
-        "d /var/lib/xi/sources 0700 root root -"
-        "d /var/lib/xi/state 0700 root root -"
+        }
       ];
-    }
 
+      broken = lib.filter (case: !case.ok) cases;
+    in
     {
-      name = "user head creates the XDG dirs with mode 700";
-      ok =
-        lib.hasInfix "mkdir -p '/home/anon/.local/share/xi/sources' '/home/anon/.local/state/xi'"
-          userActivation
-        && lib.hasInfix "chmod 700 '/home/anon/.local/share/xi/sources' '/home/anon/.local/state/xi'"
-          userActivation;
-    }
-
-    {
-      name = "user head runs after the home-manager write boundary";
-      ok = userHappy.home.activation.xiSourcesDirs.after == [ "writeBoundary" ];
-    }
-
-    {
-      name = "user head renders the XDG sources.toml";
-      ok = userHappy.xdg.configFile ? "xi/sources.toml";
-    }
-
-    {
-      name = "flake-parts head folds kebab-case keys into the wrapper settings";
-      ok =
-        projectSources == {
-          remote = "git@github.com:you/nix-config.git";
-          sync-mode = "never";
-          installer = "detsys";
-        };
-    }
-  ];
-
-  broken = lib.filter (case: !case.ok) cases;
+      inherit systemHappy broken;
+    };
 in
 {
   perSystem =
     { pkgs, ... }:
+    let
+      inherit (fixtures pkgs) systemHappy broken;
+    in
     {
       checks = {
         # SC-N-001: the three heads expose the same option tree.
         xi-sources-option-parity =
           pkgs.runCommand "xi-sources-option-parity"
-            (lib.mapAttrs' (name: head: lib.nameValuePair "tree_${lib.replaceStrings [ "-" ] [ "_" ] name}" (
-              treeOf head
-            )) heads)
+            (lib.mapAttrs' (
+              name: head: lib.nameValuePair "tree_${lib.replaceStrings [ "-" ] [ "_" ] name}" (treeOf head)
+            ) heads)
             ''
               printf '%s' "$tree_nixos" > nixos.txt
               printf '%s' "$tree_home_manager" > home-manager.txt
@@ -422,7 +470,7 @@ in
             ''
               if [ -n "$brokenCases" ]; then
                 echo "xi.sources module fixtures failed:" >&2
-                printf '  - %s\n' "$brokenCases" >&2
+                printf '%s\n' "$brokenCases" | sed 's/^/  - /' >&2
                 exit 1
               fi
 

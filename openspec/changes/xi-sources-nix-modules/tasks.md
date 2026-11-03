@@ -54,8 +54,8 @@ Live state in beads under `change:xi-sources-nix-modules`.
 - [ ] 3.25 `xi.sources.observability.log-level` (enum
       trace|debug|info|warn|error, default "info"), owned by
       [[xi-sources-observability]].
-- [ ] 3.26 `xi.sources.observability.prometheus.port` (int 1024-65535,
-      nullable, default null). Null means no exporter. Binds loopback only.
+- [ ] 3.26 `xi.sources.observability.prometheus.port` (int 1024-65535, nullable,
+      default null). Null means no exporter. Binds loopback only.
 - [ ] 3.27 `xi.sources.observability.otlp.endpoint` (str, nullable, default
       null). Set to export every tick root span over OTLP.
 
