@@ -8,9 +8,9 @@
 //! not written yet; only the linked ones exist. See *Implementation
 //! status*.
 //!
-//! - **structured logs** - [`fields`] fixes the span vocabulary, `subscriber`
-//!   builds the ndjson tracing stack, [`rotating`] is the user-scope
-//!   daily-rotating sink, `readout` reads either sink back.
+//! - **structured logs** - [`fields`] fixes the span vocabulary,
+//!   [`subscriber`] builds the ndjson tracing stack, [`rotating`] is the
+//!   user-scope daily-rotating sink, `readout` reads either sink back.
 //! - **events** - `events` is a tiny sqlite store that outlives the log it
 //!   describes, queried by `xi <scope> sources events`.
 //! - **metrics** - `metrics` is the closed Prometheus set and `server` exposes
@@ -42,18 +42,22 @@
 //!
 //! # Implementation status
 //!
-//! Four of the modules the layout above describes exist: [`config`],
-//! [`fields`], [`redact`] and [`rotating`]. The rest  -  `events`,
-//! `health`, `otlp`, `readout`, and the `daemon`-gated `capture`,
-//! `metrics`, `panic_hook`, `server`, `subscriber`  -  are still to be
-//! written, and are declared here only once their file lands. The doc
-//! above is the target shape, not a description of what compiles today;
-//! see the `xi-sources-observability` change for the remaining work.
+//! Five of the modules the layout above describes exist: [`config`],
+//! [`fields`], [`redact`], [`rotating`] and the `daemon`-gated
+//! [`subscriber`]. The rest  -  `events`, `health`, `otlp`, `readout`,
+//! and the `daemon`-gated `metrics`, `panic_hook`, `server`  -  are
+//! still to be written, and are declared here only once their file
+//! lands. The doc above is the target shape, not a description of what
+//! compiles today; see the `xi-sources-observability` change for the
+//! remaining work.
 
 pub mod config;
 pub mod fields;
 pub mod redact;
 pub mod rotating;
+
+#[cfg(feature = "daemon")]
+pub mod subscriber;
 
 pub use config::{LogLevel, ObservabilityConfig};
 pub use fields::{Outcome, Phase, PhaseSpan, TickSpan};
