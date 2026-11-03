@@ -7,28 +7,29 @@ license.workspace      = true
 rust-version.workspace = true
 publish                = false
 
-# No `[[bin]]` yet: the tick loop the binary would drive is still unwritten,
-# and a target that only parses flags would compile without proving anything.
-# Re-add it with the loop, not before.
+[[bin]]
+name = "xi-sources-daemon"
+path = "src/main.rs"
 
 [dependencies]
-chrono.workspace              = true
-clap.workspace                = true
-clap-verbosity-flag.workspace = true
-color-eyre.workspace          = true
-humantime.workspace           = true
-nix.workspace                 = true
-serde.workspace               = true
-serde_json.workspace          = true
-signal-hook.workspace         = true
-thiserror.workspace           = true
-tracing.workspace             = true
-tracing-subscriber.workspace  = true
-xi-core.workspace             = true
+chrono.workspace                 = true
+clap.workspace                   = true
+clap-verbosity-flag.workspace    = true
+color-eyre.workspace             = true
+humantime.workspace              = true
+nix.workspace                    = true
+serde.workspace                  = true
+serde_json.workspace             = true
+signal-hook.workspace            = true
+tempfile.workspace               = true
+thiserror.workspace              = true
+tracing.workspace                = true
+tracing-subscriber.workspace     = true
+xi-core.workspace                = true
+xi-sources-observability.workspace = true
 
 [dev-dependencies]
 serial_test.workspace = true
-tempfile.workspace    = true
 
 [lints]
 workspace = true

@@ -389,6 +389,147 @@ fn parse_hhmm(raw: &str) -> Result<u32, String> {
   Ok(hours * 60 + minutes)
 }
 
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
+mod reboot_window_tests {
+  //! Owned by `xi-sources-gitops` section 10.1: [`RebootWindow`] lives in
+  //! this file because it is parsed alongside every other `[sources]`
+  //! key, but the daily-window semantics it encodes - and the daemon's
+  //! reboot-gate behaviour that reads them - belong to the gitops
+  //! capability. These tests pin the type on its own, ahead of the
+  //! daemon actually consulting it (`xi-sources-gitops` section 10.2,
+  //! not yet written).
+
+  use super::RebootWindow;
+
+  #[test]
+  fn the_literal_always_parses_to_no_gate() {
+    assert_eq!(
+      RebootWindow::parse("always").expect("parse"),
+      RebootWindow::Always
+    );
+    assert_eq!(
+      RebootWindow::parse("ALWAYS").expect("case-insensitive"),
+      RebootWindow::Always
+    );
+  }
+
+  #[test]
+  fn a_non_wrapping_window_parses_to_its_minutes() {
+    let window = RebootWindow::parse("02:00-04:00").expect("parse");
+    assert_eq!(window, RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    });
+  }
+
+  #[test]
+  fn a_malformed_window_is_rejected_with_a_message_naming_the_value() {
+    let err =
+      RebootWindow::parse("not-a-window").expect_err("garbage must not parse");
+    assert!(err.contains("HH:MM"), "got: {err}");
+  }
+
+  #[test]
+  fn a_window_with_no_separator_is_rejected_with_the_full_value() {
+    let err =
+      RebootWindow::parse("garbage").expect_err("no '-' must not parse");
+    assert!(err.contains("garbage"), "got: {err}");
+  }
+
+  #[test]
+  fn an_out_of_range_hour_or_minute_is_rejected() {
+    assert!(RebootWindow::parse("24:00-01:00").is_err());
+    assert!(RebootWindow::parse("01:60-02:00").is_err());
+  }
+
+  /// A window whose start equals its end is ambiguous (read as "all day"
+  /// or "never" depending on direction), so the parser refuses it and
+  /// asks the operator to say what they meant.
+  #[test]
+  fn a_zero_width_window_is_rejected() {
+    let err =
+      RebootWindow::parse("02:00-02:00").expect_err("zero-width must fail");
+    assert!(err.contains("always"), "got: {err}");
+  }
+
+  #[test]
+  fn always_admits_every_minute() {
+    assert!(RebootWindow::Always.admits(0));
+    assert!(RebootWindow::Always.admits(1439));
+  }
+
+  #[test]
+  fn a_non_wrapping_window_admits_only_its_range() {
+    let window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    assert!(!window.admits(119));
+    assert!(window.admits(120), "start is inclusive");
+    assert!(window.admits(239));
+    assert!(!window.admits(240), "end is exclusive");
+  }
+
+  /// SC-G-009's `02:00-04:00` example, and the midnight-wrapping case the
+  /// spec's `admits` doc calls out (`22:00-02:00` admits 23:00 and 01:00).
+  #[test]
+  fn a_wrapping_window_admits_both_sides_of_midnight() {
+    let window = RebootWindow::Daily {
+      start: 22 * 60,
+      end:   2 * 60,
+    };
+    assert!(window.admits(23 * 60), "23:00 is inside 22:00-02:00");
+    assert!(window.admits(60), "01:00 is inside 22:00-02:00");
+    assert!(!window.admits(12 * 60), "noon is outside 22:00-02:00");
+  }
+
+  #[test]
+  fn minutes_until_open_is_zero_when_already_inside_the_window() {
+    let window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    assert_eq!(window.minutes_until_open(150), 0);
+    assert_eq!(RebootWindow::Always.minutes_until_open(999), 0);
+  }
+
+  /// SC-G-009: "activation deferred until 02:00 the following day" from
+  /// 14:00 with a `02:00-04:00` window - 12 hours.
+  #[test]
+  fn minutes_until_open_counts_forward_to_the_next_window_start() {
+    let window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    assert_eq!(window.minutes_until_open(14 * 60), 12 * 60);
+  }
+
+  #[test]
+  fn minutes_until_open_wraps_correctly_across_midnight() {
+    let window = RebootWindow::Daily {
+      start: 22 * 60,
+      end:   2 * 60,
+    };
+    // At 23:30, already inside the window.
+    assert_eq!(window.minutes_until_open(23 * 60 + 30), 0);
+    // At 10:00, the window opens at 22:00 - 12 hours away.
+    assert_eq!(window.minutes_until_open(10 * 60), 12 * 60);
+  }
+
+  #[test]
+  fn display_round_trips_through_parse() {
+    for raw in ["always", "02:00-04:00", "22:00-02:00"] {
+      let window = RebootWindow::parse(raw).expect("parse");
+      assert_eq!(window.to_string(), raw);
+      assert_eq!(
+        RebootWindow::parse(&window.to_string()).expect("reparse"),
+        window
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // RemoteSpec  -  one entry of the multi-remote fan-in
 // ---------------------------------------------------------------------------
@@ -1464,6 +1605,148 @@ impl ResolvedSources {
       ("on-build", self.on_build.as_deref()),
       ("on-switch", self.on_switch.as_deref()),
     ]
+  }
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
+mod multi_remote_tests {
+  //! Owned by `xi-sources-gitops` section 5.1: the `[[sources.remote]]`
+  //! array and its per-entry fallback to the `[sources]`-level `branch`
+  //! and `poll-interval` lives here because it is parsed alongside every
+  //! other `[sources]` key, but "every remote to poll, with per-entry
+  //! gaps filled" is the multi-remote fan-in capability's own
+  //! requirement, not the config loader's.
+  //!
+  //! `effective_remotes` had no test coverage at all before this change -
+  //! neither the TOML array-of-tables parse path nor the fallback
+  //! arithmetic.
+
+  use std::time::Duration;
+
+  use tempfile::TempDir;
+
+  use super::{Layers, RemoteSpec, SourcesConfig};
+
+  fn toml_layer(body: &str) -> SourcesConfig {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = tmp.path().join(".xi.toml");
+    std::fs::write(&path, body).expect("write");
+    SourcesConfig::from_toml_file(&path).expect("parse")
+  }
+
+  #[test]
+  fn an_unconfigured_source_has_no_remotes_to_poll() {
+    let resolved = Layers::default().resolve();
+    assert!(
+      resolved.effective_remotes().is_empty(),
+      "nothing configured means nothing to fetch"
+    );
+  }
+
+  #[test]
+  fn a_scalar_remote_yields_exactly_one_resolved_entry() {
+    let toml = toml_layer(
+      "[sources]\nremote = \"https://example.org/cfg\"\nbranch = \
+       \"trunk\"\npoll-interval = \"2m\"\n",
+    );
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].url, "https://example.org/cfg");
+    assert_eq!(remotes[0].branch, "trunk");
+    assert_eq!(remotes[0].poll_interval, Duration::from_secs(120));
+  }
+
+  /// SC-G-005: two remotes, each independently resolvable, is the shape
+  /// the daemon schedules against.
+  #[test]
+  fn an_array_of_tables_parses_into_two_remote_specs() {
+    let toml = toml_layer(
+      "[sources]\nbranch = \"main\"\npoll-interval = \"1m\"\n\n\
+       [[sources.remote]]\nurl = \"https://github.example/cfg\"\n\n\
+       [[sources.remote]]\nurl = \"https://gitlab.example/cfg-mirror\"\n\
+       branch = \"mirror\"\npoll-interval = \"5m\"\n",
+    );
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes.len(), 2, "both entries must parse");
+
+    // The first entry names neither `branch` nor `poll-interval`, so
+    // both fall back to the `[sources]`-level values.
+    assert_eq!(remotes[0].url, "https://github.example/cfg");
+    assert_eq!(remotes[0].branch, "main");
+    assert_eq!(remotes[0].poll_interval, Duration::from_secs(60));
+
+    // The second entry overrides both, and its own values win.
+    assert_eq!(remotes[1].url, "https://gitlab.example/cfg-mirror");
+    assert_eq!(remotes[1].branch, "mirror");
+    assert_eq!(remotes[1].poll_interval, Duration::from_secs(300));
+  }
+
+  /// The inline-array spelling (`remote = [{ url = "..." }]`) is TOML's
+  /// other way of writing the same array of tables, and
+  /// `parse_remote_item` accepts both; `effective_remotes` must not care
+  /// which one the operator used.
+  #[test]
+  fn the_inline_array_spelling_resolves_identically_to_the_table_array() {
+    let toml = toml_layer(
+      "[sources]\nbranch = \"main\"\nremote = [{ url = \
+       \"https://example.org/one\" }, { url = \"https://example.org/two\", \
+       branch = \"dev\" }]\n",
+    );
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes.len(), 2);
+    assert_eq!(remotes[0].branch, "main");
+    assert_eq!(remotes[1].branch, "dev");
+  }
+
+  /// A remote spec built directly (as the Nix-module layer or `xi
+  /// sources init` would) round-trips through `effective_remotes` the
+  /// same way a parsed one does - the fallback logic does not depend on
+  /// having come from TOML.
+  #[test]
+  fn effective_remotes_fills_gaps_from_the_scope_level_defaults() {
+    let toml = SourcesConfig {
+      branch: Some("main".to_owned()),
+      poll_interval: Some(Duration::from_secs(60)),
+      remotes: Some(vec![
+        RemoteSpec::plain("https://example.org/a".to_owned()),
+        RemoteSpec {
+          url:           "https://example.org/b".to_owned(),
+          branch:        Some("staging".to_owned()),
+          poll_interval: Some(Duration::from_secs(30)),
+        },
+      ]),
+      ..SourcesConfig::default()
+    };
+    let resolved = Layers {
+      toml,
+      ..Layers::default()
+    }
+    .resolve();
+
+    let remotes = resolved.effective_remotes();
+    assert_eq!(remotes[0].branch, "main");
+    assert_eq!(remotes[0].poll_interval, Duration::from_secs(60));
+    assert_eq!(remotes[1].branch, "staging");
+    assert_eq!(remotes[1].poll_interval, Duration::from_secs(30));
   }
 }
 
