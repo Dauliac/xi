@@ -518,6 +518,40 @@ fn working_dir_git(
   git_text(working_dir, args)
 }
 
+/// [`working_dir_git`], but against a `GIT_INDEX_FILE` other than the
+/// real one.
+///
+/// [`tracked_dirty_paths`] is the only caller: comparing the literal
+/// disk state to `HEAD` needs an index the real one's staged state
+/// cannot leak into, so this still goes through
+/// [`check_working_dir_git`] - the forbidden-subcommand invariant is
+/// about the working *tree*, not the index file a call happens to
+/// use - but cannot share [`working_dir_git`]'s signature.
+fn working_dir_git_with_index(
+  working_dir: &Path,
+  index_file: &Path,
+  args: &[&str],
+) -> Result<String, ConflictError> {
+  check_working_dir_git(working_dir, args)?;
+  let out = Command::new("git")
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .env("GIT_INDEX_FILE", index_file)
+    .arg("-C")
+    .arg(working_dir)
+    .args(args)
+    .output()
+    .map_err(|source| {
+      ConflictError::Io {
+        path: working_dir.to_path_buf(),
+        source,
+      }
+    })?;
+  if out.status.success() {
+    return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+  }
+  Err(git_error(working_dir, args, &out))
+}
+
 /// Whether `repo` has the object named by `rev`.
 fn has_object(repo: &Path, rev: &str) -> bool {
   run_git(repo, &["cat-file", "-e", &format!("{rev}^{{commit}}")])
@@ -623,6 +657,15 @@ impl fmt::Display for DirtyTree {
 
 /// Observe whether `working_dir` is dirty, and how.
 ///
+/// A plain `git status` is read first; when it reports nothing, that is
+/// unambiguous and `paths` is empty. When it reports *something*,
+/// [`tracked_dirty_paths`] is asked to settle what it means: `git
+/// status`'s staged/unstaged split goes through the index, and
+/// [`sync`]'s `reset --soft` is a deliberate case where the index
+/// disagrees with both `HEAD` and the working tree it just wrote - see
+/// xi-5ytq. Gating the heavier check on "status saw something" keeps
+/// the common fully-clean path as cheap as before this fix.
+///
 /// # Errors
 ///
 /// Propagates the git failure when `working_dir` is not a readable
@@ -633,9 +676,15 @@ pub fn inspect_working_tree(
   working_dir: &Path,
 ) -> Result<DirtyTree, ConflictError> {
   let status = working_dir_git(working_dir, &["status", "--porcelain=v2"])?;
-  let paths = parse_porcelain_v2(&status);
-
+  let status_paths = parse_porcelain_v2(&status);
   let git_dir = resolve_git_dir(working_dir);
+
+  let paths = if status_paths.is_empty() {
+    status_paths
+  } else {
+    tracked_dirty_paths(working_dir, &git_dir).unwrap_or(status_paths)
+  };
+
   let in_progress = IN_PROGRESS_MARKERS
     .iter()
     .filter(|marker| git_dir.join(marker).exists())
@@ -710,6 +759,96 @@ fn field_rest(rest: &str, skip: usize) -> Option<String> {
 /// A rename record's path is `<path>\t<origPath>`; report the new name.
 fn rename_target(path: &str) -> &str {
   path.split_once('\t').map_or(path, |(new, _orig)| new)
+}
+
+/// Non-empty lines of `output`, each its own owned `String`.
+fn non_empty_lines(output: &str) -> Vec<String> {
+  output
+    .lines()
+    .filter(|line| !line.is_empty())
+    .map(str::to_owned)
+    .collect()
+}
+
+/// A throw-away `GIT_INDEX_FILE`, removed when dropped.
+///
+/// Lives under the real `.git` dir - always the same filesystem as the
+/// index it stands in for - and never under `working_dir` itself, so
+/// nothing it touches is a tracked or untracked path that could leak
+/// into the very comparison it exists to make. Best-effort cleanup: a
+/// leaked temp file next to a real index is litter, not a correctness
+/// problem, so a failed removal is not propagated.
+struct TempIndex(PathBuf);
+
+impl TempIndex {
+  fn new(git_dir: &Path) -> Self {
+    let nanos = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map_or(0, |elapsed| elapsed.as_nanos());
+    Self(git_dir.join(format!(
+      "xi-dirty-check-index-{}-{nanos}",
+      std::process::id()
+    )))
+  }
+}
+
+impl Drop for TempIndex {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_file(&self.0);
+  }
+}
+
+/// Tracked and untracked paths that differ from `HEAD`, measured
+/// against the literal disk state. `None` when `working_dir` has no
+/// `HEAD` to diff against (an unborn branch) or the index build
+/// otherwise fails, so the caller can fall back to the plain
+/// index-based view.
+///
+/// This is the fix for xi-5ytq, and it takes two attempts to get
+/// right - both tried and rejected while writing the BDD suite for
+/// this bead, kept here so the next person does not retry them:
+///
+/// - **`git diff --name-only HEAD`**, comparing the working tree
+///   straight to `HEAD` without the real index as an intermediate.
+///   This handles a *modified* tracked file correctly, but
+///   `sync`'s write pass can also add a path the index has never
+///   seen, and `git diff <commit>` resolves "`HEAD` has this path,
+///   the index does not" as a deletion without ever reading the
+///   working tree - so a file `sync` just wrote still read as dirty.
+/// - **`git stash create`**, snapshotting index and worktree into a
+///   commit with no ref and no index/worktree side effects. This
+///   handles additions correctly, but its worktree layer does not
+///   reliably represent a path `sync`'s delete pass removed from
+///   disk while the stale index entry survives: the resulting tree
+///   kept the pre-sync blob, so a file `sync` just erased still read
+///   as dirty too.
+///
+/// What works: build a **fresh** index from the literal working tree
+/// (`git add -A` against a throw-away [`TempIndex`], touching neither
+/// the real index nor the working tree) and diff *that* against
+/// `HEAD`. This is the same question a commit would answer - would
+/// committing this disk content right now be a no-op against `HEAD` -
+/// and it is the question xi actually has: a working tree identical to
+/// `HEAD` is reproducible from `sources_head` regardless of what the
+/// real index happens to be sitting on.
+///
+/// A genuine edit - staged, unstaged, or both - still differs from
+/// `HEAD` regardless of the index, so SC-X-002's refusal is unaffected:
+/// this changes what counts as dirt, not whether dirt is caught. The
+/// trade-off is cost: unlike a plain `git status`, this hashes every
+/// file in the working tree, which is why [`inspect_working_tree`]
+/// only reaches for it once a plain `git status` has already reported
+/// something to disambiguate.
+fn tracked_dirty_paths(working_dir: &Path, git_dir: &Path) -> Option<Vec<String>> {
+  let temp_index = TempIndex::new(git_dir);
+  working_dir_git_with_index(working_dir, &temp_index.0, &["add", "-A"]).ok()?;
+  let diff = working_dir_git_with_index(
+    working_dir,
+    &temp_index.0,
+    &["diff", "--cached", "--name-only", "HEAD"],
+  )
+  .ok()?;
+  Some(non_empty_lines(&diff))
 }
 
 // ---------------------------------------------------------------------------
@@ -1861,6 +2000,183 @@ mod tests {
       "new.nix".to_owned(),
       "conflicted.nix".to_owned(),
     ]);
+  }
+
+  #[test]
+  fn non_empty_lines_drops_blanks() {
+    assert_eq!(non_empty_lines("a\n\nb\n"), vec![
+      "a".to_owned(),
+      "b".to_owned()
+    ]);
+    assert!(non_empty_lines("").is_empty());
+  }
+
+  // -- xi-5ytq: tracked_dirty_paths measures against HEAD, not the index --
+
+  /// A repo with one commit, so every case starts from a known `HEAD`.
+  fn repo_with_one_commit(tmp: &TempDir) -> PathBuf {
+    let dir = tmp.path().join("repo");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+    std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+    let git = |args: &[&str]| {
+      let out = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args([
+          "-c",
+          "user.email=t@e",
+          "-c",
+          "user.name=t",
+          "-c",
+          "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+      assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    dir
+  }
+
+  fn git_dir_of(repo: &Path) -> PathBuf {
+    repo.join(".git")
+  }
+
+  #[test]
+  fn tracked_dirty_paths_is_empty_against_the_commit_it_came_from() {
+    let tmp = TempDir::new().unwrap();
+    let repo = repo_with_one_commit(&tmp);
+    let paths = tracked_dirty_paths(&repo, &git_dir_of(&repo))
+      .expect("a repo with a HEAD must answer");
+    assert!(paths.is_empty(), "a freshly committed tree is not dirty");
+  }
+
+  #[test]
+  fn tracked_dirty_paths_sees_a_genuine_edit() {
+    let tmp = TempDir::new().unwrap();
+    let repo = repo_with_one_commit(&tmp);
+    std::fs::write(repo.join("a.txt"), "a2\n").unwrap();
+    let paths = tracked_dirty_paths(&repo, &git_dir_of(&repo)).unwrap();
+    assert_eq!(paths, vec!["a.txt".to_owned()]);
+  }
+
+  #[test]
+  fn tracked_dirty_paths_sees_a_genuinely_new_untracked_file() {
+    let tmp = TempDir::new().unwrap();
+    let repo = repo_with_one_commit(&tmp);
+    std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+    let paths = tracked_dirty_paths(&repo, &git_dir_of(&repo)).unwrap();
+    assert_eq!(paths, vec!["c.txt".to_owned()]);
+  }
+
+  #[test]
+  fn tracked_dirty_paths_sees_a_genuine_deletion() {
+    let tmp = TempDir::new().unwrap();
+    let repo = repo_with_one_commit(&tmp);
+    std::fs::remove_file(repo.join("a.txt")).unwrap();
+    let paths = tracked_dirty_paths(&repo, &git_dir_of(&repo)).unwrap();
+    assert_eq!(paths, vec!["a.txt".to_owned()]);
+  }
+
+  #[test]
+  fn tracked_dirty_paths_is_none_without_a_head() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("unborn");
+    std::fs::create_dir_all(&repo).unwrap();
+    Command::new("git")
+      .arg("-C")
+      .arg(&repo)
+      .args(["init", "-q", "-b", "main"])
+      .status()
+      .unwrap();
+    assert_eq!(tracked_dirty_paths(&repo, &git_dir_of(&repo)), None);
+  }
+
+  #[test]
+  fn tracked_dirty_paths_does_not_touch_the_real_index() {
+    let tmp = TempDir::new().unwrap();
+    let repo = repo_with_one_commit(&tmp);
+    std::fs::write(repo.join("a.txt"), "a2\n").unwrap();
+    let real_index = repo.join(".git").join("index");
+    let before = std::fs::read(&real_index).unwrap();
+
+    drop(tracked_dirty_paths(&repo, &git_dir_of(&repo)));
+
+    assert_eq!(
+      std::fs::read(&real_index).unwrap(),
+      before,
+      "the temp-index comparison must not mutate the real index"
+    );
+    // And it cleans up after itself.
+    assert!(
+      std::fs::read_dir(repo.join(".git"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .all(|entry| !entry
+          .file_name()
+          .to_string_lossy()
+          .starts_with("xi-dirty-check-index-")),
+      "the temp index file must not survive the call"
+    );
+  }
+
+  /// The regression this bead exists for: a `sync`-shaped `reset --soft`
+  /// residue (index stuck on the pre-sync tree; `HEAD` and the working
+  /// tree both on the new tree) must read as clean.
+  #[test]
+  fn tracked_dirty_paths_ignores_a_sync_shaped_soft_reset() {
+    let tmp = TempDir::new().unwrap();
+    let repo = repo_with_one_commit(&tmp);
+    let git = |args: &[&str]| {
+      let out = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args([
+          "-c",
+          "user.email=t@e",
+          "-c",
+          "user.name=t",
+          "-c",
+          "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+      assert!(out.status.success(), "git {args:?} failed: {out:?}");
+      String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+
+    // A second commit: add c.txt, delete b.txt, modify a.txt.
+    std::fs::write(repo.join("a.txt"), "a2\n").unwrap();
+    std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+    std::fs::remove_file(repo.join("b.txt")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "second"]);
+    let new_head = git(&["rev-parse", "HEAD"]);
+
+    // Roll back to the first commit, as if the working dir had never
+    // seen the second - then play `sync`'s write/delete pass by hand.
+    git(&["reset", "-q", "--hard", "HEAD~1"]);
+    std::fs::write(repo.join("a.txt"), "a2\n").unwrap();
+    std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+    std::fs::remove_file(repo.join("b.txt")).unwrap();
+    git(&["reset", "--soft", &new_head]);
+
+    // Confirm the fixture actually reproduces the bug's precondition:
+    // plain `git status` is not empty.
+    let status = git(&["status", "--porcelain"]);
+    assert!(!status.is_empty(), "fixture did not reproduce: {status}");
+
+    let paths = tracked_dirty_paths(&repo, &git_dir_of(&repo)).unwrap();
+    assert!(
+      paths.is_empty(),
+      "a working tree identical to HEAD must not read as dirty, got \
+       {paths:?} (raw status: {status:?})"
+    );
   }
 
   // -- refusal message ---------------------------------------------------
