@@ -16,8 +16,8 @@
 //!   describes, queried by `xi <scope> sources events`.
 //! - **metrics** - [`metrics`] is the closed Prometheus set and `server`
 //!   exposes it on loopback alongside `health`.
-//! - **traces** - `otlp` batches tick root spans out to a collector when (and
-//!   only when) an operator names one.
+//! - **traces** - `otlp` batches tick root spans out to a collector when
+//!   (and only when) an operator names one.
 //!
 //! [`redact`] cuts across all four: the credential type
 //! (`xi_core::sources::credentials::Secret`) has no `Serialize` impl,
@@ -30,7 +30,11 @@
 //! registry) sits behind the default `daemon` feature. Readers depend on
 //! this crate with `default-features = false`, which leaves the field
 //! vocabulary, the event store, the readouts, and the redaction
-//! boundary - everything the CLI needs and nothing it does not.
+//! boundary - everything the CLI needs and nothing it does not. `otlp`
+//! is a second, non-default feature on top of `daemon`: OTLP export is
+//! an operator opt-in even for a daemon build, so its client stack
+//! (`opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`,
+//! `tracing-opentelemetry`) only links in when a caller asks for it.
 //!
 //! # Daemon wiring seams
 //!
@@ -43,13 +47,14 @@
 //!
 //! # Implementation status
 //!
-//! Seven of the modules the layout above describes exist: [`config`],
-//! [`fields`], [`redact`], [`rotating`] and the `daemon`-gated
-//! [`subscriber`], [`journald`] and [`metrics`]. The rest  -  `events`,
-//! `health`, `otlp`, `readout`, and the `daemon`-gated `panic_hook`,
-//! `server`  -  are still to be written, and are declared here only
-//! once their file lands. The doc above is the target shape, not a
-//! description of what compiles today; see the
+//! Eight of the modules the layout above describes exist: [`config`],
+//! [`fields`], [`redact`], [`rotating`], the `daemon`-gated
+//! [`subscriber`], [`journald`] and [`metrics`], and the `otlp`-gated
+//! `otlp` (off by default; see "Crate layout and features"). The rest
+//! - `events`, `health`, `readout`, and the `daemon`-gated
+//! `panic_hook`, `server`  -  are still to be written, and are
+//! declared here only once their file lands. The doc above is the
+//! target shape, not a description of what compiles today; see the
 //! `xi-sources-observability` change for the remaining work.
 
 pub mod config;
@@ -61,6 +66,8 @@ pub mod rotating;
 pub mod journald;
 #[cfg(feature = "daemon")]
 pub mod metrics;
+#[cfg(feature = "otlp")]
+pub mod otlp;
 #[cfg(feature = "daemon")]
 pub mod subscriber;
 
