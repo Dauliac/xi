@@ -360,10 +360,7 @@ impl Transport for SshTransport {
       // when the operator's link is the bottleneck.
       CopyVia::Target => {
         let status = Command::new("nix-copy-closure")
-          .arg("--to")
-          .arg(&target.ssh_host)
-          .arg("--use-substitutes")
-          .arg(store_path)
+          .args(nix_copy_closure_args(target, store_path))
           .status()
           .map_err(|e| eyre!("failed to run nix-copy-closure: {e}"))?;
         if !status.success() {
@@ -414,27 +411,8 @@ impl Transport for SshTransport {
       bail!("scp of secret '{}' to {} failed", spec.name, target.name);
     }
 
-    let group = spec
-      .group
-      .as_deref()
-      .map_or_else(String::new, |g| format!("-g {}", shell_quote(g)));
+    let script = install_secret_script(spec, &staged);
     let destination = spec.destination.display().to_string();
-    let script = format!(
-      "set -e; mkdir -p {parent}; install -o {owner} {group} -m {mode} \
-       {staged} {dest}; rm -f {staged}",
-      parent = shell_quote(
-        spec
-          .destination
-          .parent()
-          .unwrap_or_else(|| Path::new("/"))
-          .to_string_lossy()
-          .as_ref()
-      ),
-      owner = shell_quote(&spec.owner),
-      mode = shell_quote(&spec.mode),
-      staged = shell_quote(&staged),
-      dest = shell_quote(&destination),
-    );
 
     let outcome =
       self.run(target, &RemoteCommand::elevated(script, interactive_sudo))?;
@@ -497,7 +475,63 @@ pub(crate) fn shell_quote(raw: &str) -> String {
   format!("'{}'", raw.replace('\'', r"'\''"))
 }
 
+/// The remote script [`SshTransport::upload_secret`] runs to move a
+/// staged secret into place with its configured owner, group and mode.
+///
+/// `install` sets all three in one syscall, so there is no window where
+/// the file exists at `staged` with other than `0600` (set by `scp`'s
+/// own default) or at `destination` with other than its final mode  -
+/// the whole reason the upload goes through a staged temp path instead
+/// of writing `destination` directly.
+///
+/// Pulled out of [`SshTransport::upload_secret`] so the exact script,
+/// and in particular that `-m {mode}` carries [`SecretSpec::mode`]
+/// through untouched, is assertable without a [`Transport`].
+pub(crate) fn install_secret_script(spec: &SecretSpec, staged: &str) -> String {
+  let group = spec
+    .group
+    .as_deref()
+    .map_or_else(String::new, |g| format!("-g {}", shell_quote(g)));
+  let destination = spec.destination.display().to_string();
+  format!(
+    "set -e; mkdir -p {parent}; install -o {owner} {group} -m {mode} \
+     {staged} {dest}; rm -f {staged}",
+    parent = shell_quote(
+      spec
+        .destination
+        .parent()
+        .unwrap_or_else(|| Path::new("/"))
+        .to_string_lossy()
+        .as_ref()
+    ),
+    owner = shell_quote(&spec.owner),
+    mode = shell_quote(&spec.mode),
+    staged = shell_quote(staged),
+    dest = shell_quote(&destination),
+  )
+}
+
+/// The argv `--copy-via target` runs `nix-copy-closure` with.
+///
+/// Pulled out of [`SshTransport::copy_closure`] so the exact spelling
+/// the `xi-sources-push` spec names -
+/// `nix-copy-closure --to <host> --use-substitutes` - is assertable
+/// without spawning the real binary, the same way [`SshTransport::base_opts`]
+/// keeps the `ssh` argv testable.
+pub(crate) fn nix_copy_closure_args(
+  target: &TargetAddr,
+  store_path: &str,
+) -> Vec<String> {
+  vec![
+    "--to".to_owned(),
+    target.ssh_host.clone(),
+    "--use-substitutes".to_owned(),
+    store_path.to_owned(),
+  ]
+}
+
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
   use super::*;
 
@@ -530,6 +564,94 @@ mod tests {
   #[test]
   fn quoting_survives_an_embedded_quote() {
     assert_eq!(shell_quote("it's"), r"'it'\''s'");
+  }
+
+  #[test]
+  fn copy_via_target_invokes_nix_copy_closure_with_use_substitutes() {
+    let target = TargetAddr {
+      name:     "web1".to_owned(),
+      ssh_host: "deploy@web1.example".to_owned(),
+      ssh_opts: Vec::new(),
+    };
+    let args = nix_copy_closure_args(&target, "/nix/store/abc-system");
+    assert_eq!(
+      args,
+      vec![
+        "--to".to_owned(),
+        "deploy@web1.example".to_owned(),
+        "--use-substitutes".to_owned(),
+        "/nix/store/abc-system".to_owned(),
+      ],
+      "must match the xi-sources-push spec's exact invocation"
+    );
+  }
+
+  fn secret_spec(group: Option<&str>) -> SecretSpec {
+    SecretSpec {
+      name:        "ssh-key".to_owned(),
+      source:      std::path::PathBuf::from("./ssh-key"),
+      destination: std::path::PathBuf::from("/run/keys/ssh"),
+      owner:       "root".to_owned(),
+      group:       group.map(str::to_owned),
+      mode:        "0600".to_owned(),
+      upload_at:   xi_core::sources::secrets::UploadAt::PreActivate,
+    }
+  }
+
+  #[test]
+  fn the_install_script_carries_the_configured_mode_and_owner() {
+    let spec = secret_spec(None);
+    let script = install_secret_script(&spec, "/tmp/.staged");
+    assert!(script.contains("-m '0600'"), "got: {script}");
+    assert!(script.contains("-o 'root'"), "got: {script}");
+    assert!(script.contains("install"), "got: {script}");
+  }
+
+  #[test]
+  fn the_install_script_omits_the_group_flag_when_none_is_configured() {
+    let spec = secret_spec(None);
+    let script = install_secret_script(&spec, "/tmp/.staged");
+    assert!(!script.contains("-g "), "got: {script}");
+  }
+
+  #[test]
+  fn the_install_script_passes_the_configured_group() {
+    let spec = secret_spec(Some("wheel"));
+    let script = install_secret_script(&spec, "/tmp/.staged");
+    assert!(script.contains("-g 'wheel'"), "got: {script}");
+  }
+
+  #[test]
+  fn a_custom_mode_is_honoured_verbatim() {
+    let mut spec = secret_spec(None);
+    spec.mode = "0440".to_owned();
+    let script = install_secret_script(&spec, "/tmp/.staged");
+    assert!(script.contains("-m '0440'"), "got: {script}");
+    assert!(!script.contains("-m '0600'"), "got: {script}");
+  }
+
+  #[test]
+  fn the_install_script_stages_then_installs_then_removes_the_staged_copy() {
+    let spec = secret_spec(None);
+    let script = install_secret_script(&spec, "/tmp/.staged-secret");
+    let staged_pos = script.find("/tmp/.staged-secret").expect("staged path");
+    let install_pos = script.find("install").expect("install call");
+    let rm_pos = script.rfind("rm -f").expect("cleanup");
+    assert!(
+      install_pos < rm_pos,
+      "install must run before the staged copy is removed: {script}"
+    );
+    assert!(
+      staged_pos < rm_pos,
+      "the staged path must appear before cleanup: {script}"
+    );
+  }
+
+  #[test]
+  fn the_install_script_creates_the_destination_parent_directory() {
+    let spec = secret_spec(None);
+    let script = install_secret_script(&spec, "/tmp/.staged");
+    assert!(script.contains("mkdir -p '/run/keys'"), "got: {script}");
   }
 
   #[test]

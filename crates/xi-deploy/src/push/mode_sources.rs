@@ -4,17 +4,20 @@
 //!
 //! This is the `xi-sources-push` spec's "`--mode sources`" requirement:
 //! rsync the sources dir to the target, excluding `.git/` and
-//! operator-specific state, then SSH in and run the appropriate rebuild
-//! tool with `--flake <remote path>#<host>`. This module only does the
-//! transfer, through the existing [`Transport::sync_dir`]; the remote
-//! rebuild invocation is a separate bead (4.2) layered on top.
+//! operator-specific state ([`sync`], through [`Transport::sync_dir`]),
+//! then SSH in and run the target's rebuild tool against the synced
+//! copy with `--flake <remote path>#<target name>` ([`switch`], through
+//! [`Transport::run`]).
 
 use std::path::Path;
 
-use color_eyre::Result;
+use color_eyre::{Result, eyre::bail};
 use xi_core::sources::Scope;
 
-use super::engine::{TargetAddr, Transport};
+use super::{
+  discover::PushTarget,
+  engine::{RemoteCommand, TargetAddr, Transport},
+};
 
 /// Files and directories the sync never ships to a target.
 ///
@@ -71,6 +74,55 @@ pub fn sync(
   )
 }
 
+/// The remote rebuild invocation `--mode sources` runs after [`sync`]
+/// lands the sources dir: `<rebuild tool> switch --flake <remote
+/// path>#<target name>`, e.g.
+/// `nixos-rebuild switch --flake /etc/xi/sources#web1`.
+///
+/// `target.rebuild_tool` already carries the right binary for the
+/// target's kind (`nixos-rebuild`, `darwin-rebuild`, `home-manager`),
+/// so this does not special-case any of them: all three accept the same
+/// `<tool> switch --flake <ref>#<name>` shape.
+///
+/// Exposed separately from [`switch`] so the exact script is assertable
+/// without a [`Transport`].
+#[must_use]
+pub fn switch_script(target: &PushTarget, scope: Scope) -> String {
+  format!(
+    "{} switch --flake {}#{}",
+    target.rebuild_tool,
+    remote_path(scope),
+    target.addr.name
+  )
+}
+
+/// Run the remote rebuild `--mode sources` needs after [`sync`] has
+/// landed the sources dir on `target`.
+///
+/// # Errors
+///
+/// Propagates a [`Transport::run`] error (the local `ssh` could not be
+/// spawned), or reports a non-zero remote exit naming `target` and the
+/// remote's own error output.
+pub fn switch(
+  transport: &dyn Transport,
+  target: &PushTarget,
+  scope: Scope,
+  interactive_sudo: bool,
+) -> Result<()> {
+  let script = switch_script(target, scope);
+  let outcome = transport
+    .run(&target.addr, &RemoteCommand::elevated(script, interactive_sudo))?;
+  if !outcome.success {
+    bail!(
+      "remote rebuild on {} failed: {}",
+      target.addr.name,
+      outcome.message()
+    );
+  }
+  Ok(())
+}
+
 #[cfg(test)]
 #[expect(
   clippy::expect_used,
@@ -84,14 +136,20 @@ mod tests {
   use color_eyre::eyre::bail;
 
   use super::*;
-  use crate::push::{args::CopyVia, engine::RemoteCommand};
+  use crate::push::{
+    args::CopyVia,
+    discover::TargetSource,
+    engine::{Elevate, RemoteCommand},
+  };
 
-  /// Records the args of every `sync_dir` call and answers with a
-  /// scripted outcome, one per call (falling back to success once the
-  /// script is exhausted).
+  /// Records the args of every `sync_dir` and `run` call and answers
+  /// each from its own scripted outcome list, one entry per call
+  /// (falling back to success once a script is exhausted).
   struct RecordingTransport {
-    outcomes: Mutex<Vec<bool>>,
-    calls:    Mutex<Vec<SyncCall>>,
+    outcomes:     Mutex<Vec<bool>>,
+    calls:        Mutex<Vec<SyncCall>>,
+    run_outcomes: Mutex<Vec<bool>>,
+    run_calls:    Mutex<Vec<RemoteCommand>>,
   }
 
   #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,13 +163,28 @@ mod tests {
   impl RecordingTransport {
     fn new(outcomes: Vec<bool>) -> Self {
       Self {
-        outcomes: Mutex::new(outcomes),
-        calls:    Mutex::new(Vec::new()),
+        outcomes:     Mutex::new(outcomes),
+        calls:        Mutex::new(Vec::new()),
+        run_outcomes: Mutex::new(Vec::new()),
+        run_calls:    Mutex::new(Vec::new()),
+      }
+    }
+
+    fn with_run_outcomes(run_outcomes: Vec<bool>) -> Self {
+      Self {
+        outcomes:     Mutex::new(Vec::new()),
+        calls:        Mutex::new(Vec::new()),
+        run_outcomes: Mutex::new(run_outcomes),
+        run_calls:    Mutex::new(Vec::new()),
       }
     }
 
     fn calls(&self) -> Vec<SyncCall> {
       self.calls.lock().expect("calls lock").clone()
+    }
+
+    fn run_calls(&self) -> Vec<RemoteCommand> {
+      self.run_calls.lock().expect("run_calls lock").clone()
     }
   }
 
@@ -119,9 +192,16 @@ mod tests {
     fn run(
       &self,
       _target: &TargetAddr,
-      _cmd: &RemoteCommand,
+      cmd: &RemoteCommand,
     ) -> Result<crate::push::engine::Outcome> {
-      unreachable!("not exercised by --mode sources tests")
+      self.run_calls.lock().expect("run_calls lock").push(cmd.clone());
+      let mut outcomes = self.run_outcomes.lock().expect("run_outcomes lock");
+      let success = if outcomes.is_empty() { true } else { outcomes.remove(0) };
+      Ok(if success {
+        crate::push::engine::Outcome::ok("")
+      } else {
+        crate::push::engine::Outcome::failed("switch-to-configuration failed")
+      })
     }
 
     fn copy_closure(
@@ -172,6 +252,22 @@ mod tests {
       name:     "web1".to_owned(),
       ssh_host: "web1".to_owned(),
       ssh_opts: Vec::new(),
+    }
+  }
+
+  fn push_target(name: &str, rebuild_tool: &'static str) -> PushTarget {
+    PushTarget {
+      addr: TargetAddr {
+        name:     name.to_owned(),
+        ssh_host: name.to_owned(),
+        ssh_opts: Vec::new(),
+      },
+      source:       TargetSource::NixosConfigurations,
+      tags:         Vec::new(),
+      installable:  String::new(),
+      kind:         crate::target::ProfileKind::NixOS,
+      profile_path: String::new(),
+      rebuild_tool,
     }
   }
 
@@ -257,5 +353,69 @@ mod tests {
     )
     .expect_err("fails");
     assert!(format!("{err}").contains("rsync failed"), "got: {err}");
+  }
+
+  #[test]
+  fn switch_script_runs_the_targets_rebuild_tool_against_the_synced_path() {
+    let target = push_target("web1", "nixos-rebuild");
+    assert_eq!(
+      switch_script(&target, Scope::System),
+      "nixos-rebuild switch --flake /etc/xi/sources#web1"
+    );
+  }
+
+  #[test]
+  fn switch_script_honours_the_targets_own_rebuild_tool() {
+    let target = push_target("mac1", "darwin-rebuild");
+    assert_eq!(
+      switch_script(&target, Scope::System),
+      "darwin-rebuild switch --flake /etc/xi/sources#mac1"
+    );
+  }
+
+  #[test]
+  fn switch_script_resolves_the_user_scope_remote_path() {
+    let target = push_target("me", "home-manager");
+    assert_eq!(
+      switch_script(&target, Scope::User),
+      "home-manager switch --flake ~/.local/share/xi/sources#me"
+    );
+  }
+
+  #[test]
+  fn a_successful_switch_runs_exactly_the_switch_script_elevated() {
+    let transport = RecordingTransport::with_run_outcomes(vec![true]);
+    let target = push_target("web1", "nixos-rebuild");
+    switch(&transport, &target, Scope::System, false).expect("switches");
+
+    let calls = transport.run_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].script, switch_script(&target, Scope::System));
+    assert_eq!(calls[0].elevate, Elevate::NonInteractive);
+  }
+
+  #[test]
+  fn interactive_sudo_propagates_to_the_remote_switch() {
+    let transport = RecordingTransport::with_run_outcomes(vec![true]);
+    let target = push_target("web1", "nixos-rebuild");
+    switch(&transport, &target, Scope::System, true).expect("switches");
+
+    let calls = transport.run_calls();
+    assert_eq!(calls[0].elevate, Elevate::Interactive);
+    assert!(calls[0].pty);
+  }
+
+  #[test]
+  fn a_failed_remote_switch_names_the_target_and_the_remote_error() {
+    let transport = RecordingTransport::with_run_outcomes(vec![false]);
+    let target = push_target("web1", "nixos-rebuild");
+    let err = switch(&transport, &target, Scope::System, false)
+      .expect_err("remote switch failed");
+    let message = format!("{err}");
+    assert!(message.contains("web1"), "got: {message}");
+    assert!(
+      message.contains("switch-to-configuration failed"),
+      "got: {message}"
+    );
   }
 }
