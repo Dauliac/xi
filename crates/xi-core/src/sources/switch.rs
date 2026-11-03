@@ -236,17 +236,18 @@ pub fn prepare(
 /// `ActorName::Switch` is the top of the spec's priority order, so an
 /// operator waiting at a terminal is granted ahead of a daemon tick
 /// that queues behind them. The wait budget is the library default of
-/// one lease: a switch that cannot get the lock inside that reports the
-/// holder's record and the estimated wait rather than failing bare.
+/// one lease unless the operator overrides it with `XI_SOURCES_LOCK_WAIT`
+/// (see xi-aiw7); a switch that cannot get the lock inside that reports
+/// the holder's record and the estimated wait rather than failing bare.
+/// While it waits, a status line naming the holder repeats every couple
+/// of seconds rather than leaving the terminal silent for the whole
+/// budget.
 fn take_lock(scope: Scope, paths: &ScopePaths) -> Result<SourcesLock> {
-  SourcesLock::acquire(
-    &paths.state_dir,
-    &LockOptions::new(
-      ActorName::Switch,
-      format!("xi {} switch", scope.as_str()),
-    ),
-  )
-  .map_err(|err| eyre!("{err}"))
+  let intent = format!("xi {} switch", scope.as_str());
+  let opts = LockOptions::from_env(ActorName::Switch, intent)
+    .map_err(|err| eyre!("{err}"))?
+    .with_progress();
+  SourcesLock::acquire(&paths.state_dir, &opts).map_err(|err| eyre!("{err}"))
 }
 
 /// Ask the conflict policy which tree to build, and turn it into an
