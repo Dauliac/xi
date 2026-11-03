@@ -33,6 +33,7 @@ use tracing::{debug, info, warn};
 use super::{
   Scope,
   config::{Installer, ScopePaths},
+  lock::{ActorName, LockOptions, SourcesLock},
 };
 
 // ---------------------------------------------------------------------------
@@ -1105,6 +1106,12 @@ pub enum BootstrapError {
     source: serde_json::Error,
   },
 
+  /// The sources lock could not be acquired: another actor holds it
+  /// (named, with its intent and the estimated wait), or
+  /// `XI_SOURCES_LOCK_WAIT` is set to something unparsable.
+  #[error("{0}")]
+  Lock(String),
+
   /// An SSH target that is not a bare `ssh://[user@]host[:port]`.
   #[error(
     "`{raw}` is not a remote-bootstrap target.\nExpected \
@@ -1432,22 +1439,32 @@ fn install_nix(
 #[derive(Debug, Clone)]
 pub struct BootstrapPlan {
   /// Which half of the machine this plan bootstraps.
-  pub scope:        Scope,
+  pub scope:          Scope,
   /// Where the receipt is written.
-  pub receipt_path: PathBuf,
+  pub receipt_path:   PathBuf,
+  /// `ScopePaths::state_dir` for this scope - where the sources lock
+  /// lives. Not derivable from `receipt_path`: at system scope the
+  /// receipt sits in the state dir's *parent* (see
+  /// [`receipt_dir`]), so the two have to be named separately.
+  pub lock_state_dir: PathBuf,
   /// The config repo being adopted, recorded in the receipt.
-  pub remote:       Option<String>,
+  pub remote:         Option<String>,
   /// The phases, in execution order.
-  pub actions:      Vec<Action>,
+  pub actions:        Vec<Action>,
 }
 
 impl BootstrapPlan {
   /// An empty plan for `scope`.
   #[must_use]
-  pub const fn new(scope: Scope, receipt_path: PathBuf) -> Self {
+  pub const fn new(
+    scope: Scope,
+    receipt_path: PathBuf,
+    lock_state_dir: PathBuf,
+  ) -> Self {
     Self {
       scope,
       receipt_path,
+      lock_state_dir,
       remote: None,
       actions: Vec::new(),
     }
@@ -1523,15 +1540,29 @@ impl BootstrapPlan {
   /// crash or a power loss halfway through still leaves something
   /// `xi system uninstall` can reverse.
   ///
+  /// Takes the sources lock (`ActorName::Bootstrap`) before the first
+  /// phase and holds it for every phase, not just `CloneSources`: a
+  /// concurrent daemon tick or switch must not race the machine's own
+  /// first-run adoption. Released by `Drop` once this returns, success or
+  /// failure alike.
+  ///
   /// # Errors
   ///
-  /// Returns the first phase failure. The receipt on disk is accurate
-  /// about what ran: a failing phase contributes no entry.
+  /// Returns [`BootstrapError::Lock`] when the sources lock is held by
+  /// another actor or `XI_SOURCES_LOCK_WAIT` is unparsable, and otherwise
+  /// the first phase failure. The receipt on disk is accurate about what
+  /// ran: a failing phase contributes no entry.
   pub fn execute(
     &self,
     runner: &dyn Runner,
     facts: &HostFacts,
   ) -> Result<Receipt, BootstrapError> {
+    let intent = format!("xi {} bootstrap", self.scope.as_str());
+    let opts = LockOptions::from_env(ActorName::Bootstrap, intent)
+      .map_err(BootstrapError::Lock)?;
+    let _lock = SourcesLock::acquire(&self.lock_state_dir, &opts)
+      .map_err(|err| BootstrapError::Lock(err.to_string()))?;
+
     let mut receipt = Receipt::new(self.scope).for_remote(self.remote.clone());
 
     for action in &self.actions {
@@ -1772,7 +1803,7 @@ pub fn bootstrap_over_ssh(
 mod tests {
   use tempfile::TempDir;
 
-  use super::*;
+  use super::{super::lock, *};
 
   fn facts() -> HostFacts {
     HostFacts {
@@ -2266,7 +2297,12 @@ mod tests {
 
   fn full_plan(tmp: &TempDir) -> BootstrapPlan {
     let sources = tmp.path().join("sources");
-    BootstrapPlan::new(Scope::System, tmp.path().join(RECEIPT_FILE))
+    let plan = BootstrapPlan::new(
+      Scope::System,
+      tmp.path().join(RECEIPT_FILE),
+      tmp.path().join("state"),
+    );
+    plan
       .for_remote(Some("https://git.example/cfg".to_owned()))
       .with(Action::CheckPreflight(PreflightOpts::default()))
       .with(Action::InstallNix {
@@ -2334,6 +2370,68 @@ mod tests {
     assert_eq!(receipt.remote.as_deref(), Some("https://git.example/cfg"));
   }
 
+  /// xi-wtrq: `execute` takes the sources lock (`ActorName::Bootstrap`)
+  /// before the first phase and releases it once it returns, so a
+  /// concurrent daemon tick or switch cannot race first-run adoption.
+  #[test]
+  fn execute_takes_the_sources_lock_and_releases_it() {
+    let tmp = TempDir::new().unwrap();
+    let runner = RecordingRunner::new().with_program("nix");
+
+    full_plan(&tmp)
+      .execute(&runner, &facts())
+      .expect("the plan must run");
+
+    let lock_path = tmp.path().join("state").join(lock::LOCK_FILE);
+    assert!(
+      lock_path.is_file(),
+      "execute must have taken the lock, which creates {}",
+      lock_path.display()
+    );
+    assert_eq!(
+      fs::read_to_string(&lock_path).unwrap().trim(),
+      "",
+      "a released lock leaves an empty record"
+    );
+  }
+
+  /// A plan cannot run while another actor holds the sources lock: the
+  /// error names the holder rather than racing it.
+  ///
+  /// `#[serial]` plus `EnvGuard`, the house pattern
+  /// (`crate::installable::tests`) for a test that has to mutate
+  /// `XI_SOURCES_LOCK_WAIT`: `execute` has no `wait_for` of its own to
+  /// shorten, only the env override `LockOptions::from_env` reads, and
+  /// mutating process env is not safe across parallel tests.
+  #[test]
+  #[serial_test::serial]
+  fn execute_refuses_a_held_lock_and_names_the_holder() {
+    let _env = crate::test_utils::EnvGuard::new(lock::LOCK_WAIT_ENV, "50ms");
+    let tmp = TempDir::new().unwrap();
+    let state_dir = tmp.path().join("state");
+    let runner = RecordingRunner::new().with_program("nix");
+
+    let held = SourcesLock::acquire(
+      &state_dir,
+      &LockOptions::new(ActorName::Daemon, "tick").without_refresh(),
+    )
+    .expect("the test takes the free lock first");
+
+    let err = full_plan(&tmp)
+      .execute(&runner, &facts())
+      .expect_err("a held lock must refuse the plan");
+    let BootstrapError::Lock(message) = &err else {
+      panic!("expected BootstrapError::Lock, got {err:?}");
+    };
+    assert!(message.contains("daemon"), "got: {message}");
+    assert!(
+      !runner.ran("git clone"),
+      "a plan refused on the lock must not have run any phase"
+    );
+
+    held.release().expect("release");
+  }
+
   /// Scenario: Nix install fails, bootstrap halts.
   #[test]
   fn a_failing_install_stops_the_plan_and_records_only_preflight() {
@@ -2396,16 +2494,20 @@ mod tests {
     // Stand in for the clone the real phase 3 would have made.
     fs::create_dir_all(sources.join(".git")).unwrap();
 
-    let plan = BootstrapPlan::new(Scope::System, receipt_path.clone())
-      .with(Action::CheckPreflight(PreflightOpts::default()))
-      .with(Action::CloneSources {
-        remote: "https://git.example/cfg".to_owned(),
-        branch: "main".to_owned(),
-        dest:   sources.clone(),
-      })
-      .with(Action::WriteReceipt {
-        path: receipt_path.clone(),
-      });
+    let plan = BootstrapPlan::new(
+      Scope::System,
+      receipt_path.clone(),
+      tmp.path().join("state"),
+    )
+    .with(Action::CheckPreflight(PreflightOpts::default()))
+    .with(Action::CloneSources {
+      remote: "https://git.example/cfg".to_owned(),
+      branch: "main".to_owned(),
+      dest:   sources.clone(),
+    })
+    .with(Action::WriteReceipt {
+      path: receipt_path.clone(),
+    });
     plan.execute(&runner, &facts()).expect("bootstrap");
     assert!(receipt_path.is_file());
 

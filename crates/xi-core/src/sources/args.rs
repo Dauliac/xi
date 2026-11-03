@@ -33,6 +33,7 @@ use super::{
     sync,
     three_way_diff,
   },
+  lock::{ActorName, LockOptions, SourcesLock},
 };
 
 /// Inspect and manage the config repo this scope deploys from
@@ -168,12 +169,18 @@ impl DiffArgs {
 impl SyncArgs {
   /// Copy the sources dir over the working dir.
   ///
+  /// Takes the sources lock (`ActorName::Sync`) before the copy, which is
+  /// the first write: a daemon tick or a switch could otherwise observe
+  /// or produce a half-written working dir. Released by `Drop` once this
+  /// returns, success or failure alike.
+  ///
   /// # Errors
   ///
   /// Returns an error when no working dir is configured (there is
-  /// nothing to sync into), when the working dir is dirty and
-  /// `--force-dirty` was not given, and on any git or filesystem
-  /// failure during the copy.
+  /// nothing to sync into), when the sources lock is held by another
+  /// actor (the error names the holder and the estimated wait), when the
+  /// working dir is dirty and `--force-dirty` was not given, and on any
+  /// git or filesystem failure during the copy.
   pub fn run(self, scope: Scope) -> Result<()> {
     let paths = ScopePaths::resolve(scope);
     let resolved = resolve_layers(SourcesConfig::default(), &paths)?;
@@ -184,6 +191,13 @@ impl SyncArgs {
          `XI_SOURCES_WORKING_DIR` to the clone you edit by hand."
       ));
     };
+
+    let intent = format!("xi {} sources sync", scope.as_str());
+    let opts = LockOptions::from_env(ActorName::Sync, intent)
+      .map_err(|err| eyre!("{err}"))?
+      .with_progress();
+    let _lock = SourcesLock::acquire(&paths.state_dir, &opts)
+      .map_err(|err| eyre!("{err}"))?;
 
     let outcome = sync(&SyncRequest {
       sources_dir: &paths.sources_dir,
