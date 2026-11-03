@@ -13,15 +13,20 @@
 //!    ([`xi_core::sources::args::resolve_layers`]), so a daemon started by the
 //!    Nix module and a `switch` run by the operator never disagree about what
 //!    the remote, the branch, or `require_signed` are.
-//! 2. For every configured remote ([`ResolvedSources::effective_remotes`]), run
-//!    one [`xi_sources_daemon::tick::run`], serialised through a [`Singleton`]
-//!    gate so a slow fetch cannot stack with the next one.
-//! 3. Sleep for the shortest configured `poll_interval` and repeat, unless
-//!    `--once` asked for a single pass (used by operators to drive the daemon
-//!    by hand, and by integration tests that do not want to wait out a real
-//!    interval).
+//! 2. For every configured remote ([`ResolvedSources::effective_remotes`]) that
+//!    is due per its own `poll_interval` ([`Scheduler`]), run one
+//!    [`xi_sources_daemon::tick::run`], serialised through a [`Singleton`] gate
+//!    so a slow fetch cannot stack with the next one.
+//! 3. Sleep until the next remote becomes due and repeat, unless `--once`
+//!    asked for a single pass over every configured remote (used by operators
+//!    to drive the daemon by hand, and by integration tests that do not want
+//!    to wait out a real interval).
 
-use std::{path::PathBuf, thread, time::Duration};
+use std::{
+  path::PathBuf,
+  thread,
+  time::{Duration, Instant},
+};
 
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
@@ -36,6 +41,7 @@ use xi_core::sources::{
 use xi_sources_daemon::{
   exec::SystemExec,
   health::TickOutcome,
+  schedule::Scheduler,
   singleton::Singleton,
   tick::{self, TickInputs},
 };
@@ -128,8 +134,17 @@ fn main() -> Result<()> {
   let gate = Singleton::new();
   let exec = SystemExec;
 
+  // Each remote polls on its own configured `poll_interval`, not on the
+  // shortest one across the set: see [`xi_sources_daemon::schedule`].
+  let poll_intervals: Vec<Duration> =
+    remotes.iter().map(|remote| remote.poll_interval).collect();
+  let mut scheduler = Scheduler::new(Instant::now(), &poll_intervals);
+
   loop {
-    for remote in &remotes {
+    let due = scheduler.due(Instant::now());
+
+    for index in due {
+      let remote = &remotes[index];
       let _permit = gate.enter();
 
       let tick_span = TickSpan::start(&sources_id.to_string(), &remote.url);
@@ -162,17 +177,20 @@ fn main() -> Result<()> {
         },
         TickOutcome::NoChange { .. } | TickOutcome::Deferred { .. } => {},
       }
+
+      // Measured from completion, not from when it became due: a tick
+      // slower than its own interval must not read as immediately due
+      // again. The permit from this iteration's `gate.enter()` is still
+      // held here, so this remote's own next-due bookkeeping is itself
+      // serialised with every other remote's tick.
+      scheduler.mark_ticked(index, Instant::now());
     }
 
     if cli.once {
       break;
     }
 
-    let sleep_for = remotes
-      .iter()
-      .map(|r| r.poll_interval)
-      .min()
-      .unwrap_or(resolved.poll_interval);
+    let sleep_for = scheduler.sleep_duration(Instant::now());
     thread::sleep(sleep_for.max(Duration::from_secs(1)));
   }
 
