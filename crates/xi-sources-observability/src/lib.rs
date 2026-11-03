@@ -47,14 +47,16 @@
 //!
 //! # Implementation status
 //!
-//! Eight of the modules the layout above describes exist: [`config`],
+//! Nine of the modules the layout above describes exist: [`config`],
 //! [`fields`], [`redact`], [`rotating`], the `daemon`-gated
-//! [`subscriber`], [`journald`] and [`metrics`], and the `otlp`-gated
-//! `otlp` (off by default; see "Crate layout and features"). The rest
-//! - `events`, `health`, `readout`, and the `daemon`-gated
-//! `panic_hook`, `server`  -  are still to be written, and are
-//! declared here only once their file lands. The doc above is the
-//! target shape, not a description of what compiles today; see the
+//! [`subscriber`], [`journald`], [`metrics`] and [`server`], and the
+//! `otlp`-gated `otlp` (off by default; see "Crate layout and
+//! features"). The rest - `events`, `health`, `readout`, and the
+//! `daemon`-gated `panic_hook` - are still to be written, and are
+//! declared here only once their file lands. [`server`] today only
+//! answers `/metrics`; `/healthz` and the "nothing else" closed-route
+//! guarantee are task 5.3, not yet landed. The doc above is the target
+//! shape, not a description of what compiles today; see the
 //! `xi-sources-observability` change for the remaining work.
 
 pub mod config;
@@ -68,6 +70,8 @@ pub mod journald;
 pub mod metrics;
 #[cfg(feature = "otlp")]
 pub mod otlp;
+#[cfg(feature = "daemon")]
+pub mod server;
 #[cfg(feature = "daemon")]
 pub mod subscriber;
 
