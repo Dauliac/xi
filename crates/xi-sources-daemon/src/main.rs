@@ -143,6 +143,7 @@ fn main() -> Result<()> {
         allowed_signers: resolved.allowed_signers.as_deref(),
         gpg_public_keys: resolved.gpg_public_keys.as_deref(),
         on_advance:      resolved.on_advance.as_deref(),
+        sync_mode:       resolved.sync_mode,
       };
 
       let outcome = tick::run(&exec, &inputs);
