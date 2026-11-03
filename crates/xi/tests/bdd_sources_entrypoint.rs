@@ -221,6 +221,35 @@ impl Machine {
     (merged, out.status.success())
   }
 
+  /// Run `xi home sources sync` with extra environment variables, e.g.
+  /// `XI_SOURCES_WORKING_DIR` to name the clone to sync into.
+  fn sync_with(&self, extra_env: &[(&str, &str)]) -> (String, bool) {
+    let mut cmd = Command::new(xi());
+    cmd
+      .args(["home", "sources", "sync"])
+      .env("XI_NO_CHECKS", "1")
+      .env("HOME", &self.home)
+      .env("XDG_DATA_HOME", self.home.join(".local/share"))
+      .env("XDG_STATE_HOME", self.home.join(".local/state"))
+      .env("XDG_CONFIG_HOME", self.home.join(".config"))
+      .env_remove("XI_SOURCES_REMOTE")
+      .current_dir(self.home.join("proj"));
+    for (key, value) in extra_env {
+      cmd.env(key, value);
+    }
+    let out = cmd.output().expect("spawn xi");
+    let merged = format!(
+      "{}{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
+    (merged, out.status.success())
+  }
+
+  fn state_dir(&self) -> PathBuf {
+    self.home.join(".local/state/xi")
+  }
+
   fn sources_dir(&self) -> PathBuf {
     self.home.join(".local/share/xi/sources")
   }
@@ -552,4 +581,54 @@ fn a_contended_switch_reports_the_holder_and_gives_up() {
   );
 
   held.release().expect("release the test process's lock");
+}
+
+// -- Requirement: sync serialises against other sources actors ------------
+
+/// xi-wtrq: `xi sources sync` (`ActorName::Sync`) takes the sources lock
+/// too, the same way `switch` does.
+///
+/// As with `a_switch_takes_the_sources_lock`, this checks the lock's
+/// on-disk footprint rather than contention: `bdd_sources_race.rs`
+/// already proves `flock` excludes. What was missing before xi-wtrq is
+/// that `sync` reached for the lock at all.
+#[test]
+fn a_sync_takes_the_sources_lock() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "synced");
+  m.switch(&[&remote]);
+  assert!(m.sources_dir().join(".git").is_dir(), "adoption must have cloned");
+
+  // A second clone of the same remote stands in for the operator's
+  // editable working dir: `sync` only needs something with the remote's
+  // objects to copy-with-erase onto, not anything `switch` produced.
+  let working = m.tmp.path().join("working");
+  let ok = Command::new("git")
+    .args(["clone", "-q"])
+    .arg(&remote)
+    .arg(&working)
+    .status()
+    .expect("git clone")
+    .success();
+  assert!(ok, "cloning the working dir fixture failed");
+
+  let (out, ok) = m.sync_with(&[(
+    "XI_SOURCES_WORKING_DIR",
+    working.to_str().expect("utf8 path"),
+  )]);
+  assert!(ok, "sync against a matching clone must succeed: {out}");
+
+  let state_dir = m.state_dir();
+  assert!(
+    state_dir.join("lock").is_file(),
+    "sync must have taken the lock, which creates {}",
+    state_dir.join("lock").display()
+  );
+  assert_eq!(
+    std::fs::read_to_string(state_dir.join("lock"))
+      .expect("read the lock file")
+      .trim(),
+    "",
+    "a released lock leaves an empty record"
+  );
 }
