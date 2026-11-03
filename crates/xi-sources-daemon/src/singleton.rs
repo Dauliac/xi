@@ -65,7 +65,12 @@ impl Singleton {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "Fine in tests")]
+#[expect(
+  clippy::expect_used,
+  clippy::panic,
+  reason = "Fine in tests; the panic test deliberately panics to exercise \
+            poison recovery"
+)]
 mod tests {
   use std::{
     sync::{
