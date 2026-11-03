@@ -163,6 +163,88 @@ fn sc_g_002_remote_advance_by_n_commits_fast_forwards_the_sources_dir() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// xi-1ae1: the daemon binary runs `xi sources repair` before anything else
+// ---------------------------------------------------------------------------
+
+/// xi-1ae1: `xi-sources-daemon`'s `main` calls `repair::auto_repair`
+/// before anything else, including lock acquisition. Driven against the
+/// real compiled binary rather than `tick::run` directly, because the
+/// thing under test is specifically what `main` does before the tick
+/// loop starts - a dangling shadow fetch left beside the sources dir by
+/// a killed predecessor must be gone by the time this process has done
+/// anything else.
+#[test]
+fn the_daemon_binary_sweeps_a_dangling_shadow_fetch_on_startup() {
+  // Deliberately not `World`: that fixture is built around `tick::run`
+  // taking `sources_dir` as an explicit argument, so its `sources_dir`
+  // lives wherever the tempdir happens to put it and need not agree
+  // with what `ScopePaths::resolve` would compute. `repair::auto_repair`
+  // (what this test exercises) has no such override - it always
+  // resolves `ScopePaths::resolve(scope)` itself - so this fixture
+  // drives the daemon entirely through the same `XDG_*` /
+  // `XI_SOURCES_*` environment a real deployment would set, with no
+  // `--sources-dir` flag, so both halves of the binary agree on one
+  // path.
+  let tmp = TempDir::new().expect("tempdir");
+  let root = tmp.path();
+  let xdg_data = root.join("data");
+  let xdg_config = root.join("config");
+  let state_dir = root.join("state");
+  let remote = root.join("remote");
+
+  fs::create_dir_all(&remote).expect("mkdir remote");
+  git(&remote, &["init", "-q", "-b", "main"]);
+  git(&remote, &["config", "user.email", "test@example.com"]);
+  git(&remote, &["config", "user.name", "Test"]);
+  commit(&remote, "flake.nix", "base");
+
+  // `ScopePaths::resolve_with(Scope::User, ...)` puts the sources dir at
+  // `$XDG_DATA_HOME/xi/sources`; cloning it there up front is what
+  // satisfies `main`'s "not a clone yet" refusal and gives the tick a
+  // real commit to adopt.
+  let sources_dir = xdg_data.join("xi").join("sources");
+  fs::create_dir_all(&sources_dir).expect("mkdir sources dir");
+  let cloned = Command::new("git")
+    .args(["clone", "-q"])
+    .arg(&remote)
+    .arg(&sources_dir)
+    .status()
+    .expect("run git clone")
+    .success();
+  assert!(cloned, "seed clone into the sources dir failed");
+
+  // What a kill mid-fetch leaves behind: a populated `.incoming` sibling
+  // of the sources dir, from a previous (interrupted) tick.
+  let incoming = xi_core::sources::shadow::incoming_path(&sources_dir);
+  fs::create_dir_all(incoming.join(".git")).expect("plant dangling shadow");
+  fs::write(incoming.join("marker"), b"half-fetched").expect("plant marker");
+
+  let exe = env!("CARGO_BIN_EXE_xi-sources-daemon");
+  let output = Command::new(exe)
+    .args(["--scope", "user", "--once"])
+    .env("XDG_DATA_HOME", &xdg_data)
+    .env("XDG_CONFIG_HOME", &xdg_config)
+    .env("XI_SOURCES_STATE_DIR", &state_dir)
+    .env("XI_SOURCES_REMOTE", remote.to_str().expect("utf8"))
+    .env("XI_SOURCES_BRANCH", "main")
+    .output()
+    .expect("run xi-sources-daemon");
+
+  assert!(
+    output.status.success(),
+    "daemon --once should exit cleanly: stdout={}\nstderr={}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  assert!(
+    !incoming.exists(),
+    "startup repair must have swept the dangling shadow fetch before \
+     the tick loop ran: stderr={}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+}
+
 /// A second tick after a successful advance, with nothing new on the
 /// remote, must be idempotent: no further writes, and the outcome says
 /// nothing changed rather than claiming a fresh advance.
