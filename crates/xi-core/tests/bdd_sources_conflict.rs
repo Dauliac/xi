@@ -788,6 +788,91 @@ fn sc_x_009_sync_refuses_a_dirty_tree_without_the_escape() {
   assert!(outcome.forced, "a forced sync must say so");
 }
 
+/// xi-5ytq: a sync's own `reset --soft` residue must not read as dirty
+/// to the next `switch`.
+///
+/// `sc_x_008` above asserts the raw git index still shows the inverse
+/// delta after a sync - that is `--soft`'s whole point, a reviewable
+/// diff. This test is the other half of the bead: despite that index
+/// state, the *resolver* must see a clean tree and evaluate the working
+/// dir, not refuse it the way `SC-X-002` refuses a genuinely dirty one.
+#[test]
+fn xi_5ytq_a_synced_tree_is_not_dirty_to_the_next_switch() {
+  let world = World::new();
+  world.commit(
+    &world.remote,
+    "hosts/server.nix",
+    "{ new = true; }\n",
+    "add",
+  );
+  world.advance_sources_dir();
+  world.operator_fetches();
+
+  world.sync(false).expect("sync a clean tree");
+
+  // The raw git state is exactly what sc_x_008 documents: not clean.
+  let porcelain = git(&world.working_dir, &["status", "--porcelain"]);
+  assert!(
+    !porcelain.trim().is_empty(),
+    "the sync's index-only delta must still be there for review"
+  );
+
+  // The resolver must disagree with raw `git status` here and evaluate
+  // the working dir.
+  match world.resolve(Some(&world.working_dir), false) {
+    EvaluationSource::WorkingDir { path, dirty_source } => {
+      assert_eq!(path, world.working_dir);
+      assert!(
+        !dirty_source,
+        "a sync's own residue is not operator dirt, so this switch is \
+         reproducible from sources_head and must not be marked \
+         dirty-source"
+      );
+    },
+    other => panic!(
+      "a synced working dir must evaluate clean, got {other:?} (raw git \
+       status: {porcelain:?})"
+    ),
+  }
+}
+
+/// xi-5ytq, the `auto-copy` path: the sync that runs unprompted at the
+/// top of an interactive command must not leave the command it ran
+/// ahead of refusing itself.
+#[test]
+fn xi_5ytq_auto_copy_sync_does_not_make_the_next_switch_refuse_itself() {
+  let world = World::new();
+  world.commit(&world.remote, "hosts/server.nix", "{ }\n", "remote moved");
+  world.advance_sources_dir();
+  world.operator_fetches();
+
+  match apply_auto_sync(
+    SyncMode::AutoCopy,
+    &world.sources_dir,
+    Some(&world.working_dir),
+    WHAT,
+  )
+  .expect("auto sync")
+  {
+    AutoSync::Applied(_) => {},
+    other => panic!("expected the sync to run, got {other:?}"),
+  }
+
+  match world.resolve(Some(&world.working_dir), false) {
+    EvaluationSource::WorkingDir { dirty_source, .. } => {
+      assert!(
+        !dirty_source,
+        "sync_mode = auto-copy must not refuse the very command that \
+         triggered it"
+      );
+    },
+    other => panic!(
+      "the switch right after an auto-copy sync must not refuse, got \
+       {other:?}"
+    ),
+  }
+}
+
 /// SC-X-012: nothing outside the working dir is touched.
 #[test]
 fn sc_x_012_sync_touches_nothing_outside_the_working_dir() {
