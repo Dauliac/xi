@@ -3,6 +3,7 @@ use std::str::FromStr;
 use color_eyre::Result;
 use xi_core::command::{ElevationStrategy, ElevationStrategyArg};
 
+pub mod bootstrap;
 pub mod cache;
 pub mod clean;
 pub mod config;

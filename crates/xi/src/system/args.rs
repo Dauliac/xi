@@ -8,7 +8,7 @@ use xi_core::{
     HasCacheArgs,
     NixBuildPassthroughArgs,
   },
-  checks::{FeatureRequirements, FlakeFeatures},
+  checks::{FeatureRequirements, FlakeFeatures, NoFeatures},
   complete,
   installable::CommandContext,
   update::UpdateArgs,
@@ -33,6 +33,9 @@ impl SystemArgs {
       SystemSubcommand::Switch(_) | SystemSubcommand::Build(_) => {
         Box::new(FlakeFeatures)
       },
+      // `uninstall` replays recorded shell-outs from the bootstrap
+      // receipt; it never evaluates a flake either.
+      SystemSubcommand::Uninstall => Box::new(NoFeatures),
     }
   }
 }
@@ -46,6 +49,13 @@ pub enum SystemSubcommand {
 
   /// Inspect and manage the config repo this scope deploys from
   Sources(xi_core::sources::args::SourcesProxy),
+
+  /// Reverse a prior `xi system switch <remote-url>` bootstrap
+  ///
+  /// Reads `bootstrap-receipt.json` and undoes every recorded action in
+  /// last-applied-first order, including a delegated Nix install.
+  /// Refuses with a clear error when this host has no receipt.
+  Uninstall,
 }
 
 #[derive(Debug, Args)]
@@ -86,7 +96,7 @@ impl SystemRebuildArgs {
 impl HasCacheArgs for SystemArgs {
   fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
     match &mut self.subcommand {
-      SystemSubcommand::Sources(_) => None,
+      SystemSubcommand::Sources(_) | SystemSubcommand::Uninstall => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.cache)
       },
@@ -97,7 +107,7 @@ impl HasCacheArgs for SystemArgs {
 impl HasBuildArgs for SystemArgs {
   fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
     match &mut self.subcommand {
-      SystemSubcommand::Sources(_) => None,
+      SystemSubcommand::Sources(_) | SystemSubcommand::Uninstall => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.passthrough)
       },
@@ -106,7 +116,7 @@ impl HasBuildArgs for SystemArgs {
 
   fn no_nom_mut(&mut self) -> Option<&mut bool> {
     match &mut self.subcommand {
-      SystemSubcommand::Sources(_) => None,
+      SystemSubcommand::Sources(_) | SystemSubcommand::Uninstall => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.no_nom)
       },
