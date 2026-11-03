@@ -17,22 +17,43 @@ default = [ "daemon" ]
 daemon = [ "dep:prometheus", "dep:tracing-journald", "tracing-subscriber/json" ]
 
 # Opt-in OTLP trace export. Off by default: an export target is an
-# operator decision, and the HTTP client it needs is dead weight on a
-# machine that has no collector.
-otlp = [ "dep:reqwest" ]
+# operator decision, and the OTLP client stack (opentelemetry,
+# opentelemetry_sdk, opentelemetry-otlp, tracing-opentelemetry, plus
+# the blocking reqwest HTTP transport they ride on) is dead weight on a
+# machine that has no collector. `reqwest-blocking-client` keeps this
+# off the async/tokio runtime the rest of the crate does not use.
+otlp = [
+  "dep:opentelemetry",
+  "dep:opentelemetry-otlp",
+  "dep:opentelemetry_sdk",
+  "dep:reqwest",
+  "dep:tracing-opentelemetry",
+]
 
 [dependencies]
-chrono.workspace             = true
-prometheus                   = { default-features = false, optional = true, version = "0.14.0" }
-reqwest                      = { optional = true, workspace = true }
-rusqlite.workspace           = true
-serde.workspace              = true
-serde_json.workspace         = true
-thiserror.workspace          = true
-toml_edit.workspace          = true
-tracing.workspace            = true
-tracing-subscriber.workspace = true
-xi-core.workspace            = true
+chrono.workspace              = true
+opentelemetry                 = { version = "0.33.1", default-features = false, optional = true, features = [
+  "trace",
+] }
+opentelemetry-otlp            = { version = "0.33.1", default-features = false, optional = true, features = [
+  "trace",
+  "http-proto",
+  "reqwest-blocking-client",
+] }
+opentelemetry_sdk             = { version = "0.33.1", default-features = false, optional = true, features = [
+  "trace",
+] }
+prometheus                    = { default-features = false, optional = true, version = "0.14.0" }
+reqwest                       = { optional = true, workspace = true }
+rusqlite.workspace            = true
+serde.workspace               = true
+serde_json.workspace          = true
+thiserror.workspace           = true
+toml_edit.workspace           = true
+tracing.workspace             = true
+tracing-opentelemetry         = { version = "0.34.0", optional = true }
+tracing-subscriber.workspace  = true
+xi-core.workspace             = true
 
 [target.'cfg(unix)'.dependencies]
 tracing-journald = { optional = true, version = "0.3.2" }
