@@ -35,6 +35,7 @@ pub mod config;
 pub mod conflict;
 pub mod credentials;
 pub mod lock;
+pub mod log;
 pub mod pause;
 pub mod receipt;
 pub mod repair;

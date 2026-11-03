@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
 use color_eyre::{Result, eyre::eyre};
 use tracing::warn;
@@ -35,6 +36,7 @@ use super::{
     three_way_diff,
   },
   lock::{ActorName, LockOptions, SourcesLock},
+  log::{self, Level as LogLevelFilter, TailFilter, TailRequest},
 };
 
 /// Inspect and manage the config repo this scope deploys from
@@ -54,6 +56,46 @@ pub enum SourcesCommand {
   Sync(SyncArgs),
   /// Prestage, unstage or inspect this scope's binary-cache config
   Cache(CacheProxy),
+  /// Read the gitops daemon's structured log for this scope
+  Log(LogArgs),
+}
+
+/// `xi <scope> sources log` - the log-reading verb group.
+///
+/// A group of one today (`tail`); `xi-sources-observability` names no
+/// second log-reading verb, so this stays a group rather than a bare
+/// `xi <scope> sources log-tail` for the same reason `sources` itself
+/// is a group: room to grow without a breaking rename.
+#[derive(Debug, Clone, Args)]
+pub struct LogArgs {
+  #[clap(subcommand)]
+  pub command: LogCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum LogCommand {
+  /// Stream the resolved sink's log
+  Tail(LogTailArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct LogTailArgs {
+  /// Keep streaming as new lines arrive, like `tail -f`.
+  #[arg(long)]
+  pub follow: bool,
+
+  /// Only show lines at or after this RFC 3339 timestamp.
+  ///
+  /// At system scope this is passed through to `journalctl --since`
+  /// verbatim, which also accepts relative forms (`"1 hour ago"`); at
+  /// user scope only RFC 3339 is understood, since there is no
+  /// `journalctl` doing the parsing.
+  #[arg(long)]
+  pub since: Option<String>,
+
+  /// Only show lines at or above this level (trace|debug|info|warn|error).
+  #[arg(long)]
+  pub level: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -162,6 +204,7 @@ impl SourcesProxy {
       SourcesCommand::Diff(args) => args.run(scope),
       SourcesCommand::Sync(args) => args.run(scope),
       SourcesCommand::Cache(proxy) => proxy.run(scope),
+      SourcesCommand::Log(args) => args.run(scope),
     }
   }
 }
@@ -177,6 +220,19 @@ impl CacheProxy {
       CacheCommand::Prestage(args) => args.run(scope),
       CacheCommand::Unstage(args) => args.run(scope),
       CacheCommand::Status(args) => args.run(scope),
+    }
+  }
+}
+
+impl LogArgs {
+  /// Dispatch the selected log verb at `scope`.
+  ///
+  /// # Errors
+  ///
+  /// Propagates [`LogTailArgs::run`]'s errors.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    match self.command {
+      LogCommand::Tail(args) => args.run(scope),
     }
   }
 }
@@ -326,6 +382,48 @@ impl CacheStatusArgs {
       println!("cache prestage inactive for this scope");
     }
     Ok(())
+  }
+}
+
+impl LogTailArgs {
+  /// Stream the resolved sink's log for `scope` to stdout.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `--since` or `--level` fail to parse, or if
+  /// reading the sink fails: the user-scope log file cannot be opened
+  /// (most commonly because the daemon has never run, so no log exists
+  /// yet), or `journalctl` cannot be spawned at system scope.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let since: Option<DateTime<Utc>> = self
+      .since
+      .as_deref()
+      .map(|raw| {
+        DateTime::parse_from_rfc3339(raw)
+          .map(|dt| dt.with_timezone(&Utc))
+          .map_err(|e| eyre!("invalid '--since' value '{raw}': {e}"))
+      })
+      .transpose()?;
+    let level = self
+      .level
+      .as_deref()
+      .map(LogLevelFilter::parse)
+      .transpose()
+      .map_err(|e| eyre!(e))?;
+
+    let request = TailRequest {
+      filter: TailFilter { since, level },
+      follow: self.follow,
+    };
+    let paths = ScopePaths::resolve(scope);
+    log::tail(scope, &paths.state_dir, &request, &mut std::io::stdout()).map_err(
+      |e| {
+        eyre!(
+          "reading the {scope} sources log failed: {e}\nHas the gitops \
+           daemon run yet? See [[xi-sources-gitops]]."
+        )
+      },
+    )
   }
 }
 
