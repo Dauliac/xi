@@ -6,6 +6,25 @@
 }:
 let
   cfg = config.programs.xi;
+
+  # Present only when home-manager is imported as a NixOS module, which
+  # is the one arrangement where both scopes land in a single
+  # evaluation and the cross-scope conflict is therefore detectable.
+  # With a standalone home-manager there is no shared eval, so the
+  # daemons discover each other at runtime instead (see
+  # xi-sources-race).
+  hmUsers = config.home-manager.users or { };
+
+  gitopsRemoteAt =
+    userCfg:
+    let
+      sources = userCfg.programs.xi.sources or null;
+    in
+    if sources == null || !sources.enable || !sources.gitops.enable then null else sources.remote;
+
+  clashingUsers = lib.filter (
+    user: gitopsRemoteAt hmUsers.${user} != null && gitopsRemoteAt hmUsers.${user} == cfg.sources.remote
+  ) (lib.attrNames hmUsers);
 in
 {
   options.programs.xi.sources = lib.mkOption {
@@ -34,12 +53,39 @@ in
   config = lib.mkIf (cfg.enable && cfg.sources.enable) {
     assertions = [
       {
-        assertion = cfg.sources.requireSigned != true || cfg.sources.allowedSigners != null;
+        assertion =
+          cfg.sources.requireSigned != true
+          || cfg.sources.allowedSigners != null
+          || cfg.sources.gpgPublicKeys != [ ];
         message = ''
-          programs.xi.sources.requireSigned requires
-          programs.xi.sources.allowedSigners to point at an SSH
-          allowed_signers file. Verifying against an empty trust root is
+          programs.xi.sources.requireSigned needs a trust root: set
+          programs.xi.sources.allowedSigners to an SSH allowed_signers
+          file, or programs.xi.sources.gpgPublicKeys to a non-empty list
+          of GPG public keys. Verifying against an empty trust root is
           worse than not verifying, because it looks safe.
+        '';
+      }
+
+      {
+        assertion = cfg.sources.workingDir == null;
+        message = ''
+          programs.xi.sources.workingDir is user scope only, and this is
+          the system-scope module. A system-wide option cannot name one
+          user's editable checkout; the system sources dir is
+          /var/lib/xi/sources and has no working dir of its own. Move
+          the setting to home-manager's programs.xi.sources.workingDir.
+        '';
+      }
+
+      {
+        assertion = !cfg.sources.gitops.enable || clashingUsers == [ ];
+        message = ''
+          programs.xi.sources.gitops.enable is true at system scope and
+          at user scope for ${lib.concatStringsSep ", " clashingUsers},
+          both tracking ${toString cfg.sources.remote}. Two daemons
+          polling the same remote would race on activation. Enable
+          gitops at exactly one scope, or give the scopes different
+          remotes.
         '';
       }
     ];

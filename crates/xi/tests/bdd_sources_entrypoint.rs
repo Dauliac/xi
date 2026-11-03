@@ -213,6 +213,20 @@ impl Machine {
     std::fs::read_to_string(self.home.join(".local/state/xi/remote-url")).ok()
   }
 
+  fn recorded_head(&self) -> Option<String> {
+    std::fs::read_to_string(self.home.join(".local/state/xi/sources-head")).ok()
+  }
+
+  fn git_head(&self) -> String {
+    let out = Command::new("git")
+      .arg("-C")
+      .arg(self.sources_dir())
+      .args(["rev-parse", "HEAD"])
+      .output()
+      .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+  }
+
   fn origin(&self) -> String {
     let out = Command::new("git")
       .arg("-C")
@@ -231,6 +245,22 @@ impl Machine {
       .output()
       .expect("git log");
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
+  }
+
+  /// The `xi home sources status` envelope, as JSON on stdout.
+  fn status(&self) -> String {
+    let out = Command::new(xi())
+      .args(["home", "sources", "status"])
+      .env("XI_NO_CHECKS", "1")
+      .env("HOME", &self.home)
+      .env("XDG_DATA_HOME", self.home.join(".local/share"))
+      .env("XDG_STATE_HOME", self.home.join(".local/state"))
+      .env("XDG_CONFIG_HOME", self.home.join(".config"))
+      .env_remove("XI_SOURCES_REMOTE")
+      .current_dir(self.home.join("proj"))
+      .output()
+      .expect("spawn xi");
+    String::from_utf8_lossy(&out.stdout).into_owned()
   }
 }
 
@@ -348,18 +378,7 @@ fn status_reports_the_adopted_remote_without_any_config_file() {
   let remote = fixture_repo(&m.tmp.path().join("upstream"), "adopted");
   m.switch(&[&remote]);
 
-  let out = Command::new(xi())
-    .args(["home", "sources", "status"])
-    .env("XI_NO_CHECKS", "1")
-    .env("HOME", &m.home)
-    .env("XDG_DATA_HOME", m.home.join(".local/share"))
-    .env("XDG_STATE_HOME", m.home.join(".local/state"))
-    .env("XDG_CONFIG_HOME", m.home.join(".config"))
-    .env_remove("XI_SOURCES_REMOTE")
-    .current_dir(m.home.join("proj"))
-    .output()
-    .expect("spawn xi");
-  let stdout = String::from_utf8_lossy(&out.stdout);
+  let stdout = m.status();
 
   assert!(
     stdout.contains(&remote),
@@ -368,5 +387,90 @@ fn status_reports_the_adopted_remote_without_any_config_file() {
   assert!(
     !stdout.contains("\"canonical_url\": \"\""),
     "identity must not be empty after adoption: {stdout}"
+  );
+}
+
+/// The status a freshly adopted source reports, decided on bead xi-4p3h.
+///
+/// The fixture flake has no `homeConfigurations`, so this switch clones
+/// and then fails to build  -  which is precisely the window the bead
+/// asks about. xi-sources-model maps "sources dir exists but
+/// `active_generation` is unknown (never switched)" to `Pending`, and
+/// adoption must not claim a generation it did not produce. The clone's
+/// HEAD *is* recorded, because the model says `sources_head` is unknown
+/// only "before any clone".
+#[test]
+fn status_after_a_fresh_adopt_is_pending_not_ready() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "adopted");
+  m.switch(&[&remote]);
+
+  let stdout = m.status();
+
+  assert!(
+    stdout.contains("\"status\": \"pending\""),
+    "a clone that has not activated is Pending, got: {stdout}"
+  );
+  assert!(
+    stdout.contains("\"active_generation\": null"),
+    "adoption must not claim a generation: {stdout}"
+  );
+  assert!(
+    !stdout.contains("\"sources_head\": null"),
+    "adoption must record the clone's HEAD: {stdout}"
+  );
+  assert_eq!(
+    m.recorded_head().as_deref(),
+    Some(m.git_head().as_str()),
+    "the recorded sources-head must be the clone's real HEAD"
+  );
+}
+
+// -- Requirement: a switch serialises against other sources actors -------
+
+/// A switch takes the sources lock, which is what serialises it against
+/// a daemon tick or an inbound push.
+///
+/// Asserted on the lock's own on-disk footprint rather than on
+/// contention: `crates/xi-core/tests/bdd_sources_race.rs` already proves
+/// `flock` excludes and that the refusal names the holder, so what is
+/// left to check here is that the *command* reaches for it at all. That
+/// is also the half that was missing - the primitive had no callers.
+///
+/// Contention is deliberately not driven through the binary: an
+/// interactive switch has no way to bound its lock wait, so a test that
+/// held the lock would block for a full 15-minute lease. See xi-aiw7.
+#[test]
+fn a_switch_takes_the_sources_lock() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "locked");
+
+  // The command fails after the clone, because the fixture flake has no
+  // `homeConfigurations` to build; the adoption side effects are what
+  // matter, as in the scenarios above.
+  m.switch(&[&remote]);
+  assert!(
+    m.recorded_remote().is_some(),
+    "adoption must have recorded the remote"
+  );
+
+  let state_dir = m.home.join(".local/state/xi");
+  assert!(
+    state_dir.join("lock").is_file(),
+    "the switch must have taken the lock, which creates {}",
+    state_dir.join("lock").display()
+  );
+  assert!(
+    state_dir.join("lock.waiters").is_dir(),
+    "acquisition registers the caller as a waiter first, so the queue \
+     directory must exist too"
+  );
+  assert_eq!(
+    std::fs::read_to_string(state_dir.join("lock"))
+      .expect("read the lock file")
+      .trim(),
+    "",
+    "a released lock leaves an empty record, so a later reader reports free \
+     rather than naming a process that has exited"
   );
 }

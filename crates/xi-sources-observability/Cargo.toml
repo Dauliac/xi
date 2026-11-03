@@ -1,0 +1,45 @@
+[package]
+name                   = "xi-sources-observability"
+description            = "This is an internal component crate of xi"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+publish                = true
+
+[features]
+default = [ "daemon" ]
+
+# Everything a long-running daemon needs: the ndjson tracing layers, the
+# log sinks, the metric registry and the loopback HTTP server. Readers
+# (the `xi` CLI) take the crate with `default-features = false` so the
+# binary does not link an exporter it never starts.
+daemon = [ "dep:prometheus", "dep:tracing-journald", "tracing-subscriber/json" ]
+
+# Opt-in OTLP trace export. Off by default: an export target is an
+# operator decision, and the HTTP client it needs is dead weight on a
+# machine that has no collector.
+otlp = [ "dep:reqwest" ]
+
+[dependencies]
+chrono.workspace             = true
+prometheus                   = { default-features = false, optional = true, version = "0.14.0" }
+reqwest                      = { optional = true, workspace = true }
+rusqlite.workspace           = true
+serde.workspace              = true
+serde_json.workspace         = true
+thiserror.workspace          = true
+toml_edit.workspace          = true
+tracing.workspace            = true
+tracing-subscriber.workspace = true
+xi-core.workspace            = true
+
+[target.'cfg(unix)'.dependencies]
+tracing-journald = { optional = true, version = "0.3.2" }
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace    = true
+
+[lints]
+workspace = true

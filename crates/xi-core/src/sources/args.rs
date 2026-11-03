@@ -12,8 +12,11 @@
 //! This is the operator-maintenance surface, not the way a machine is
 //! set up: that is `xi <scope> switch [<remote-url>]`.
 
+use std::path::PathBuf;
+
 use clap::{Args, Subcommand};
-use color_eyre::Result;
+use color_eyre::{Result, eyre::eyre};
+use tracing::warn;
 
 use super::{
   GitopsHealth,
@@ -22,6 +25,14 @@ use super::{
   SourcesId,
   SourcesStatusResponse,
   config::{Layers, Provenance, ResolvedSources, ScopePaths, SourcesConfig},
+  conflict::{
+    ObservedRefs,
+    SourcesDiffResponse,
+    SourcesSyncResponse,
+    SyncRequest,
+    sync,
+    three_way_diff,
+  },
 };
 
 /// Inspect and manage the config repo this scope deploys from
@@ -35,6 +46,10 @@ pub struct SourcesProxy {
 pub enum SourcesCommand {
   /// Report the sources model for this scope as a JSON envelope
   Status(StatusArgs),
+  /// Diff the remote, the sources dir and the working dir
+  Diff(DiffArgs),
+  /// Copy the sources dir over the working dir, one way
+  Sync(SyncArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -52,6 +67,28 @@ pub struct StatusArgs {
   pub explain: bool,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct DiffArgs {
+  /// Emit the house JSON envelope instead of the plain diff body.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SyncArgs {
+  /// Overwrite uncommitted edits in the working dir.
+  ///
+  /// The edits are lost without recovery. Without this flag a dirty
+  /// working dir is a refusal, which is the default because the sync is
+  /// a copy-with-erase and git cannot undo what was never committed.
+  #[arg(long)]
+  pub force_dirty: bool,
+
+  /// Emit the house JSON envelope instead of a human summary.
+  #[arg(long)]
+  pub json: bool,
+}
+
 impl SourcesProxy {
   /// Dispatch the selected verb at `scope`.
   ///
@@ -64,8 +101,159 @@ impl SourcesProxy {
   pub fn run(self, scope: Scope) -> Result<()> {
     match self.command {
       SourcesCommand::Status(args) => args.run(scope),
+      SourcesCommand::Diff(args) => args.run(scope),
+      SourcesCommand::Sync(args) => args.run(scope),
     }
   }
+}
+
+impl DiffArgs {
+  /// Print the three-way diff for this scope.
+  ///
+  /// With no working dir configured this is the two-way `remote →
+  /// sources` diff, which is the whole report rather than a degraded
+  /// version of it: on a machine with no editable clone there is no
+  /// third ref to compare against.
+  ///
+  /// # Errors
+  ///
+  /// Propagates config-load errors and JSON serialisation errors. An
+  /// unreachable ref is *not* an error: it degrades its own leg and the
+  /// envelope says so, because one missing object should not hide the
+  /// legs that did resolve.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let paths = ScopePaths::resolve(scope);
+    let resolved = resolve_layers(SourcesConfig::default(), &paths)?;
+    let working_dir = working_dir_for(&resolved, &paths);
+
+    let recorded = super::RefLineage {
+      remote_head:       super::read_state_file(
+        &paths.state_dir,
+        "remote-head",
+      )?,
+      working_head:      super::read_state_file(
+        &paths.state_dir,
+        "working-head",
+      )?,
+      sources_head:      super::read_state_file(
+        &paths.state_dir,
+        "sources-head",
+      )?,
+      active_generation: None,
+    };
+    let refs = ObservedRefs::observe(
+      &paths.sources_dir,
+      working_dir.as_deref(),
+      &recorded,
+    );
+    let report =
+      three_way_diff(&paths.sources_dir, working_dir.as_deref(), &refs);
+
+    if self.json {
+      println!(
+        "{}",
+        serde_json::to_string_pretty(&SourcesDiffResponse::new(report))?
+      );
+      return Ok(());
+    }
+
+    if let Some(reason) = report.degraded_reason() {
+      warn!("{reason}");
+    }
+    print!("{}", report.render());
+    Ok(())
+  }
+}
+
+impl SyncArgs {
+  /// Copy the sources dir over the working dir.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when no working dir is configured (there is
+  /// nothing to sync into), when the working dir is dirty and
+  /// `--force-dirty` was not given, and on any git or filesystem
+  /// failure during the copy.
+  pub fn run(self, scope: Scope) -> Result<()> {
+    let paths = ScopePaths::resolve(scope);
+    let resolved = resolve_layers(SourcesConfig::default(), &paths)?;
+    let Some(working_dir) = working_dir_for(&resolved, &paths) else {
+      return Err(eyre!(
+        "no working dir is configured for the {scope} scope, so there is \
+         nothing to sync into.\nSet `[sources] working-dir` in .xi.toml or \
+         `XI_SOURCES_WORKING_DIR` to the clone you edit by hand."
+      ));
+    };
+
+    let outcome = sync(&SyncRequest {
+      sources_dir: &paths.sources_dir,
+      working_dir: &working_dir,
+      force_dirty: self.force_dirty,
+      what:        &format!("xi {} sources sync", scope.as_str()),
+    })
+    .map_err(|e| eyre!(e.to_string()))?;
+
+    if self.json {
+      println!(
+        "{}",
+        serde_json::to_string_pretty(&SourcesSyncResponse::new(outcome))?
+      );
+      return Ok(());
+    }
+
+    println!(
+      "synced {} file(s), deleted {}, HEAD now {}",
+      outcome.written.len(),
+      outcome.deleted.len(),
+      outcome.sources_head
+    );
+    Ok(())
+  }
+}
+
+/// The working dir for this scope, config rungs first.
+///
+/// The config ladder outranks the state dir for the same reason it
+/// outranks it for `remote`: an explicit setting beats whatever a past
+/// `switch` happened to record. A recorded path that no longer exists is
+/// dropped rather than used, since every caller of this would otherwise
+/// have to re-check it.
+///
+/// A state dir that cannot be read records nothing, which is the same
+/// answer as a machine that never adopted a working dir, so there is no
+/// error left for this to return.
+pub(crate) fn working_dir_for(
+  resolved: &ResolvedSources,
+  paths: &ScopePaths,
+) -> Option<PathBuf> {
+  let configured = resolved.working_dir.clone().or_else(|| {
+    super::read_state_file(&paths.state_dir, "working-dir")
+      .ok()
+      .flatten()
+      .map(PathBuf::from)
+  });
+
+  configured.filter(|dir| {
+    let live = dir.is_dir();
+    if !live {
+      warn!(
+        "recorded working dir {} no longer exists; ignoring it",
+        dir.display()
+      );
+    }
+    live
+  })
+}
+
+/// Where this scope's working dir is, for callers outside this module.
+///
+/// # Errors
+///
+/// Propagates config-load and state-dir read errors.
+pub fn resolve_working_dir(scope: Scope) -> Result<Option<PathBuf>> {
+  let paths = ScopePaths::resolve(scope);
+  let resolved = resolve_layers(SourcesConfig::default(), &paths)?;
+  Ok(working_dir_for(&resolved, &paths))
 }
 
 impl StatusArgs {
@@ -110,6 +298,11 @@ impl StatusArgs {
     };
     let sources_id = SourcesId::new(scope, &remote);
 
+    // Read the lock before the model, and without acquiring it: `status` is
+    // the reader path `xi-sources-race` explicitly exempts, so it must stay
+    // answerable while a daemon tick or a push holds the lock.
+    let lock = super::lock::status(&paths.state_dir)?;
+
     let context =
       SourcesContext::load(sources_id, paths.sources_dir, paths.state_dir)?;
 
@@ -117,7 +310,7 @@ impl StatusArgs {
     // exists there is nothing tracking this source.
     let status = context.status(&GitopsHealth::Disabled);
 
-    let mut response = SourcesStatusResponse::new(status);
+    let mut response = SourcesStatusResponse::new(status).with_lock(lock);
     if self.explain {
       response = response.with_provenance(resolved.provenance);
     }

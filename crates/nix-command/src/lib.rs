@@ -25,6 +25,32 @@ pub enum Error {
     command:  String,
     duration: Duration,
   },
+  /// A pure-eval caller was handed something that could only evaluate
+  /// with `--impure`, or that would smuggle extra arguments into the
+  /// `nix eval` argv.
+  #[error("refusing to pure-eval {what} '{value}': {reason}")]
+  ImpureInput {
+    /// Which input was rejected: `flake reference` or `attribute path`.
+    what:   &'static str,
+    /// The offending text, as the caller spelled it.
+    value:  String,
+    /// Why it cannot be evaluated purely.
+    reason: &'static str,
+  },
+  /// `nix eval` exited non-zero. For a pure-eval probe this is the
+  /// ordinary "attribute does not exist" answer, not a malfunction.
+  #[error("nix eval '{installable}' failed: {stderr}")]
+  EvalFailed {
+    /// The `<ref>#<attr>` the eval was asked for.
+    installable: String,
+    /// Trimmed stderr from nix, or a note that it was empty.
+    stderr:      String,
+  },
+  #[error("nix eval '{installable}' produced non-UTF-8 output")]
+  NonUtf8 {
+    /// The `<ref>#<attr>` the eval was asked for.
+    installable: String,
+  },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -685,6 +711,135 @@ impl NixCommand {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Pure eval
+// ---------------------------------------------------------------------------
+
+/// The experimental features a flake evaluation needs, as the single
+/// value `--extra-experimental-features` takes.
+///
+/// Passed on every pure eval rather than assumed, because the machine
+/// being prestaged may be a fresh install whose `nix.conf` enables
+/// nothing.
+pub const FLAKE_EVAL_FEATURES: &str = "nix-command flakes";
+
+/// Reject an input that would turn a pure eval into something else.
+///
+/// Two distinct hazards share one guard. A value starting with `-` or
+/// containing whitespace is argv smuggling: it would be read by `nix` as
+/// further flags, and `--impure` among them would silently undo the
+/// purity this function exists to guarantee. A `#` in the reference (or
+/// in the attribute path) splits the installable somewhere the caller did
+/// not intend, so the eval would answer about a different attribute than
+/// the one that was asked for.
+fn reject_impure_input(what: &'static str, value: &str) -> Result<()> {
+  let fail = |reason: &'static str| {
+    Err(Error::ImpureInput {
+      what,
+      value: value.to_string(),
+      reason,
+    })
+  };
+
+  if value.trim().is_empty() {
+    return fail("it is empty");
+  }
+  if value.starts_with('-') {
+    return fail("a leading '-' would be read as a flag, not as a value");
+  }
+  if value.chars().any(char::is_whitespace) {
+    return fail("whitespace would smuggle additional arguments into nix eval");
+  }
+  if value.contains("--impure") || value.contains("impure=") {
+    return fail(
+      "this reader is pure-eval only and never falls back to --impure",
+    );
+  }
+  if value.contains('#') {
+    return fail(
+      "'#' splits the installable; pass the reference and the attribute path \
+       separately",
+    );
+  }
+  Ok(())
+}
+
+/// The `nix eval` invocation [`pure_eval_apply_tostring`] runs.
+///
+/// Exposed separately so the argv can be asserted without a `nix` on
+/// `PATH`, which is what makes the purity flags testable.
+///
+/// # Errors
+///
+/// Returns [`Error::ImpureInput`] when either input could only be
+/// evaluated impurely, or would smuggle extra arguments into the argv.
+pub fn pure_eval_command(
+  flake_ref: &str,
+  attr_path: &str,
+) -> Result<NixCommand> {
+  reject_impure_input("flake reference", flake_ref)?;
+  reject_impure_input("attribute path", attr_path)?;
+
+  Ok(
+    NixCommand::new(CommandKind::Eval)
+      .global_args(["--extra-experimental-features", FLAKE_EVAL_FEATURES])
+      .arg("--no-write-lock-file")
+      // The spec's purity requirement in one flag. `--impure` is never
+      // added, but an inherited NIX_CONFIG could still allow
+      // import-from-derivation, which would build a derivation during
+      // what is supposed to be a read. A command-line `--option` beats
+      // NIX_CONFIG, so saying it here closes that hole.
+      .args(["--option", "allow-import-from-derivation", "false"])
+      // Over and above the command the spec writes out: without it
+      // `--apply toString` prints the *Nix spelling* of the string,
+      // quotes included, and every caller would have to unquote it.
+      .arg("--raw")
+      .args(["--apply", "toString"])
+      .arg(format!("{flake_ref}#{attr_path}")),
+  )
+}
+
+/// Read one flake attribute as a string, by pure evaluation.
+///
+/// `--apply toString` is what lets a list of substituters come back as a
+/// single space-separated string without building anything: the whole
+/// point is to learn a machine's binary caches *before* its first build.
+/// Nothing here writes a lock file, allows import-from-derivation, or
+/// falls back to `--impure`.
+///
+/// # Errors
+///
+/// - [`Error::ImpureInput`] when an input could not be evaluated purely.
+/// - [`Error::EvalFailed`] on any non-zero exit. For a probe of an attribute
+///   that may not exist, that is the "missing" answer; callers decide whether
+///   to treat it as fatal.
+/// - [`Error::NonUtf8`] when nix printed bytes that are not UTF-8.
+/// - [`Error::Io`] when the process could not be started.
+pub fn pure_eval_apply_tostring(
+  flake_ref: &str,
+  attr_path: &str,
+) -> Result<String> {
+  let command = pure_eval_command(flake_ref, attr_path)?;
+  let installable = format!("{flake_ref}#{attr_path}");
+  let output = command.output()?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    return Err(Error::EvalFailed {
+      installable,
+      stderr: if stderr.is_empty() {
+        format!("exited with {:?} and no stderr", output.status)
+      } else {
+        stderr
+      },
+    });
+  }
+
+  String::from_utf8(output.stdout)
+    .map(|raw| raw.trim().to_string())
+    .map_err(|_| Error::NonUtf8 { installable })
+}
+
 fn kill_wait_join(
   child: &mut std::process::Child,
   stdout_thread: thread::JoinHandle<()>,
@@ -839,5 +994,64 @@ mod tests {
   fn alternate_binary_omits_nix_subcommand() {
     let argv = NixCommand::nix_store().arg("--optimise").argv();
     assert_eq!(argv, ["nix-store", "--optimise"]);
+  }
+
+  #[test]
+  fn pure_eval_argv_is_pinned() {
+    let cmd =
+      pure_eval_command("path:/tmp/cfg", "nixCache.settings.substituters")
+        .unwrap();
+    assert_nix_binary(&cmd);
+    assert_eq!(argv_args(&cmd), [
+      "--extra-experimental-features",
+      "nix-command flakes",
+      "eval",
+      "--no-write-lock-file",
+      "--option",
+      "allow-import-from-derivation",
+      "false",
+      "--raw",
+      "--apply",
+      "toString",
+      "path:/tmp/cfg#nixCache.settings.substituters"
+    ]);
+  }
+
+  #[test]
+  fn pure_eval_never_adds_impure() {
+    let cmd = pure_eval_command("path:/tmp/cfg", "nixCache.settings").unwrap();
+    assert!(!cmd.impure, "the pure-eval reader must not set --impure");
+    assert!(
+      !argv_args(&cmd).iter().any(|a| a == OsStr::new("--impure")),
+      "argv must not carry --impure"
+    );
+  }
+
+  #[test]
+  fn pure_eval_rejects_inputs_that_could_smuggle_impurity() {
+    for (flake_ref, attr) in [
+      ("--impure", "nixCache.settings"),
+      ("path:/tmp/cfg --impure", "nixCache.settings"),
+      ("-path:/tmp/cfg", "nixCache.settings"),
+      ("path:/tmp/cfg#already", "nixCache.settings"),
+      ("", "nixCache.settings"),
+      ("path:/tmp/cfg", ""),
+      ("path:/tmp/cfg", "nixCache.settings --impure"),
+    ] {
+      match pure_eval_command(flake_ref, attr) {
+        Err(Error::ImpureInput { .. }) => {},
+        Err(other) => {
+          panic!(
+            "expected ImpureInput for ({flake_ref:?}, {attr:?}), got {other:?}"
+          )
+        },
+        Ok(cmd) => {
+          panic!(
+            "({flake_ref:?}, {attr:?}) should have been rejected, built {:?}",
+            cmd.argv()
+          )
+        },
+      }
+    }
   }
 }

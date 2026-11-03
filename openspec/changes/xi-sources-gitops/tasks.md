@@ -81,6 +81,9 @@ Live state in beads under `change:xi-sources-gitops`.
 
 ## 12. Follow-ups (P4)
 
-- [ ] 12.1 Prometheus exporter (comin pattern). Deferred.
+- [x] 12.1 Prometheus exporter (comin pattern). Closed: relocated to
+      [[xi-sources-observability]], which owns the exporter, the metric name
+      set, and the `/healthz` probe on the same loopback port. This capability
+      only hands the tick outcome and phase timings to the metrics recorder.
 - [ ] 12.2 gRPC control surface for IDE integrations. Deferred.
 - [ ] 12.3 Webhook trigger (push notification from forge). Deferred.

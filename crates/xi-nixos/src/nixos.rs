@@ -17,6 +17,7 @@ use xi_core::{
     find_real_nix_binary,
   },
   installable::{CommandContext, Installable, resolve_toplevel},
+  sources::switch::PreparedSwitch,
   update::update,
   util::{
     ensure_ssh_key_login,
@@ -177,7 +178,7 @@ impl OsRebuildActivateArgs {
     final_attrs: Option<&[&str]>,
     elevation: ElevationStrategy,
   ) -> Result<()> {
-    use OsRebuildVariant::{Build, BuildVm};
+    use OsRebuildVariant::{Build, BuildVm, Switch};
 
     let (local_elevate, target_hostname) =
       self.rebuild.setup_build_context(&elevation)?;
@@ -185,7 +186,9 @@ impl OsRebuildActivateArgs {
     let (out_path, _tempdir_guard) =
       self.rebuild.determine_output_path(variant)?;
 
-    let toplevel = self
+    // `_sources_lock` is held until this function returns, which is
+    // after activation and after the generation has been recorded.
+    let (toplevel, _sources_lock) = self
       .rebuild
       .resolve_installable_and_toplevel(&target_hostname, final_attrs)?;
 
@@ -277,6 +280,16 @@ impl OsRebuildActivateArgs {
       elevate,
       elevation,
     )?;
+
+    // Only a local `switch` establishes *this* machine's generation:
+    // `boot` defers activation to the next reboot, `test` does not
+    // survive one, and `--target-host` activated someone else's box.
+    if matches!(variant, Switch) && self.rebuild.target_host.is_none() {
+      xi_core::sources::switch::record_activation(
+        crate::args::OsArgs::scope(),
+        &target_profile,
+      );
+    }
 
     Ok(())
   }
@@ -572,25 +585,35 @@ impl OsRebuildArgs {
     }
   }
 
+  /// Resolve what to build, and hand the sources lock back with it.
+  ///
+  /// The lock is returned rather than dropped here because activation
+  /// happens in the caller: releasing it at the end of this function
+  /// would serialise the adoption fetch and leave the build and the
+  /// activation racing a daemon tick.
   fn resolve_installable_and_toplevel(
     &self,
     target_hostname: &str,
     final_attrs: Option<&[&str]>,
-  ) -> Result<Installable> {
+  ) -> Result<(Installable, PreparedSwitch)> {
     // Switch pre-steps: installer check, then adopt a config repo if
     // the positional named one. Everything else passes through.
-    let installable = xi_core::sources::switch::prepare(
+    let prepared = xi_core::sources::switch::prepare(
       crate::args::OsArgs::scope(),
       self.common.installable.clone(),
       &self.common.sources,
-    )?
-    .resolve_or_default(CommandContext::Os)?;
+    )?;
+    let installable = prepared
+      .installable()
+      .clone()
+      .resolve_or_default(CommandContext::Os)?;
 
-    toplevel_for(
+    let toplevel = toplevel_for(
       target_hostname,
       installable,
       final_attrs.unwrap_or_else(|| &["toplevel"][..]),
-    )
+    )?;
+    Ok((toplevel, prepared))
   }
 
   fn execute_build(
@@ -739,7 +762,11 @@ impl OsRebuildArgs {
 
     let (out_path, _tempdir_guard) = self.determine_output_path(variant)?;
 
-    let toplevel =
+    // `build` and `build-vm` do not activate, but they do build from
+    // the sources dir, so the lock is held for the build too: a tick
+    // that fast-forwarded the clone underneath would make the result
+    // describe neither sha.
+    let (toplevel, _sources_lock) =
       self.resolve_installable_and_toplevel(&target_hostname, final_attrs)?;
 
     if self.update_args.update_all || self.update_args.update_input.is_some() {

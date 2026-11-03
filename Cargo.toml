@@ -6,27 +6,29 @@ resolver = "3"
 edition      = "2024"
 license      = "EUPL-1.2"
 rust-version = "1.95.0"
-version      = "4.5.0"
+version      = "4.4.0"
 
 [workspace.dependencies]
 nix-command = { path = "crates/nix-command", version = "0.2.3" }
-xi          = { path = "crates/xi", version = "4.5.0" }
-xi-agent    = { path = "crates/xi-agent", version = "4.5.0" }
-xi-auth     = { path = "crates/xi-auth", version = "4.5.0" }
-xi-core     = { path = "crates/xi-core", version = "4.5.0" }
-xi-darwin   = { path = "crates/xi-darwin", version = "4.5.0" }
-xi-deploy   = { path = "crates/xi-deploy", version = "4.5.0" }
-xi-develop  = { path = "crates/xi-develop", version = "4.5.0" }
-xi-diff     = { path = "crates/xi-diff", version = "4.5.0" }
-xi-flake    = { path = "crates/xi-flake", version = "4.5.0" }
-xi-home     = { path = "crates/xi-home", version = "4.5.0" }
-xi-nixos    = { path = "crates/xi-nixos", version = "4.5.0" }
-xi-remote   = { path = "crates/xi-remote", version = "4.5.0" }
-xi-repl     = { path = "crates/xi-repl", version = "4.5.0" }
-xi-search   = { path = "crates/xi-search", version = "4.5.0" }
-xi-vm       = { path = "crates/xi-vm", version = "4.5.0" }
+xi          = { path = "crates/xi", version = "4.4.0" }
 
-anstream = "1.0"
+xi-sources-observability = { path = "crates/xi-sources-observability", version = "4.4.0" }
+
+xi-agent   = { path = "crates/xi-agent", version = "4.4.0" }
+xi-auth    = { path = "crates/xi-auth", version = "4.4.0" }
+xi-core    = { path = "crates/xi-core", version = "4.4.0" }
+xi-darwin  = { path = "crates/xi-darwin", version = "4.4.0" }
+xi-deploy  = { path = "crates/xi-deploy", version = "4.4.0" }
+xi-develop = { path = "crates/xi-develop", version = "4.4.0" }
+xi-diff    = { path = "crates/xi-diff", version = "4.4.0" }
+xi-flake   = { path = "crates/xi-flake", version = "4.4.0" }
+xi-home    = { path = "crates/xi-home", version = "4.4.0" }
+xi-nixos   = { path = "crates/xi-nixos", version = "4.4.0" }
+xi-remote  = { path = "crates/xi-remote", version = "4.4.0" }
+xi-search  = { path = "crates/xi-search", version = "4.4.0" }
+
+xi-sources-daemon = { path = "crates/xi-sources-daemon", version = "4.4.0" }
+
 anstyle = "1.0.13"
 arc-swap = "1.7"
 blake3 = "1"
@@ -53,44 +55,47 @@ indicatif = "0.18.4"
 inquire = { default-features = false, features = [ "crossterm" ], version = "0.9.1" }
 insta = { features = [ "yaml" ], version = "1.48.0" }
 
-nix = { default-features = false, features = [ "fs", "user", "hostname", "process", "signal" ], version = "0.31.1" }
+nix = { default-features = false, features = [
+  "fs",
+  "hostname",
+  "signal",
+  "user",
+], version = "0.31.1" }
 proptest = "1.9.0"
-reedline = "0.52.1"
 regex = "1.12.2"
 reqwest = { default-features = false, features = [
   "blocking",
   "json",
   "rustls",
 ], version = "0.13.1" }
-# Published on crates.io as `rnix` (repo name is rnix-parser); aliased here so
-# the key matches the parser's upstream project name / the task that asked
-# for it. Not yet consumed - reserved for Phase 2 (xi-repl syntax
-# highlighting, openspec/changes/xi-repl tasks.md task 6.1).
-rnix-parser = { package = "rnix", version = "0.15.1" }
 roff = "1.0.0"
-secrecy = { features = [ "serde" ], version = "0.10.3" }
-semver = "1.0.27"
-serde = { features = [ "derive" ], version = "1.0.228" }
-serde_json = "1.0.145"
-serial_test = "3.2.0"
-sha2 = "0.10"
-shlex = "2.0.1"
-signal-hook = "0.4.1"
-spam-db = "0.2.4"
-strsim = "0.11.1"
-subprocess = "1.0.3"
-supports-hyperlinks = "3.1.0"
+# Held at 0.40 to match the libsqlite3-sys that `dix` (via xi-develop) already
+# pulls in. libsqlite3-sys declares `links = "sqlite3"`, so two majors in one
+# graph is a hard resolver error, not a duplicate-dependency warning.
+rusqlite             = { features = [ "bundled" ], version = "0.40.0" }
+secrecy              = { features = [ "serde" ], version = "0.10.3" }
+semver               = "1.0.27"
+serde                = { features = [ "derive" ], version = "1.0.228" }
+serde_json           = "1.0.145"
+serial_test          = "3.2.0"
+sha2                 = "0.10"
+shlex                = "2.0.1"
+signal-hook          = "0.4.1"
+spam-db              = "0.2.4"
+strsim               = "0.11.1"
+subprocess           = "1.0.3"
+supports-hyperlinks  = "3.1.0"
 system-configuration = "0.7.0"
-tempfile = "3.23.0"
-textwrap = { features = [ "terminal_size" ], version = "0.16.2" }
-thiserror = "2.0.17"
-toml_edit = "0.25.12"
-tracing = "0.1.41"
-tracing-subscriber = { features = [ "env-filter", "registry", "std" ], version = "0.3.20" }
-urlencoding = "2.1.3"
-walkdir = "2.5.0"
-which = "8.0.0"
-yansi = "1.0.1"
+tempfile             = "3.23.0"
+textwrap             = { features = [ "terminal_size" ], version = "0.16.2" }
+thiserror            = "2.0.17"
+toml_edit            = "0.25.12"
+tracing              = "0.1.41"
+tracing-subscriber   = { features = [ "env-filter", "registry", "std" ], version = "0.3.20" }
+urlencoding          = "2.1.3"
+walkdir              = "2.5.0"
+which                = "8.0.0"
+yansi                = "1.0.1"
 
 [workspace.lints.clippy]
 complexity = { level = "warn", priority = -1 }

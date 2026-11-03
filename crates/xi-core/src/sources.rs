@@ -28,8 +28,20 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 pub mod args;
+pub mod atomic;
+pub mod bootstrap;
+pub mod cache_prestage;
 pub mod config;
+pub mod conflict;
+pub mod credentials;
+pub mod lock;
+pub mod pause;
+pub mod receipt;
+pub mod repair;
+pub mod secrets;
+pub mod shadow;
 pub mod switch;
+pub mod transaction;
 
 // ---------------------------------------------------------------------------
 // Scope  -  system vs user
@@ -84,6 +96,22 @@ impl Scope {
     match self {
       Self::System => "system",
       Self::User => "user",
+    }
+  }
+
+  /// The verb that mounts the `sources` group for this scope.
+  ///
+  /// Distinct from [`Scope::as_str`] on purpose: that is the wire
+  /// token, this is a command line xi can re-enter itself through.
+  /// `nixos` and `darwin` also mount the group, but `system` works on
+  /// both, so it is the one spelling a generated command can use
+  /// without knowing which OS it will run on. See
+  /// [`credentials::helper_invocation`], the only caller.
+  #[must_use]
+  pub const fn sources_verb(self) -> &'static str {
+    match self {
+      Self::System => "system",
+      Self::User => "home",
     }
   }
 }
@@ -263,6 +291,25 @@ pub struct RefLineage {
 ///
 /// Anything else found there is reported as a `Degraded` reason rather than
 /// silently ignored.
+///
+/// The crash-recovery trio is bookkeeping rather than model state:
+/// `transaction.json` is the in-progress sentinel, `sync.in-progress` is
+/// left by a sync that was interrupted mid-copy, and `receipt.json` is
+/// the reversal record. All three are sanctioned here so a machine
+/// mid-transaction does not report itself `Degraded` for doing exactly
+/// what `xi-sources-crash-recovery` tells it to do.
+///
+/// The `xi-sources-race` lock sidecars are sanctioned for the same reason.
+/// `lock.waiters` is a directory rather than a file; it is listed here
+/// because `unknown_state_files` walks directory entries, not just files,
+/// and a sanctioned queue dir must not degrade the status envelope.
+///
+/// `bootstrap-receipt.json` is here because at *user* scope
+/// `bootstrap::receipt_dir` is the state dir itself, so a machine that
+/// completed a bootstrap has this file. Leaving it off the list made a
+/// successful bootstrap report `Degraded` for having succeeded. (At
+/// system scope the receipt lands in the state dir's parent and never
+/// reaches this check.)
 pub const STATE_FILE_NAMES: &[&str] = &[
   "remote-url",
   "remote-head",
@@ -271,6 +318,12 @@ pub const STATE_FILE_NAMES: &[&str] = &[
   "working-dir",
   "active-generation",
   "lock",
+  lock::ALIVE_FILE,
+  lock::WAITERS_DIR,
+  transaction::SENTINEL_NAME,
+  repair::SYNC_SENTINEL_NAME,
+  receipt::RECEIPT_NAME,
+  bootstrap::RECEIPT_FILE,
 ];
 
 /// Hard cap on any single state file. The state dir holds metadata only;
@@ -310,6 +363,12 @@ pub fn read_state_file(
 /// most [`MAX_STATE_FILE_BYTES`]. The directory is created `0700` and the
 /// file written `0600` on unix so state is readable only by its owner.
 ///
+/// The write itself goes through [`atomic::write_atomic`], which is the
+/// `xi-sources-crash-recovery` rule that every state-dir file is replaced
+/// by a rename: a concurrent reader sees the old whole value or the new
+/// whole value, and a crash mid-write leaves the old one intact rather
+/// than a truncated file that would be read as fact forever.
+///
 /// # Errors
 ///
 /// Returns `InvalidInput` for an unknown filename, `InvalidData` for an
@@ -339,9 +398,9 @@ pub fn write_state_file(
   fs::create_dir_all(state_dir)?;
   harden_dir(state_dir)?;
 
-  let path = state_dir.join(name);
-  fs::write(&path, contents)?;
-  harden_file(&path)
+  // `0600` is applied to the temp file, before the rename, so the final
+  // name is never briefly readable at whatever the umask allows.
+  atomic::write_atomic(&state_dir.join(name), contents.as_bytes(), Some(0o600))
 }
 
 #[cfg(unix)]
@@ -350,15 +409,24 @@ fn harden_dir(dir: &Path) -> io::Result<()> {
   fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
+#[cfg(not(unix))]
+fn harden_dir(_dir: &Path) -> io::Result<()> {
+  Ok(())
+}
+
+/// Narrow an existing state file to owner-only.
+///
+/// [`write_state_file`] no longer needs this  -  it hands the mode to
+/// [`atomic::write_atomic`], which applies it to the temp file before the
+/// rename so the final name is never briefly world-readable. This stays for
+/// the files that cannot be written that way: the `xi-sources-race` lock is
+/// held open across the whole critical section and must be hardened in
+/// place, because replacing it by rename would hand the next waiter a
+/// different inode and silently break the `flock`.
 #[cfg(unix)]
 fn harden_file(path: &Path) -> io::Result<()> {
   use std::os::unix::fs::PermissionsExt as _;
   fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn harden_dir(_dir: &Path) -> io::Result<()> {
-  Ok(())
 }
 
 #[cfg(not(unix))]
@@ -370,6 +438,13 @@ fn harden_file(_path: &Path) -> io::Result<()> {
 ///
 /// A missing state dir yields an empty list, not an error: "not yet
 /// initialised" is a normal state, distinct from "contains junk".
+///
+/// The temp files [`atomic::write_atomic`] uses are not junk either: they
+/// are the in-flight half of every sanctioned write, so a `status` run
+/// that happens to race a `switch` must not report the machine
+/// `Degraded` for it. A temp file whose writer is *dead* is real damage,
+/// but naming it is [`repair`]'s job, not this function's  -  `status`
+/// reports what the model says, repair decides what to do about it.
 ///
 /// # Errors
 ///
@@ -386,7 +461,9 @@ pub fn unknown_state_files(state_dir: &Path) -> io::Result<Vec<String>> {
   let mut unknown: Vec<String> = entries
     .filter_map(|entry| {
       let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-      (!STATE_FILE_NAMES.contains(&name.as_str())).then_some(name)
+      (!STATE_FILE_NAMES.contains(&name.as_str())
+        && !atomic::is_temp_name(&name))
+      .then_some(name)
     })
     .collect();
   unknown.sort();
@@ -524,12 +601,42 @@ impl SourcesContext {
   #[must_use]
   pub fn snapshot(&self) -> SourcesSnapshot {
     SourcesSnapshot {
-      sources_id:  self.sources_id.clone(),
-      sources_dir: self.sources_dir.clone(),
-      state_dir:   self.state_dir.clone(),
-      working_dir: self.working_dir.clone(),
-      refs:        self.refs.clone(),
+      sources_id:          self.sources_id.clone(),
+      sources_dir:         self.sources_dir.clone(),
+      state_dir:           self.state_dir.clone(),
+      working_dir:         self.working_dir.clone(),
+      sync_available:      self.sync_available(),
+      pending_sources_sha: self.pending_sources_sha().cloned(),
+      refs:                self.refs.clone(),
     }
+  }
+
+  /// Whether the sources dir holds a sha the working dir has not seen.
+  ///
+  /// Derived from the two recorded heads rather than stored, so it cannot
+  /// go stale: there is no "sync pending" flag for a crashed daemon to
+  /// leave behind, and `xi-sources-conflict`'s `sync_mode` does not enter
+  /// into it. `never` reports the available sync exactly like `prompt`
+  /// does; the mode governs who acts, not what is true.
+  ///
+  /// Requires both heads to be known. Guessing from one would make a
+  /// freshly adopted machine claim a sync it cannot describe.
+  #[must_use]
+  pub fn sync_available(&self) -> bool {
+    self.working_dir.is_some()
+      && match (&self.refs.sources_head, &self.refs.working_head) {
+        (Some(sources), Some(working)) => sources != working,
+        _ => false,
+      }
+  }
+
+  /// The sha a pending sync would move the working dir to.
+  #[must_use]
+  pub fn pending_sources_sha(&self) -> Option<&Sha> {
+    self
+      .sync_available()
+      .then_some(self.refs.sources_head.as_ref())
+      .flatten()
   }
 
   fn degraded(&self, reason: String) -> SourcesStatus {
@@ -602,16 +709,21 @@ impl ConfigureHint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourcesSnapshot {
   /// Stable identity of this source.
-  pub sources_id:  SourcesId,
+  pub sources_id:          SourcesId,
   /// The managed clone xi owns.
-  pub sources_dir: PathBuf,
+  pub sources_dir:         PathBuf,
   /// The flat metadata directory.
-  pub state_dir:   PathBuf,
+  pub state_dir:           PathBuf,
   /// The user's editable clone, if recorded.
-  pub working_dir: Option<PathBuf>,
+  pub working_dir:         Option<PathBuf>,
+  /// Whether `xi <scope> sources sync` has work to do. Owned by
+  /// `xi-sources-conflict`; see [`SourcesContext::sync_available`].
+  pub sync_available:      bool,
+  /// The sha a pending sync would move the working dir to.
+  pub pending_sources_sha: Option<Sha>,
   /// The four observable refs, inlined into the body.
   #[serde(flatten)]
-  pub refs:        RefLineage,
+  pub refs:                RefLineage,
 }
 
 /// The four-way status of a sources repo.
@@ -659,6 +771,14 @@ pub struct SourcesStatusResponse {
   /// envelope keeps the exact shape `xi-sources-model` pinned.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub provenance:     Option<config::Provenances>,
+
+  /// Who holds the `xi-sources-race` lock, when anybody does.
+  ///
+  /// Absent when the lock is free, which is the common case, so the pinned
+  /// envelope shape is unchanged for every caller that never contends.
+  /// Reading this never acquires the lock.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub lock: Option<lock::LockStatus>,
 }
 
 impl SourcesStatusResponse {
@@ -669,6 +789,7 @@ impl SourcesStatusResponse {
       schema_version: SOURCES_SCHEMA_VERSION,
       status,
       provenance: None,
+      lock: None,
     }
   }
 
@@ -676,6 +797,13 @@ impl SourcesStatusResponse {
   #[must_use]
   pub fn with_provenance(mut self, provenance: config::Provenances) -> Self {
     self.provenance = Some(provenance);
+    self
+  }
+
+  /// Attach the lock holder, when there is one.
+  #[must_use]
+  pub fn with_lock(mut self, lock: Option<lock::LockStatus>) -> Self {
+    self.lock = lock;
     self
   }
 }

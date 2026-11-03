@@ -92,12 +92,20 @@ impl HomeRebuildArgs {
 
     // Switch pre-steps: installer check, then adopt a config repo if
     // the positional named one. Everything else passes through.
-    let installable = xi_core::sources::switch::prepare(
+    // `prepared` holds the sources lock for the rest of this
+    // function, which is what serialises this switch against a
+    // daemon tick or an inbound push. Binding it rather than
+    // chaining off it is load-bearing: a temporary would release
+    // the lock before the build even starts.
+    let prepared = xi_core::sources::switch::prepare(
       crate::args::HomeArgs::scope(),
       self.common.installable.clone(),
       &self.common.sources,
-    )?
-    .resolve_or_default(CommandContext::Home)?;
+    )?;
+    let installable = prepared
+      .installable()
+      .clone()
+      .resolve_or_default(CommandContext::Home)?;
 
     if self.update_args.update_all || self.update_args.update_input.is_some() {
       update(
@@ -274,6 +282,11 @@ impl HomeRebuildArgs {
       .show_output(self.show_activation_logs)
       .run()
       .wrap_err("Activation failed")?;
+
+    xi_core::sources::switch::record_activation(
+      crate::args::HomeArgs::scope(),
+      &target_profile,
+    );
 
     debug!("Completed operation with output path: {target_profile:?}");
 

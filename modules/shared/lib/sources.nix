@@ -8,8 +8,20 @@
         tomlFormat = pkgs.formats.toml { };
 
         # camelCase option -> the kebab-case key xi's parser accepts.
-        # The key set is closed on the Rust side, so a name invented
-        # here would be a load-time error rather than a silent no-op.
+        # The key set is closed on the Rust side (`SOURCES_KEYS` in
+        # crates/xi-core/src/sources/config.rs), so a name invented here
+        # would be a load-time error rather than a silent no-op. That
+        # cuts both ways: the option tree in
+        # modules/shared/types/sources.nix is deliberately wider than
+        # this map, and an option only joins it once the change that
+        # owns it has added the matching key on the Rust side.
+        #
+        # Declared in the tree but NOT renderable yet:
+        #   gpgPublicKeys         (xi-sources-gitops)
+        #   gitops.*              (xi-sources-gitops)
+        #   cachePrestage.*       (xi-sources-cache-prestage)
+        #   secrets.*             (xi-sources-push)
+        #   credentials.*         (xi-sources-credentials)
         keys = {
           remote = sources.remote;
           branch = sources.branch;
@@ -18,7 +30,7 @@
           "require-signed" = sources.requireSigned;
           "allowed-signers" = sources.allowedSigners;
           "sync-mode" = sources.syncMode;
-          installer = sources.installer;
+          installer = sources.bootstrap.installer;
         };
 
         # Null means "this module does not pin the key", which is not the
