@@ -185,3 +185,61 @@ fn a_tick_with_no_remote_movement_is_idempotent() {
     "a no-op tick must not move the sources dir"
   );
 }
+
+/// SC-G-003: "Daemon fetches a remote that is NOT a descendant of
+/// `sources_head` (force push); the sources dir does NOT advance,
+/// `xi sources status` returns `Degraded, reason: remote-force-push`, and
+/// the daemon logs the rejected sha."
+///
+/// This is `tick.rs`'s own
+/// `a_force_pushed_remote_is_rejected_and_sources_head_stays_put` unit test
+/// re-run at the BDD/integration layer this crate's other SC-G-* tests live
+/// at, against the same `World` fixture `sc_g_002` uses, so the two
+/// criteria that define "advance only via fast-forward" (sections 3.1/3.2)
+/// are exercised side by side from the same harness.
+#[test]
+fn sc_g_003_a_force_pushed_remote_is_rejected_and_sources_head_stays_put() {
+  let world = World::new();
+  let exec = RecordingExec::always_ok();
+
+  assert!(tick::run(&exec, &world.inputs()).advanced());
+  let held_head = head(&world.sources_dir);
+  let held_file =
+    fs::read_to_string(world.sources_dir.join("flake.nix")).expect("read");
+
+  // Force-push: rewrite history instead of extending it, so the new
+  // remote tip is not a descendant of what the sources dir already has.
+  git(&world.remote, &["checkout", "-q", "--orphan", "rewritten"]);
+  commit(&world.remote, "flake.nix", "rewritten-history");
+  git(&world.remote, &["branch", "-M", "rewritten", "main"]);
+  let rejected_tip = head(&world.remote);
+
+  let outcome = tick::run(&exec, &world.inputs());
+
+  match &outcome {
+    TickOutcome::Degraded(reason) => {
+      assert_eq!(
+        reason.token(),
+        "remote-force-push",
+        "status must read Degraded, reason: remote-force-push"
+      );
+      let text = reason.to_string();
+      assert!(
+        text.contains(&rejected_tip),
+        "the daemon must log the rejected sha, got: {text}"
+      );
+    },
+    other => panic!("expected Degraded(remote-force-push), got {other:?}"),
+  }
+
+  assert_eq!(
+    head(&world.sources_dir),
+    held_head,
+    "sources_head must not advance on a rejected force push"
+  );
+  assert_eq!(
+    fs::read_to_string(world.sources_dir.join("flake.nix")).expect("read"),
+    held_file,
+    "the working tree must not change on a rejected force push"
+  );
+}

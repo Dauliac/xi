@@ -21,6 +21,9 @@
 //!   execution, with output captured to the state dir.
 //! - [`profile`]  -  the named Nix profile the daemon registers generations on,
 //!   and the `nix-env` invocation that does it.
+//! - [`schedule`]  -  independent per-remote polling cadence, so a
+//!   multi-remote config's remotes do not all tick on the shortest
+//!   configured `poll_interval`.
 //! - [`tick`]  -  the orchestrator: fetch, verify, resolve, and the
 //!   `on_advance` hook, tying the modules above into one `TickOutcome`.
 //!
@@ -35,6 +38,7 @@ pub mod health;
 pub mod hooks;
 pub mod machine_id;
 pub mod profile;
+pub mod schedule;
 pub mod sentinel;
 pub mod signing;
 pub mod singleton;
