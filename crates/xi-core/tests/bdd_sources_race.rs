@@ -36,6 +36,7 @@ use xi_core::sources::{
     DEAD_PID_GRACE,
     DEFAULT_LEASE,
     LOCK_FILE,
+    LOCK_WAIT_ENV,
     Liveness,
     LockError,
     LockOptions,
@@ -45,6 +46,7 @@ use xi_core::sources::{
     holder_liveness,
     next_waiter,
     status,
+    wait_override_from,
   },
   pause::{
     AutoResume,
@@ -674,4 +676,94 @@ fn a_lock_record_round_trips_through_one_json_line() {
       .expect("blank is not an error")
       .is_none()
   );
+}
+
+// ---------------------------------------------------------------------------
+// xi-aiw7: a bounded, operator-configurable wait budget
+// ---------------------------------------------------------------------------
+
+/// `XI_SOURCES_LOCK_WAIT` is unset: the override is absent, not an error,
+/// so [`LockOptions::from_env`] falls back to the spec default untouched.
+#[test]
+fn an_unset_lock_wait_env_leaves_the_default_untouched() {
+  let lookup = |_: &str| None;
+  assert_eq!(
+    wait_override_from(&lookup).expect("unset is not an error"),
+    None
+  );
+}
+
+/// A valid `XI_SOURCES_LOCK_WAIT` overrides the wait budget.
+#[test]
+fn a_valid_lock_wait_env_overrides_the_wait_budget() {
+  let lookup = |key: &str| (key == LOCK_WAIT_ENV).then(|| "5s".to_owned());
+  assert_eq!(
+    wait_override_from(&lookup).expect("5s parses"),
+    Some(Duration::from_secs(5))
+  );
+}
+
+/// An empty `XI_SOURCES_LOCK_WAIT` is treated the same as unset, matching
+/// every other `XI_SOURCES_*` variable in this capability
+/// ([`xi_core::sources::config::SourcesConfig::from_env_with`]).
+#[test]
+fn an_empty_lock_wait_env_is_treated_as_unset() {
+  let lookup = |key: &str| (key == LOCK_WAIT_ENV).then(String::new);
+  assert_eq!(
+    wait_override_from(&lookup).expect("empty is not an error"),
+    None
+  );
+}
+
+/// A malformed `XI_SOURCES_LOCK_WAIT` is a reported error naming the
+/// variable and the bad value, not a silent fallback: a typo should not
+/// quietly keep the 15-minute default the operator was trying to shorten.
+#[test]
+fn a_malformed_lock_wait_env_is_a_named_error() {
+  let lookup = |key: &str| (key == LOCK_WAIT_ENV).then(|| "soon".to_owned());
+  let err = wait_override_from(&lookup).expect_err("not a duration");
+  assert!(err.contains(LOCK_WAIT_ENV), "got: {err}");
+  assert!(err.contains("soon"), "got: {err}");
+}
+
+/// `LockOptions::new` opts out of progress output by default - a daemon
+/// tick or another background actor has no terminal to print status lines
+/// to. `with_progress` is how a foreground command like `switch` opts in.
+#[test]
+fn progress_output_is_off_by_default_and_on_once_requested() {
+  let quiet = LockOptions::new(ActorName::Daemon, "tick");
+  assert!(!quiet.progress);
+
+  let loud =
+    LockOptions::new(ActorName::Switch, "xi home switch").with_progress();
+  assert!(loud.progress);
+}
+
+/// A progress-enabled acquisition against a lock already held still
+/// reports `Held` and still names the holder once it gives up: the status
+/// line is a courtesy printed to stderr along the way, not a substitute
+/// for the error [`SourcesLock::acquire`] already returns. See
+/// `crates/xi/tests/bdd_sources_entrypoint.rs` for the end-to-end proof
+/// that the status line is what actually reaches the operator's
+/// terminal (xi-fcfy): this is the library-level half, that requesting it
+/// does not change the outcome.
+#[test]
+fn progress_output_does_not_change_the_acquisition_outcome() {
+  let host = Host::new();
+  let holder =
+    SourcesLock::acquire(&host.system, &impatient(ActorName::Daemon, "tick"))
+      .expect("the daemon takes a free lock");
+
+  let err = SourcesLock::acquire(
+    &host.system,
+    &impatient(ActorName::Switch, "xi system switch").with_progress(),
+  )
+  .expect_err("still held");
+
+  let LockError::Held { holder: named, .. } = &err else {
+    panic!("expected Held, got {err:?}");
+  };
+  assert_eq!(named.actor_name, ActorName::Daemon);
+
+  holder.release().expect("release");
 }
