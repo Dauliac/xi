@@ -360,10 +360,7 @@ impl Transport for SshTransport {
       // when the operator's link is the bottleneck.
       CopyVia::Target => {
         let status = Command::new("nix-copy-closure")
-          .arg("--to")
-          .arg(&target.ssh_host)
-          .arg("--use-substitutes")
-          .arg(store_path)
+          .args(nix_copy_closure_args(target, store_path))
           .status()
           .map_err(|e| eyre!("failed to run nix-copy-closure: {e}"))?;
         if !status.success() {
@@ -497,6 +494,25 @@ pub(crate) fn shell_quote(raw: &str) -> String {
   format!("'{}'", raw.replace('\'', r"'\''"))
 }
 
+/// The argv `--copy-via target` runs `nix-copy-closure` with.
+///
+/// Pulled out of [`SshTransport::copy_closure`] so the exact spelling
+/// the `xi-sources-push` spec names -
+/// `nix-copy-closure --to <host> --use-substitutes` - is assertable
+/// without spawning the real binary, the same way [`SshTransport::base_opts`]
+/// keeps the `ssh` argv testable.
+pub(crate) fn nix_copy_closure_args(
+  target: &TargetAddr,
+  store_path: &str,
+) -> Vec<String> {
+  vec![
+    "--to".to_owned(),
+    target.ssh_host.clone(),
+    "--use-substitutes".to_owned(),
+    store_path.to_owned(),
+  ]
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -530,6 +546,26 @@ mod tests {
   #[test]
   fn quoting_survives_an_embedded_quote() {
     assert_eq!(shell_quote("it's"), r"'it'\''s'");
+  }
+
+  #[test]
+  fn copy_via_target_invokes_nix_copy_closure_with_use_substitutes() {
+    let target = TargetAddr {
+      name:     "web1".to_owned(),
+      ssh_host: "deploy@web1.example".to_owned(),
+      ssh_opts: Vec::new(),
+    };
+    let args = nix_copy_closure_args(&target, "/nix/store/abc-system");
+    assert_eq!(
+      args,
+      vec![
+        "--to".to_owned(),
+        "deploy@web1.example".to_owned(),
+        "--use-substitutes".to_owned(),
+        "/nix/store/abc-system".to_owned(),
+      ],
+      "must match the xi-sources-push spec's exact invocation"
+    );
   }
 
   #[test]
