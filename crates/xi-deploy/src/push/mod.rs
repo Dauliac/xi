@@ -14,6 +14,11 @@
 //! - [`engine`]  -  the two side-effecting traits ([`engine::Nix`],
 //!   [`engine::Transport`]) that every mutation goes through, so the
 //!   orchestration above is testable without real hosts.
+//! - [`rollback`]  -  the magic-rollback canary loop: plant a sentinel
+//!   and an escape hatch after activation, poll over SSH, and trigger
+//!   the escape hatch if the sentinel goes missing within the window.
+//! - [`mode_sources`]  -  `--mode sources`: rsync the sources dir to the
+//!   target's scope-resolved path instead of shipping a built closure.
 //!
 //! The orchestrator that ties these together, and the CLI wiring that
 //! mounts the verb, are not written yet. See the `xi-sources-push`
@@ -23,4 +28,6 @@ pub mod args;
 pub mod discover;
 pub mod engine;
 pub mod limits;
+pub mod mode_sources;
 pub mod preflight;
+pub mod rollback;
