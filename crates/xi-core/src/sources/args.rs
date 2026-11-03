@@ -521,6 +521,7 @@ impl SyncArgs {
     let outcome = sync(&SyncRequest {
       sources_dir: &paths.sources_dir,
       working_dir: &working_dir,
+      state_dir:   &paths.state_dir,
       force_dirty: self.force_dirty,
       what:        &format!("xi {} sources sync", scope.as_str()),
     })

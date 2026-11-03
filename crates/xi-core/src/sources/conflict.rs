@@ -1472,6 +1472,14 @@ pub struct SyncRequest<'a> {
   pub sources_dir: &'a Path,
   /// The destination. The only tree this operation may write.
   pub working_dir: &'a Path,
+  /// The flat metadata dir the sync sentinel and `working-dir` are
+  /// recorded in. See `xi-sources-crash-recovery`'s "Transaction
+  /// boundary per actor" requirement: `sync` has no shadow path of its
+  /// own (the copy-with-erase writes the working dir directly, by
+  /// design), so its crash-safety is this sentinel plus
+  /// [`super::repair::SYNC_SENTINEL_NAME`]'s `AbandonedSync` finding,
+  /// rather than a [`super::transaction::Transaction`].
+  pub state_dir:   &'a Path,
   /// Whether the operator passed `--force-dirty`.
   pub force_dirty: bool,
   /// What to name in a refusal, e.g. `xi home sources sync`.
@@ -1553,12 +1561,27 @@ pub fn sync(request: &SyncRequest<'_>) -> Result<SyncOutcome, ConflictError> {
     None => Vec::new(),
   };
 
+  // Publish the sentinel, and record which working dir it names, before
+  // the first byte moves. There is no shadow path to promote here - the
+  // copy-with-erase writes `working_dir` directly, by design - so a
+  // crash between this line and the matching removal below is exactly
+  // what `xi sources repair`'s `AbandonedSync` finding exists to catch:
+  // see `SYNC_SENTINEL_NAME` in `super::repair`.
+  claim_sync_sentinel(request)?;
+
   let written = write_pass(request, &sources_head, &wanted)?;
   let deleted = delete_pass(request, &wanted, &previous)?;
 
   // `--soft`, by spec: the operator keeps their index so they can
   // inspect, amend, or commit a follow-up without another fetch.
   working_dir_git(request.working_dir, &["reset", "--soft", &sources_head])?;
+
+  // Only reached once every write above has landed, so clearing it here
+  // is the "last action" half of the same rule `Transaction::commit`
+  // follows for the actors that do have a shadow path. A write-pass or
+  // delete-pass failure above returns through `?` with the sentinel
+  // still in place, which is the point.
+  clear_sync_sentinel(request.state_dir);
 
   info!(
     written = written.len(),
@@ -1573,6 +1596,57 @@ pub fn sync(request: &SyncRequest<'_>) -> Result<SyncOutcome, ConflictError> {
     sources_head,
     forced: tree.is_dirty(),
   })
+}
+
+/// Record `working_dir` and publish the sync-in-progress sentinel.
+///
+/// Both are written before [`write_pass`] touches a single file, so a
+/// crash anywhere in the copy leaves `xi sources repair` the same two
+/// facts an operator would need by hand: that a sync was running, and
+/// which working dir it was reconciling.
+fn claim_sync_sentinel(request: &SyncRequest<'_>) -> Result<(), ConflictError> {
+  super::write_state_file(
+    request.state_dir,
+    "working-dir",
+    &request.working_dir.display().to_string(),
+  )
+  .map_err(|source| {
+    ConflictError::Io {
+      path: request.state_dir.join("working-dir"),
+      source,
+    }
+  })?;
+
+  let sentinel = request.state_dir.join(super::repair::SYNC_SENTINEL_NAME);
+  std::fs::create_dir_all(request.state_dir).map_err(|source| {
+    ConflictError::Io {
+      path: request.state_dir.to_path_buf(),
+      source,
+    }
+  })?;
+  std::fs::write(&sentinel, b"").map_err(|source| {
+    ConflictError::Io {
+      path: sentinel,
+      source,
+    }
+  })
+}
+
+/// Remove the sync-in-progress sentinel a completed sync published.
+///
+/// Best-effort: the copy itself already succeeded, so a failure to
+/// delete the sentinel must not turn a successful sync into a failed
+/// command. The next `xi sources repair` sweeps it instead - harmlessly,
+/// since by then the working dir already matches `sources_head` and
+/// `ResolveSync`'s rollback is a no-op against a tree with nothing to
+/// undo.
+fn clear_sync_sentinel(state_dir: &Path) {
+  let sentinel = state_dir.join(super::repair::SYNC_SENTINEL_NAME);
+  if let Err(err) = std::fs::remove_file(&sentinel)
+    && err.kind() != io::ErrorKind::NotFound
+  {
+    warn!("could not clear the sync sentinel {}: {err}", sentinel.display());
+  }
 }
 
 /// Write every blob tracked at `sources_head` into the working dir.
@@ -1766,6 +1840,7 @@ pub const SYNC_DEFERRED_DIRTY: &str = "sync-deferred-dirty";
 pub fn apply_auto_sync(
   mode: SyncMode,
   sources_dir: &Path,
+  state_dir: &Path,
   working_dir: Option<&Path>,
   what: &str,
 ) -> Result<AutoSync, ConflictError> {
@@ -1792,6 +1867,7 @@ pub fn apply_auto_sync(
   let outcome = sync(&SyncRequest {
     sources_dir,
     working_dir,
+    state_dir,
     force_dirty: false,
     what,
   })?;
