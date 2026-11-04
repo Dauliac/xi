@@ -65,5 +65,26 @@ in
       run mkdir -p ${lib.escapeShellArg sourcesDir} ${lib.escapeShellArg stateDir}
       run chmod 700 ${lib.escapeShellArg sourcesDir} ${lib.escapeShellArg stateDir}
     '';
+
+    # The pull-GitOps loop (xi-sources-gitops), user scope. Only meaningful
+    # under a systemd user instance (standalone home-manager on Linux, or
+    # home-manager-as-a-NixOS-module); there is no equivalent on nix-darwin,
+    # which has no `systemd --user` to run this under, so a darwin user who
+    # wants gitops has to run the daemon some other way for now.
+    systemd.user.services.xi-sources-daemon = lib.mkIf cfg.sources.gitops.enable {
+      Unit = {
+        Description = "xi sources gitops daemon (user scope)";
+        After = [ "network-online.target" ];
+        Wants = [ "network-online.target" ];
+      };
+
+      Service = {
+        ExecStart = "${lib.getExe' cfg.package "xi-sources-daemon"} --scope user";
+        Restart = "on-failure";
+        RestartSec = "10s";
+      };
+
+      Install.WantedBy = [ "default.target" ];
+    };
   };
 }
