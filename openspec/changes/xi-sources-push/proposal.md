@@ -60,6 +60,37 @@ codebase map, so this change is NOT a greenfield push implementation. It is:
     `darwinConfigurations`, `homeConfigurations`, `deploy.nodes`, `colmenaHive`.
     Multi-source: when both `deploy.nodes.<n>` and `nixosConfigurations.<n>`
     exist, prefer the explicit deploy stanza.
+  - **Build location as a configurable ladder**, named `remoteBuild` /
+    `remote-build` to match `deploy-rs`'s existing terminology rather than
+    inventing new vocabulary (the magic-rollback feature above already
+    follows that project): `--remote-build` CLI flag > `.xi.toml [push]
+    remote-build = true` > `xi.sources.push.remoteBuild` Nix option default.
+    `remote-build = false` (the default) builds on the pushing operator's
+    machine and copies the closure in, per `--copy-via` above. `remote-build
+    = true` is `--mode sources`: the target builds from its own rsync'd
+    sources dir.
+  - **Remote execution wrapped in a transient systemd unit**, not a bare
+    foreground SSH command: `systemd-run --wait --pipe --collect xi <scope>
+    switch` (or, for `--mode sources`, the equivalent `nixos-rebuild switch
+    --flake` already wired in `mode_sources::switch`) run over the SSH
+    session. This survives an SSH hiccup, gets journald logging on the
+    target for free, propagates the real exit code, and `--collect` leaves no
+    unit file behind. Scoped to the remote-build path only - a local build
+    is already a normal interactive invocation and does not need wrapping.
+    When the remote command is `xi <scope> switch` itself, the target
+    acquires its own sources lock the same way an interactive switch would;
+    no separate `ActorName::Push` acquisition is needed for that path.
+  - **A declarative inventory**, ansible-style, alongside the existing ad hoc
+    `xi push <targets...>` positional form: `.xi.toml [[push.hosts]]` entries
+    (`name`, `ssh`, optional per-host `remote-build` override) let `xi push
+    web1` resolve a name instead of retyping the SSH target every time. A
+    positional that is not a known inventory name is still read as a raw SSH
+    target directly, so ad hoc pushes keep working with no config at all.
+    The inventory describes *other* machines, unlike every other
+    `[sources.*]` key so far which describes the machine it is read on, so
+    it is read from the config repo's own `.xi.toml` (the sources dir the
+    operator is pushing from), not from any target's local state. Host
+    groups are out of scope for the first pass; flat named hosts only.
 
 ## Impact
 
