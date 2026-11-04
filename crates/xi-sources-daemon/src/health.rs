@@ -10,7 +10,7 @@
 //! though the config key is `on-switch`: the token names the hook point,
 //! not the config key, and the spec fixed its spelling.
 
-use xi_core::sources::{GitopsHealth, Sha};
+use xi_core::sources::{GitopsHealth, Sha, conflict::PostAdvance};
 
 /// Why the daemon could not complete a tick, or completed it degraded.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -154,6 +154,12 @@ pub enum TickOutcome {
     /// A hook that failed after the advance landed. The advance stands:
     /// a hook is a notification, not a precondition.
     hook: Option<DegradedReason>,
+    /// What `sync_mode` says should happen to the working dir now. See
+    /// [`xi_core::sources::conflict::post_advance`] for the mapping; the
+    /// daemon's job is only to report this, not to run `QueueSync` or
+    /// `Announce` itself - those are the next interactive command's and
+    /// `xi sources status`'s jobs respectively.
+    post_advance: PostAdvance,
   },
   /// The advance landed but activation waits for the reboot window.
   Deferred {
@@ -242,6 +248,7 @@ mod tests {
         hook: "on_switch".to_owned(),
         code: 3,
       }),
+      post_advance: PostAdvance::Announce,
     };
     assert!(outcome.advanced());
     assert!(matches!(outcome.health(), GitopsHealth::Failed { .. }));

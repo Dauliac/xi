@@ -12,7 +12,12 @@
 use std::{fs, path::Path, process::Command};
 
 use tempfile::TempDir;
-use xi_core::sources::{Scope, SourcesId};
+use xi_core::sources::{
+  Scope,
+  SourcesId,
+  config::SyncMode,
+  conflict::PostAdvance,
+};
 use xi_sources_daemon::{
   exec::recorder::RecordingExec,
   health::TickOutcome,
@@ -99,6 +104,7 @@ impl World {
       allowed_signers: None,
       gpg_public_keys: None,
       on_advance:      None,
+      sync_mode:       SyncMode::Prompt,
     }
   }
 }
@@ -132,13 +138,23 @@ fn sc_g_002_remote_advance_by_n_commits_fast_forwards_the_sources_dir() {
   let outcome = tick::run(&exec, &world.inputs());
 
   match &outcome {
-    TickOutcome::Advanced { from, to, hook } => {
+    TickOutcome::Advanced {
+      from,
+      to,
+      hook,
+      post_advance,
+    } => {
       assert_eq!(*to, remote_tip, "sources dir should land on the new tip");
       assert!(
         from.is_some(),
         "an advance from a known head carries `from`"
       );
       assert!(hook.is_none(), "no on_advance was configured");
+      assert_eq!(
+        *post_advance,
+        PostAdvance::Announce,
+        "the default sync_mode (prompt) reports Announce"
+      );
     },
     other => panic!("expected TickOutcome::Advanced, got {other:?}"),
   }
