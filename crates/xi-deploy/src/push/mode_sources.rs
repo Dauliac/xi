@@ -96,8 +96,39 @@ pub fn switch_script(target: &PushTarget, scope: Scope) -> String {
   )
 }
 
+/// Wrap `command` in a transient `systemd-run` unit, per the
+/// `xi-sources-push` proposal's "Remote execution wrapped in a
+/// transient systemd unit": the remote-build path runs its command this
+/// way instead of as a bare foreground SSH command.
+///
+/// The three flags each earn their place:
+/// - `--wait` blocks until the unit finishes and propagates its exit
+///   code, so [`switch`] still sees a real success/failure.
+/// - `--pipe` connects the unit's stdio to this invocation's, so the
+///   rebuild's own output still reaches the operator instead of only
+///   journald.
+/// - `--collect` unloads the unit (success or failure) once it exits,
+///   so `--mode sources` never leaves a transient unit file behind.
+///
+/// Together these survive an SSH hiccup (the unit keeps running on the
+/// target even if the SSH session drops), get journald logging on the
+/// target for free, and still propagate the real exit code - all three
+/// things a bare foreground SSH command cannot offer.
+///
+/// `command` is inserted after `--`, not shell-quoted: every caller
+/// today is [`switch_script`]'s output, a single invocation with no
+/// shell metacharacters, and the surrounding shell (this whole string
+/// still runs through the remote login shell, the same as every other
+/// [`RemoteCommand::script`]) splits it into the argv `systemd-run`
+/// wants on the far side of `--`.
+#[must_use]
+pub fn wrap_in_systemd_run(command: &str) -> String {
+  format!("systemd-run --wait --pipe --collect -- {command}")
+}
+
 /// Run the remote rebuild `--mode sources` needs after [`sync`] has
-/// landed the sources dir on `target`.
+/// landed the sources dir on `target`, wrapped in a transient
+/// `systemd-run` unit ([`wrap_in_systemd_run`]).
 ///
 /// # Errors
 ///
@@ -110,7 +141,7 @@ pub fn switch(
   scope: Scope,
   interactive_sudo: bool,
 ) -> Result<()> {
-  let script = switch_script(target, scope);
+  let script = wrap_in_systemd_run(&switch_script(target, scope));
   let outcome = transport
     .run(&target.addr, &RemoteCommand::elevated(script, interactive_sudo))?;
   if !outcome.success {
@@ -382,15 +413,64 @@ mod tests {
     );
   }
 
+  // -- wrap_in_systemd_run: flags and command placement ------------------
+
   #[test]
-  fn a_successful_switch_runs_exactly_the_switch_script_elevated() {
+  fn the_wrapped_command_carries_every_required_flag_in_order() {
+    let wrapped = wrap_in_systemd_run("nixos-rebuild switch --flake /etc/xi/sources#web1");
+    assert_eq!(
+      wrapped,
+      "systemd-run --wait --pipe --collect -- nixos-rebuild switch --flake \
+       /etc/xi/sources#web1"
+    );
+  }
+
+  #[test]
+  fn the_wait_flag_is_present_so_the_exit_code_propagates() {
+    assert!(wrap_in_systemd_run("true").contains("--wait"));
+  }
+
+  #[test]
+  fn the_pipe_flag_is_present_so_output_reaches_the_operator() {
+    assert!(wrap_in_systemd_run("true").contains("--pipe"));
+  }
+
+  #[test]
+  fn the_collect_flag_is_present_so_no_unit_file_survives() {
+    assert!(wrap_in_systemd_run("true").contains("--collect"));
+  }
+
+  #[test]
+  fn the_command_is_appended_verbatim_after_the_double_dash_separator() {
+    let wrapped = wrap_in_systemd_run("echo hello");
+    let (flags, command) = wrapped.split_once(" -- ").expect("has a -- separator");
+    assert_eq!(flags, "systemd-run --wait --pipe --collect");
+    assert_eq!(command, "echo hello");
+  }
+
+  #[test]
+  fn wrapping_the_real_switch_script_produces_the_full_remote_command() {
+    let target = push_target("web1", "nixos-rebuild");
+    let wrapped = wrap_in_systemd_run(&switch_script(&target, Scope::System));
+    assert_eq!(
+      wrapped,
+      "systemd-run --wait --pipe --collect -- nixos-rebuild switch --flake \
+       /etc/xi/sources#web1"
+    );
+  }
+
+  #[test]
+  fn a_successful_switch_runs_the_systemd_wrapped_script_elevated() {
     let transport = RecordingTransport::with_run_outcomes(vec![true]);
     let target = push_target("web1", "nixos-rebuild");
     switch(&transport, &target, Scope::System, false).expect("switches");
 
     let calls = transport.run_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].script, switch_script(&target, Scope::System));
+    assert_eq!(
+      calls[0].script,
+      wrap_in_systemd_run(&switch_script(&target, Scope::System))
+    );
     assert_eq!(calls[0].elevate, Elevate::NonInteractive);
   }
 
