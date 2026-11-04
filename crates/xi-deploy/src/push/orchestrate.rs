@@ -876,6 +876,51 @@ mod tests {
   }
 
   #[test]
+  fn mode_sources_wraps_the_remote_rebuild_in_a_transient_systemd_unit() {
+    // xi-a5e.4: the remote-build path's rebuild invocation runs through
+    // `systemd-run --wait --pipe --collect`, not as a bare foreground
+    // SSH command, so it survives an SSH hiccup and leaves no unit file
+    // behind. Driven through the real orchestrator (not
+    // `mode_sources::switch` directly) so this is the end-to-end proof
+    // the wrap actually reaches `--mode sources` pushes, not just the
+    // module that builds the string.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+
+    let report = execute(
+      &args(PushMode::Sources),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    let switch_call = transport
+      .run_calls
+      .lock()
+      .expect("lock")
+      .last()
+      .expect("the remote rebuild ran")
+      .script
+      .clone();
+    assert!(
+      switch_call.starts_with("systemd-run --wait --pipe --collect -- "),
+      "got: {switch_call}"
+    );
+    assert!(
+      switch_call.ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
+      "got: {switch_call}"
+    );
+  }
+
+  #[test]
   fn with_no_mode_flag_a_toml_remote_build_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
