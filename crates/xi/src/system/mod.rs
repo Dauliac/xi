@@ -38,6 +38,7 @@ impl SystemArgs {
         args.rebuild(&Build, elevation)
       },
       SystemSubcommand::Sources(proxy) => proxy.run(Self::scope()),
+      SystemSubcommand::Status(args) => args.run(Self::scope()),
       SystemSubcommand::Uninstall => crate::bootstrap::run(Self::scope()),
     }
   }

@@ -18,7 +18,13 @@ use tracing::{debug, info, warn};
 use super::{
   RefLineage,
   Scope,
-  config::{Installer, PositionalKind, ScopePaths, SourcesConfig, classify_positional},
+  config::{
+    Installer,
+    PositionalKind,
+    ScopePaths,
+    SourcesConfig,
+    classify_positional,
+  },
   conflict::{
     AutoSync,
     DIRTY_SOURCE_MARKER,
@@ -405,7 +411,10 @@ fn dirty_adoption_candidates(working_dir: Option<&Path>) -> [Option<&Path>; 2] {
 /// rather than surfaced, because adoption itself is what is being
 /// attempted and a probe of an unrelated directory failing is not its
 /// business.
-fn dirty_adoption_warning(remote: &str, working_dir: Option<&Path>) -> Option<String> {
+fn dirty_adoption_warning(
+  remote: &str,
+  working_dir: Option<&Path>,
+) -> Option<String> {
   for dir in dirty_adoption_candidates(working_dir).into_iter().flatten() {
     if !tracks_remote(dir, remote) {
       continue;
@@ -427,11 +436,15 @@ fn dirty_adoption_warning(remote: &str, working_dir: Option<&Path>) -> Option<St
 /// `count` is the number of dirty paths rather than the full
 /// [`super::conflict::DirtyTree`], so this stays a pure string builder a
 /// test can call without a filesystem.
-fn format_dirty_adoption_warning(dir: &Path, remote: &str, count: usize) -> String {
+fn format_dirty_adoption_warning(
+  dir: &Path,
+  remote: &str,
+  count: usize,
+) -> String {
   format!(
     "{} has {count} uncommitted change(s) against {remote}.\nAdoption deploys \
-     the committed state of that remote, not what is in that tree. Commit \
-     and push first if the difference matters.",
+     the committed state of that remote, not what is in that tree. Commit and \
+     push first if the difference matters.",
     dir.display()
   )
 }
@@ -541,9 +554,7 @@ fn adopt(
   } else {
     info!("cloning {remote} into {}", paths.sources_dir.display());
   }
-  shadow
-    .fetch(remote, branch)
-    .map_err(|err| eyre!("{err}"))?;
+  shadow.fetch(remote, branch).map_err(|err| eyre!("{err}"))?;
   let head = shadow.head_sha().ok();
 
   txn.stage_state("remote-url", remote);
@@ -628,6 +639,30 @@ pub fn record_activation_at(
     &paths.state_dir,
     "active-generation",
     &generation.display().to_string(),
+  )?;
+
+  // Best-effort provenance: an SSH-session env var present at the
+  // moment of activation means this process is running over SSH,
+  // whether that is `xi <scope> switch --target-host` or a target
+  // executing a push-assembled remote command. Its absence means a
+  // genuinely local, interactive switch. This cannot see a push that
+  // bypasses xi entirely (the native-rebuild-tool path in
+  // `xi-deploy`'s `--mode sources`, which never calls this function),
+  // so "local" here means "this process's own invocation was local",
+  // not "no push has ever touched this host".
+  let applied_via = if std::env::var_os("SSH_CONNECTION").is_some()
+    || std::env::var_os("SSH_CLIENT").is_some()
+    || std::env::var_os("SSH_TTY").is_some()
+  {
+    "remote"
+  } else {
+    "local"
+  };
+  write_state_file(&paths.state_dir, "applied-via", applied_via)?;
+  write_state_file(
+    &paths.state_dir,
+    "applied-at",
+    &chrono::Utc::now().to_rfc3339(),
   )?;
 
   // The activated closure was built from whatever the clone pointed at,
@@ -852,7 +887,10 @@ mod tests {
     )
     .expect("adopt");
 
-    assert!(paths.sources_dir.join(".git").is_dir(), "the clone must land");
+    assert!(
+      paths.sources_dir.join(".git").is_dir(),
+      "the clone must land"
+    );
     assert_eq!(
       fs::read_to_string(paths.state_dir.join("sources-head"))
         .expect("read sources-head")

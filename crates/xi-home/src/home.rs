@@ -66,6 +66,7 @@ impl args::HomeArgs {
       },
       HomeSubcommand::Repl(args) => args.run(),
       HomeSubcommand::Sources(proxy) => proxy.run(Self::scope()),
+      HomeSubcommand::Status(args) => args.run(Self::scope()),
     }
   }
 }
