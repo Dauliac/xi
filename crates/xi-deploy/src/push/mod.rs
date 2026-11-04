@@ -21,10 +21,8 @@
 //!   the escape hatch if the sentinel goes missing within the window.
 //! - [`mode_sources`]  -  `--mode sources`: rsync the sources dir to the
 //!   target's scope-resolved path instead of shipping a built closure.
-//!
-//! The orchestrator that ties these together, and the CLI wiring that
-//! mounts the verb, are not written yet. See the `xi-sources-push`
-//! change for the remaining work.
+//! - [`orchestrate`]  -  ties every module above into the `xi push` verb:
+//!   resolve context, discover, select, pick a backend, dispatch.
 
 pub mod args;
 pub mod context;
@@ -32,5 +30,6 @@ pub mod discover;
 pub mod engine;
 pub mod limits;
 pub mod mode_sources;
+pub mod orchestrate;
 pub mod preflight;
 pub mod rollback;

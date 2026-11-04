@@ -74,7 +74,7 @@ pub struct Main {
   Config mgmt:  os, home, darwin, system
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
                 doctor, materialize
-  Deployment:   deploy
+  Deployment:   deploy, push
   Development:  develop, search
   Agent:        agent
   Auth:         auth
@@ -110,6 +110,7 @@ pub enum XiCommand {
 
   // -- Deployment --
   Deploy(xi_deploy::args::DeployArgs),
+  Push(xi_deploy::push::args::PushArgs),
 
   // -- Development --
   Develop(xi_develop::args::DevelopArgs),
@@ -254,16 +255,19 @@ pub enum CompletionShell {
 impl XiCommand {
   /// The sources scope this command deploys, if it is a scope verb.
   ///
-  /// Only the four config-management verbs have a scope; everything
-  /// else (`build`, `search`, `agent`, ...) is scope-less and skips the
+  /// The four config-management verbs have a fixed scope; `push` is a
+  /// fifth, with a per-invocation scope from its own `--scope` flag
+  /// (`push` has no parent verb to inherit one from). Everything else
+  /// (`build`, `search`, `agent`, ...) is scope-less and skips the
   /// installer pre-check entirely.
   #[must_use]
-  pub const fn sources_scope(&self) -> Option<xi_core::sources::Scope> {
+  pub fn sources_scope(&self) -> Option<xi_core::sources::Scope> {
     match self {
       Self::Os(..) => Some(xi_nixos::args::OsArgs::scope()),
       Self::Home(..) => Some(xi_home::args::HomeArgs::scope()),
       Self::Darwin(..) => Some(xi_darwin::args::DarwinArgs::scope()),
       Self::System(..) => Some(crate::system::args::SystemArgs::scope()),
+      Self::Push(args) => Some(args.sources_scope()),
       _ => None,
     }
   }
@@ -289,7 +293,8 @@ impl XiCommand {
       | Self::Doctor(..)
       | Self::Materialize(..)
       | Self::Deploy(..)
-      | Self::Repl(..) => Box::new(xi_core::checks::FlakeFeatures),
+      | Self::Repl(..)
+      | Self::Push(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Vm(args) => args.get_feature_requirements(),
       Self::Agent(..)
       | Self::Switch
@@ -623,6 +628,7 @@ impl XiCommand {
       Self::Doctor(args) => args.run(),
       Self::Materialize(args) => args.run(),
       Self::Deploy(args) => xi_deploy::detect_and_deploy(&args),
+      Self::Push(args) => xi_deploy::push::orchestrate::run(&args),
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
       Self::Repl(args) => args.run(),

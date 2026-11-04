@@ -8,6 +8,8 @@
 //! push from: `xi-sources-push` tasks.md §2.2, "resolve sources context
 //! before dispatch; refuse if sources are `Missing`".
 
+use std::collections::BTreeMap;
+
 use color_eyre::{Result, eyre::bail};
 use xi_core::sources::{
   GitopsHealth,
@@ -18,6 +20,7 @@ use xi_core::sources::{
   args::resolve_layers,
   config::{ScopePaths, SourcesConfig},
   read_state_file,
+  secrets::SecretSpec,
 };
 
 /// Resolve the sources context `scope` deploys from.
@@ -77,6 +80,24 @@ fn resolve_context_at(scope: Scope, paths: &ScopePaths) -> Result<SourcesContext
   }
 
   Ok(context)
+}
+
+/// The `[sources.secrets.<name>]` stanzas visible to `scope`, merged
+/// across the same ladder [`resolve_context`] reads (`.xi.toml` in the
+/// current directory over the Nix-module-written per-scope config).
+///
+/// Separate from [`resolve_context`] because [`SourcesContext`] has no
+/// room for a secret map - it is the on-disk *model* (refs, dirs), not
+/// configuration - and duplicating the (cheap, file-read-only) layer
+/// resolution here is simpler than growing that struct for one caller.
+///
+/// # Errors
+///
+/// Propagates a `.xi.toml` or Nix-module config parse error.
+pub fn resolve_secrets(scope: Scope) -> Result<BTreeMap<String, SecretSpec>> {
+  let paths = ScopePaths::resolve(scope);
+  let resolved = resolve_layers(SourcesConfig::default(), &paths)?;
+  Ok(resolved.secrets)
 }
 
 #[cfg(test)]
