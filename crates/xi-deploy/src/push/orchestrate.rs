@@ -35,13 +35,12 @@ use xi_core::sources::{
 
 use super::{
   args::{PushArgs, PushMode},
+  config::{self, PushConfig},
   context,
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources,
-  preflight,
-  rollback,
+  mode_sources, preflight, rollback,
 };
 use crate::target::ProfileKind;
 
@@ -56,7 +55,7 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name:    String,
+  pub name: String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
@@ -80,7 +79,11 @@ impl PushReport {
   /// The targets that failed, in selection order.
   #[must_use]
   pub fn failures(&self) -> Vec<&TargetResult> {
-    self.results.iter().filter(|result| result.outcome.is_err()).collect()
+    self
+      .results
+      .iter()
+      .filter(|result| result.outcome.is_err())
+      .collect()
   }
 }
 
@@ -107,10 +110,32 @@ pub fn run(args: &PushArgs) -> Result<()> {
 
   let flake_ref = context.sources_dir.display().to_string();
   let secrets = context::resolve_secrets(scope)?;
+  // The same literal `.xi.toml` the `[sources]` ladder reads
+  // (`xi_core::sources::args::resolve_layers`): the inventory describes
+  // *other* machines, so it has no per-scope Nix-module rung of its own
+  // and is read once, from the operator's own config repo.
+  let inventory = PushConfig::from_toml_file(std::path::Path::new(".xi.toml"))?;
+  // The build-location ladder's third rung: a `[push] remote-build`
+  // table the Nix module wrote into the same per-scope file
+  // `[sources]`'s own Nix-module rung reads
+  // (`xi_core::sources::config::ScopePaths::resolve(scope).config_file`).
+  let nix_module_remote_build = PushConfig::from_toml_file(
+    &xi_core::sources::config::ScopePaths::resolve(scope).config_file,
+  )?
+  .remote_build;
   let nix = CliNix;
   let transport = SshTransport;
 
-  let report = execute(args, &context, &flake_ref, &secrets, &nix, &transport)?;
+  let report = execute(
+    args,
+    &context,
+    &flake_ref,
+    &secrets,
+    &inventory,
+    nix_module_remote_build,
+    &nix,
+    &transport,
+  )?;
 
   for result in &report.results {
     match &result.outcome {
@@ -172,20 +197,26 @@ fn refuse_if_dirty(context: &SourcesContext, force_dirty: bool) -> Result<()> {
 /// per-target failure is *not* an error here - it is recorded in the
 /// returned [`PushReport`], so the caller can decide (via
 /// `--fail-fast`'s effect on which targets even ran) how to react.
+#[expect(clippy::too_many_arguments, reason = "every argument is load-bearing")]
 pub fn execute(
   args: &PushArgs,
   context: &SourcesContext,
   flake_ref: &str,
   secrets: &BTreeMap<String, SecretSpec>,
+  inventory: &PushConfig,
+  nix_module_remote_build: Option<bool>,
   nix: &dyn Nix,
   transport: &dyn Transport,
 ) -> Result<PushReport> {
   let all_targets = discover::discover(nix, flake_ref)?;
-  let selected = discover::select(&all_targets, &args.targets, args.on.as_deref())?;
-  let targets: Vec<PushTarget> = selected.into_iter().cloned().collect();
+  let selected =
+    discover::select(&all_targets, &args.targets, args.on.as_deref())?;
+  let targets: Vec<PushTarget> =
+    config::apply_inventory(selected.into_iter().cloned().collect(), inventory);
 
   let colmena_present = discover::has_colmena_hive(nix, flake_ref)?;
-  let backend = discover::detect_backend(args.backend, &targets, colmena_present);
+  let backend =
+    discover::detect_backend(args.backend, &targets, colmena_present);
 
   if backend != ResolvedBackend::Builtin {
     delegate(backend, flake_ref, args, &targets)?;
@@ -193,7 +224,7 @@ pub fn execute(
       results: targets
         .iter()
         .map(|target| TargetResult {
-          name:    target.addr.name.clone(),
+          name: target.addr.name.clone(),
           outcome: Ok(()),
         })
         .collect(),
@@ -211,7 +242,18 @@ pub fn execute(
         let aborted = &aborted;
         let name = target.addr.name.clone();
         let handle = scope.spawn(move || {
-          push_one(nix, transport, limits, target, args, context, secrets, aborted)
+          push_one(
+            nix,
+            transport,
+            limits,
+            target,
+            args,
+            context,
+            secrets,
+            inventory,
+            nix_module_remote_build,
+            aborted,
+          )
         });
         (name, handle)
       })
@@ -226,9 +268,9 @@ pub fn execute(
         // so there is no "whole run" to abort cleanly, and `PushReport`
         // can say "this one target panicked" exactly as it says "this
         // one target's activation failed".
-        let outcome = handle.join().unwrap_or_else(|_| {
-          Err(eyre!("push worker for {name} panicked"))
-        });
+        let outcome = handle
+          .join()
+          .unwrap_or_else(|_| Err(eyre!("push worker for {name} panicked")));
         TargetResult { name, outcome }
       })
       .collect()
@@ -256,21 +298,21 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref:         Some(flake_ref.to_owned()),
-    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on:                None,
-    backend:           Some(backend.as_str().to_owned()),
-    dry:               false,
-    no_nom:            false,
-    skip_checks:       false,
+    flake_ref: Some(flake_ref.to_owned()),
+    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on: None,
+    backend: Some(backend.as_str().to_owned()),
+    dry: false,
+    no_nom: false,
+    skip_checks: false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout:   if args.magic_rollback > 0 {
+    confirm_timeout: if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace:        false,
-    extra_args:        Vec::new(),
+    show_trace: false,
+    extra_args: Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
@@ -294,6 +336,8 @@ fn push_one(
   args: &PushArgs,
   context: &SourcesContext,
   secrets: &BTreeMap<String, SecretSpec>,
+  inventory: &PushConfig,
+  nix_module_remote_build: Option<bool>,
   aborted: &AtomicBool,
 ) -> Result<()> {
   // Checked again just after every `apply` permit acquisition below: a
@@ -310,12 +354,33 @@ fn push_one(
   };
   check_aborted()?;
 
+  let remote_build = config::resolve_remote_build(
+    args.remote_build,
+    &target.addr.name,
+    inventory,
+    nix_module_remote_build,
+  );
+  let mode = args.effective_mode(remote_build);
+  if mode == PushMode::Sources && args.copy_via == super::args::CopyVia::Target
+  {
+    bail!(
+      "the build-location ladder resolved {} to --mode sources, which never \
+       copies a closure from this machine, so --copy-via target has \
+       nothing to choose",
+      target.addr.name
+    );
+  }
+
   let report = preflight::run(transport, target, args.interactive_sudo)?;
   if !report.ok() {
     if args.fail_fast {
       aborted.store(true, Ordering::SeqCst);
     }
-    bail!("preflight failed on {}: {}", target.addr.name, report.summary());
+    bail!(
+      "preflight failed on {}: {}",
+      target.addr.name,
+      report.summary()
+    );
   }
 
   upload_secrets(
@@ -327,7 +392,7 @@ fn push_one(
     args.interactive_sudo,
   )?;
 
-  match args.mode {
+  match mode {
     PushMode::Sources => {
       let _permit = limits.apply.acquire();
       check_aborted()?;
@@ -361,7 +426,9 @@ fn push_one(
 
       let _permit = limits.apply.acquire();
       check_aborted()?;
-      if let Err(e) = transport.copy_closure(&target.addr, &store_path, args.copy_via) {
+      if let Err(e) =
+        transport.copy_closure(&target.addr, &store_path, args.copy_via)
+      {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
         }
@@ -369,8 +436,10 @@ fn push_one(
       }
 
       let script = activation_script(target, &store_path);
-      let outcome = transport
-        .run(&target.addr, &RemoteCommand::elevated(script, args.interactive_sudo))?;
+      let outcome = transport.run(
+        &target.addr,
+        &RemoteCommand::elevated(script, args.interactive_sudo),
+      )?;
       if !outcome.success {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
@@ -442,7 +511,13 @@ fn upload_secrets(
     let local = secret.source_from(&context.sources_dir);
     transport
       .upload_secret(&target.addr, &local, secret, interactive_sudo)
-      .map_err(|e| eyre!("uploading secret '{}' to {}: {e}", secret.name, target.addr.name))?;
+      .map_err(|e| {
+        eyre!(
+          "uploading secret '{}' to {}: {e}",
+          secret.name,
+          target.addr.name
+        )
+      })?;
   }
   Ok(())
 }
@@ -458,7 +533,10 @@ fn upload_secrets(
 /// deploy-rs does for the same reason.
 #[must_use]
 fn activation_script(target: &PushTarget, store_path: &str) -> String {
-  let register = format!("nix-env --profile {} --set {store_path}", target.profile_path);
+  let register = format!(
+    "nix-env --profile {} --set {store_path}",
+    target.profile_path
+  );
   match &target.kind {
     ProfileKind::NixOS => {
       format!("{register} && {store_path}/bin/switch-to-configuration switch")
@@ -489,7 +567,7 @@ mod tests {
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
     outputs: Vec<(&'static str, serde_json::Value)>,
-    built:   Mutex<Vec<String>>,
+    built: Mutex<Vec<String>>,
     build_fails: bool,
   }
 
@@ -522,7 +600,11 @@ mod tests {
       if self.build_fails {
         bail!("build failed for {installable}");
       }
-      self.built.lock().expect("built lock").push(installable.to_owned());
+      self
+        .built
+        .lock()
+        .expect("built lock")
+        .push(installable.to_owned());
       Ok(format!("/nix/store/fake-{installable}"))
     }
   }
@@ -531,21 +613,31 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls:     Mutex<Vec<RemoteCommand>>,
-    copy_calls:    Mutex<Vec<(String, String)>>,
-    secret_calls:  Mutex<Vec<String>>,
-    sync_calls:    Mutex<Vec<String>>,
+    run_calls: Mutex<Vec<RemoteCommand>>,
+    copy_calls: Mutex<Vec<(String, String)>>,
+    secret_calls: Mutex<Vec<String>>,
+    sync_calls: Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
   impl Transport for FixtureTransport {
-    fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
-      self.run_calls.lock().expect("run_calls lock").push(cmd.clone());
+    fn run(
+      &self,
+      _target: &TargetAddr,
+      cmd: &RemoteCommand,
+    ) -> Result<Outcome> {
+      self
+        .run_calls
+        .lock()
+        .expect("run_calls lock")
+        .push(cmd.clone());
       if cmd.script == "true" {
         return Ok(Outcome::ok(""));
       }
       if cmd.script.starts_with("df -kP") {
-        return Ok(Outcome::ok("/dev/sda1 100000000 10000000 90000000 11% /nix"));
+        return Ok(Outcome::ok(
+          "/dev/sda1 100000000 10000000 90000000 11% /nix",
+        ));
       }
       if cmd.script == "sudo -n true" {
         return Ok(Outcome::ok(""));
@@ -648,7 +740,9 @@ mod tests {
       excludes: &[&str],
       interactive_sudo: bool,
     ) -> Result<()> {
-      self.0.sync_dir(target, local, remote, excludes, interactive_sudo)
+      self
+        .0
+        .sync_dir(target, local, remote, excludes, interactive_sudo)
     }
   }
 
@@ -670,18 +764,26 @@ mod tests {
 
   fn args(mode: PushMode) -> PushArgs {
     PushArgs {
-      targets:          vec!["web1".to_owned()],
-      on:               None,
-      backend:          PushBackend::Auto,
-      phase:            "activate".to_owned(),
+      mode: Some(mode),
+      ..args_with_mode(None)
+    }
+  }
+
+  fn args_with_mode(mode: Option<PushMode>) -> PushArgs {
+    PushArgs {
+      targets: vec!["web1".to_owned()],
+      on: None,
+      backend: PushBackend::Auto,
+      phase: "activate".to_owned(),
       mode,
-      magic_rollback:   0,
-      parallel:         1,
+      remote_build: None,
+      magic_rollback: 0,
+      parallel: 1,
       interactive_sudo: false,
-      copy_via:         PushCopyVia::Local,
-      fail_fast:        false,
-      force_dirty:      false,
-      scope:            super::super::args::PushScope::System,
+      copy_via: PushCopyVia::Local,
+      fail_fast: false,
+      force_dirty: false,
+      scope: super::super::args::PushScope::System,
     }
   }
 
@@ -692,9 +794,17 @@ mod tests {
     let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
-    let report =
-      execute(&args(PushMode::Closure), &context, ".", &secrets, &nix, &transport)
-        .expect("executes");
+    let report = execute(
+      &args(PushMode::Closure),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
 
     assert!(report.ok(), "{:?}", report.results);
     assert_eq!(report.results.len(), 1);
@@ -708,7 +818,10 @@ mod tests {
       .expect("ran something")
       .script
       .clone();
-    assert!(last.contains("switch-to-configuration switch"), "got: {last}");
+    assert!(
+      last.contains("switch-to-configuration switch"),
+      "got: {last}"
+    );
   }
 
   #[test]
@@ -718,9 +831,17 @@ mod tests {
     let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
-    let report =
-      execute(&args(PushMode::Closure), &context, ".", &secrets, &nix, &transport)
-        .expect("executes");
+    let report = execute(
+      &args(PushMode::Closure),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
 
     assert!(!report.ok());
     assert_eq!(transport.0.copy_calls.lock().expect("lock").len(), 0);
@@ -733,14 +854,112 @@ mod tests {
     let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
-    let report =
-      execute(&args(PushMode::Sources), &context, ".", &secrets, &nix, &transport)
-        .expect("executes");
+    let report = execute(
+      &args(PushMode::Sources),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
 
     assert!(report.ok(), "{:?}", report.results);
-    assert!(nix.built.lock().expect("lock").is_empty(), "closure mode only");
+    assert!(
+      nix.built.lock().expect("lock").is_empty(),
+      "closure mode only"
+    );
     assert_eq!(transport.sync_calls.lock().expect("lock").len(), 1);
     assert_eq!(transport.copy_calls.lock().expect("lock").len(), 0);
+  }
+
+  #[test]
+  fn with_no_mode_flag_a_toml_remote_build_default_picks_sources_mode() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      remote_build: Some(true),
+      hosts: Vec::new(),
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert!(
+      nix.built.lock().expect("lock").is_empty(),
+      "the ladder resolved remote-build=true, so this must behave as \
+       --mode sources and never build locally"
+    );
+    assert_eq!(transport.sync_calls.lock().expect("lock").len(), 1);
+  }
+
+  #[test]
+  fn an_explicit_mode_flag_overrides_the_toml_remote_build_default() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      remote_build: Some(true),
+      hosts: Vec::new(),
+    };
+
+    let report = execute(
+      &args(PushMode::Closure),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(
+      transport.sync_calls.lock().expect("lock").len(),
+      0,
+      "--mode closure must win over the ladder's remote-build=true"
+    );
+    assert_eq!(nix.built.lock().expect("lock").len(), 1);
+  }
+
+  #[test]
+  fn with_no_mode_flag_the_nix_module_default_picks_sources_mode() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      Some(true),
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(transport.sync_calls.lock().expect("lock").len(), 1);
   }
 
   #[test]
@@ -752,19 +971,27 @@ mod tests {
     secrets.insert(
       "ssh-key".to_owned(),
       SecretSpec {
-        name:        "ssh-key".to_owned(),
-        source:      std::path::PathBuf::from("./ssh-key"),
+        name: "ssh-key".to_owned(),
+        source: std::path::PathBuf::from("./ssh-key"),
         destination: std::path::PathBuf::from("/run/keys/ssh"),
-        owner:       "root".to_owned(),
-        group:       None,
-        mode:        "0600".to_owned(),
-        upload_at:   UploadAt::PreActivate,
+        owner: "root".to_owned(),
+        group: None,
+        mode: "0600".to_owned(),
+        upload_at: UploadAt::PreActivate,
       },
     );
 
-    let report =
-      execute(&args(PushMode::Closure), &context, ".", &secrets, &nix, &transport)
-        .expect("executes");
+    let report = execute(
+      &args(PushMode::Closure),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
 
     assert!(report.ok(), "{:?}", report.results);
     let calls = transport.secret_calls.lock().expect("lock").clone();
@@ -791,8 +1018,17 @@ mod tests {
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
 
-    let report =
-      execute(&push_args, &context, ".", &secrets, &nix, &transport).expect("executes");
+    let report = execute(
+      &push_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
 
     assert!(!report.ok());
     assert_eq!(report.results.len(), 2);
@@ -820,18 +1056,24 @@ mod tests {
     push_args.fail_fast = true;
     push_args.parallel = 1;
 
-    let report =
-      execute(&push_args, &context, ".", &secrets, &nix, &transport).expect("executes");
+    let report = execute(
+      &push_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
 
     assert!(!report.ok());
     assert!(
-      report
-        .failures()
-        .iter()
-        .any(|r| {
-          format!("{}", r.outcome.as_ref().expect_err("a fail-fast failure"))
-            .contains("skipped")
-        }),
+      report.failures().iter().any(|r| {
+        format!("{}", r.outcome.as_ref().expect_err("a fail-fast failure"))
+          .contains("skipped")
+      }),
       "with --parallel 1 the second target must observe the first's failure: {:?}",
       report.results
     );
@@ -859,13 +1101,15 @@ mod tests {
     assert!(run(&["commit", "--quiet", "-m", "init"]).success());
   }
 
-  fn context_with_working_dir(working_dir: std::path::PathBuf) -> SourcesContext {
+  fn context_with_working_dir(
+    working_dir: std::path::PathBuf,
+  ) -> SourcesContext {
     SourcesContext {
-      sources_id:          SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir:         working_dir.parent().expect("parent").join("sources"),
-      state_dir:           working_dir.parent().expect("parent").join("state"),
-      working_dir:         Some(working_dir),
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: working_dir.parent().expect("parent").join("sources"),
+      state_dir: working_dir.parent().expect("parent").join("state"),
+      working_dir: Some(working_dir),
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -905,11 +1149,11 @@ mod tests {
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id:          SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir:         root.path().join("sources"),
-      state_dir:           root.path().join("state"),
-      working_dir:         None,
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: root.path().join("sources"),
+      state_dir: root.path().join("state"),
+      working_dir: None,
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());

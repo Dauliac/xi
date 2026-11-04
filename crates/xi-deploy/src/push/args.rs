@@ -133,16 +133,14 @@ impl FromStr for Phase {
       "disko" => Ok(Self::Disko),
       "install" => Ok(Self::Install),
       "activate" => Ok(Self::Activate),
-      other => {
-        Err(format!(
-          "unknown phase '{other}'; expected one of {}",
-          Self::ALL
-            .iter()
-            .map(|p| p.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-        ))
-      },
+      other => Err(format!(
+        "unknown phase '{other}'; expected one of {}",
+        Self::ALL
+          .iter()
+          .map(|p| p.as_str())
+          .collect::<Vec<_>>()
+          .join(", ")
+      )),
     }
   }
 }
@@ -191,8 +189,24 @@ pub struct PushArgs {
   pub phase: String,
 
   /// Evaluate locally and copy a closure, or sync the sources dir
-  #[arg(long, value_enum, default_value_t = PushMode::Closure)]
-  pub mode: PushMode,
+  ///
+  /// Left unset, the build-location ladder decides instead: the
+  /// `--remote-build` flag, then `.xi.toml [push] remote-build`, then
+  /// the `xi.sources.push.remoteBuild` Nix-module default, then
+  /// `closure`. Set explicitly, `--mode` overrides the ladder outright.
+  #[arg(long, value_enum)]
+  pub mode: Option<PushMode>,
+
+  /// Build on the target instead of copying a closure in
+  ///
+  /// The CLI spelling of the build-location ladder's top rung, matching
+  /// deploy-rs's `remote-build` terminology: `true` is `--mode sources`
+  /// (the target builds from its own rsync'd sources dir), `false` is
+  /// `--mode closure`. Takes precedence over `.xi.toml [push]
+  /// remote-build` and the Nix-module default, but not over an explicit
+  /// `--mode`.
+  #[arg(long)]
+  pub remote_build: Option<bool>,
 
   /// Seconds to confirm the new generation in before rolling back (0 = off)
   #[arg(long, default_value_t = 0, value_name = "SECONDS")]
@@ -242,6 +256,23 @@ impl PushArgs {
     self.scope.into()
   }
 
+  /// The mode this push actually runs under: `--mode` if given,
+  /// otherwise the build-location ladder's answer.
+  ///
+  /// `remote_build` is the ladder's already-resolved verdict (see
+  /// `push::config::resolve_remote_build`), not re-derived here: this
+  /// method only owns the one remaining precedence rule the ladder
+  /// itself does not know about - an explicit `--mode` outranks every
+  /// rung of it.
+  #[must_use]
+  pub const fn effective_mode(&self, remote_build: bool) -> PushMode {
+    match self.mode {
+      Some(mode) => mode,
+      None if remote_build => PushMode::Sources,
+      None => PushMode::Closure,
+    }
+  }
+
   /// Reject flag combinations that cannot both be honoured.
   ///
   /// # Errors
@@ -263,7 +294,8 @@ impl PushArgs {
       ));
     }
 
-    if self.mode == PushMode::Sources && self.copy_via == CopyVia::Target {
+    if self.mode == Some(PushMode::Sources) && self.copy_via == CopyVia::Target
+    {
       return Err(eyre!(
         "--mode sources never copies a closure from this machine, so \
          --copy-via target has nothing to choose; drop one of the two flags"
@@ -304,5 +336,63 @@ mod tests {
     for phase in [Phase::Kexec, Phase::Disko, Phase::Install] {
       assert!(!phase.is_implemented(), "{phase} should defer to bootstrap");
     }
+  }
+
+  fn args(mode: Option<PushMode>) -> PushArgs {
+    PushArgs {
+      targets: Vec::new(),
+      on: None,
+      backend: PushBackend::Auto,
+      phase: "activate".to_owned(),
+      mode,
+      remote_build: None,
+      magic_rollback: 0,
+      parallel: 1,
+      interactive_sudo: false,
+      copy_via: CopyVia::Local,
+      fail_fast: false,
+      force_dirty: false,
+      scope: PushScope::System,
+    }
+  }
+
+  #[test]
+  fn an_explicit_mode_outranks_the_build_location_ladder() {
+    assert_eq!(
+      args(Some(PushMode::Closure)).effective_mode(true),
+      PushMode::Closure,
+      "--mode closure must win even though the ladder says remote-build"
+    );
+    assert_eq!(
+      args(Some(PushMode::Sources)).effective_mode(false),
+      PushMode::Sources,
+      "--mode sources must win even though the ladder says local-build"
+    );
+  }
+
+  #[test]
+  fn with_no_mode_flag_the_ladder_answer_picks_the_mode() {
+    assert_eq!(args(None).effective_mode(true), PushMode::Sources);
+    assert_eq!(args(None).effective_mode(false), PushMode::Closure);
+  }
+
+  #[test]
+  fn an_explicit_sources_mode_still_conflicts_with_copy_via_target() {
+    let mut push_args = args(Some(PushMode::Sources));
+    push_args.copy_via = CopyVia::Target;
+    let err = push_args.validate().expect_err("conflicting flags");
+    assert!(format!("{err}").contains("--copy-via target"), "got: {err}");
+  }
+
+  #[test]
+  fn no_mode_flag_at_all_does_not_trip_the_copy_via_conflict_check() {
+    let mut push_args = args(None);
+    push_args.copy_via = CopyVia::Target;
+    assert!(
+      push_args.validate().is_ok(),
+      "the static check only fires on an explicit --mode sources; the \
+       ladder's own answer is resolved later, with the sources context \
+       this layer does not have"
+    );
   }
 }

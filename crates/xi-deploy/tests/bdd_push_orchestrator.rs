@@ -24,6 +24,7 @@ use tempfile::TempDir;
 use xi_core::sources::{Scope, SourcesContext, SourcesId};
 use xi_deploy::push::{
   args::{CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope},
+  config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate,
 };
@@ -87,7 +88,11 @@ impl Nix for FixtureNix {
   }
 
   fn build(&self, installable: &str) -> Result<String> {
-    self.built.lock().expect("built lock").push(installable.to_owned());
+    self
+      .built
+      .lock()
+      .expect("built lock")
+      .push(installable.to_owned());
     Ok("/nix/store/fake-web1-system".to_owned())
   }
 }
@@ -96,17 +101,23 @@ impl Nix for FixtureNix {
 #[derive(Default)]
 struct FixtureTransport {
   copy_calls: Mutex<Vec<(String, String)>>,
-  run_calls:  Mutex<Vec<RemoteCommand>>,
+  run_calls: Mutex<Vec<RemoteCommand>>,
 }
 
 impl Transport for FixtureTransport {
   fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
-    self.run_calls.lock().expect("run_calls lock").push(cmd.clone());
+    self
+      .run_calls
+      .lock()
+      .expect("run_calls lock")
+      .push(cmd.clone());
     if cmd.script == "true" || cmd.script == "sudo -n true" {
       return Ok(Outcome::ok(""));
     }
     if cmd.script.starts_with("df -kP") {
-      return Ok(Outcome::ok("/dev/sda1 100000000 10000000 90000000 11% /nix"));
+      return Ok(Outcome::ok(
+        "/dev/sda1 100000000 10000000 90000000 11% /nix",
+      ));
     }
     if cmd.script.starts_with("command -v") {
       return Ok(Outcome::ok(""));
@@ -152,18 +163,19 @@ impl Transport for FixtureTransport {
 
 fn push_args() -> PushArgs {
   PushArgs {
-    targets:          vec!["web1".to_owned()],
-    on:               None,
-    backend:          PushBackend::Auto,
-    phase:            "activate".to_owned(),
-    mode:             PushMode::Closure,
-    magic_rollback:   0,
-    parallel:         1,
+    targets: vec!["web1".to_owned()],
+    on: None,
+    backend: PushBackend::Auto,
+    phase: "activate".to_owned(),
+    mode: Some(PushMode::Closure),
+    remote_build: None,
+    magic_rollback: 0,
+    parallel: 1,
     interactive_sudo: false,
-    copy_via:         CopyVia::Local,
-    fail_fast:        false,
-    force_dirty:      false,
-    scope:            PushScope::System,
+    copy_via: CopyVia::Local,
+    fail_fast: false,
+    force_dirty: false,
+    scope: PushScope::System,
   }
 }
 
@@ -183,8 +195,17 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
   assert_eq!(args.phases().expect("phases parse"), vec![Phase::Activate]);
   args.validate().expect("args are internally consistent");
 
-  let report = orchestrate::execute(&args, &context, &flake_ref, &secrets, &nix, &transport)
-    .expect("push executes against the real git fixture");
+  let report = orchestrate::execute(
+    &args,
+    &context,
+    &flake_ref,
+    &secrets,
+    &PushConfig::default(),
+    None,
+    &nix,
+    &transport,
+  )
+  .expect("push executes against the real git fixture");
 
   assert!(report.ok(), "report: {:?}", report.results);
   assert_eq!(report.results.len(), 1);
@@ -224,8 +245,17 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
   let mut args = push_args();
   args.targets = vec!["does-not-exist".to_owned()];
 
-  let err = orchestrate::execute(&args, &context, &flake_ref, &secrets, &nix, &transport)
-    .expect_err("no such target");
+  let err = orchestrate::execute(
+    &args,
+    &context,
+    &flake_ref,
+    &secrets,
+    &PushConfig::default(),
+    None,
+    &nix,
+    &transport,
+  )
+  .expect_err("no such target");
   assert!(format!("{err}").contains("web1"), "got: {err}");
   assert!(transport.copy_calls.lock().expect("lock").is_empty());
 }
