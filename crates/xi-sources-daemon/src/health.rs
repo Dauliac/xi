@@ -162,12 +162,12 @@ pub enum TickOutcome {
   /// `sources_head` moved forward.
   Advanced {
     /// Where it was.
-    from: Option<Sha>,
+    from:         Option<Sha>,
     /// Where it is now.
-    to:   Sha,
+    to:           Sha,
     /// A hook that failed after the advance landed. The advance stands:
     /// a hook is a notification, not a precondition.
-    hook: Option<DegradedReason>,
+    hook:         Option<DegradedReason>,
     /// What `sync_mode` says should happen to the working dir now. See
     /// [`xi_core::sources::conflict::post_advance`] for the mapping; the
     /// daemon's job is only to report this, not to run `QueueSync` or
@@ -256,9 +256,9 @@ mod tests {
   #[test]
   fn an_advance_with_a_failed_hook_is_still_an_advance() {
     let outcome = TickOutcome::Advanced {
-      from: None,
-      to:   "cafe".to_owned(),
-      hook: Some(DegradedReason::HookFailed {
+      from:         None,
+      to:           "cafe".to_owned(),
+      hook:         Some(DegradedReason::HookFailed {
         hook: "on_switch".to_owned(),
         code: 3,
       }),

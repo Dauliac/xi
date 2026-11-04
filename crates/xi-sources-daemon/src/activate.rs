@@ -1,4 +1,5 @@
-//! Build, activate and register a generation after a successful advance.
+//! Build, gate, activate and register a generation after a successful
+//! advance.
 //!
 //! `xi-sources-gitops` section 6.2: once a tick has fast-forwarded the
 //! sources dir ([`crate::tick::run`] returning `Advanced`), *this* module
@@ -14,9 +15,25 @@
 //! (`xi_core::sources::switch::record_activation_at`) exactly as an
 //! interactive switch would.
 //!
-//! [`run`] therefore does two things only: exec the switch, and - on
-//! success - read back the `active-generation` that exec just wrote and
-//! register it on the daemon's own named profile
+//! # The build-only probe
+//!
+//! The `machineId` guard (section 7.2) and the reboot-window gate
+//! (section 10.2) both need to inspect the generation *before* deciding
+//! whether to activate it - a NixOS closure's `etc/machine-id` and
+//! `kernel` symlink only exist once something has actually been built.
+//! Building twice (once to probe, once for real inside `xi switch`)
+//! sounds wasteful but is not: both invocations resolve the exact same
+//! installable through the exact same `xi <verb> build`/`switch`
+//! machinery (no second flake-attribute convention is invented here),
+//! and Nix's own store cache makes the second invocation a lookup rather
+//! than a rebuild. [`probe_build`] runs `xi <verb> build --out-link
+//! <path>` - the existing, already-public `build` subcommand, which
+//! resolves an adopted scope's installable exactly like `switch` does
+//! but stops short of activating - and returns the realised store path.
+//!
+//! [`run`] therefore: probes, gates, execs the real switch, and - on
+//! success - reads back the `active-generation` that exec just wrote and
+//! registers it on the daemon's own named profile
 //! ([`crate::profile::register_generation`]), the profile
 //! `register_generation`'s own doc says is section 6.2's job.
 //!
@@ -24,29 +41,23 @@
 //!
 //! The daemon's own `Singleton` gate ([`crate::singleton`]) and the
 //! control socket's per-tick bookkeeping ([`crate::control`]) must both
-//! have been released *before* [`run`] is called - it execs a process
-//! that takes `SourcesLock` itself, and a caller that still held
-//! anything the callee also takes would deadlock. [`run`] takes no lock
-//! of its own and asserts nothing about the caller's state; the ordering
-//! is enforced by where `main.rs` calls it (after `control.end_tick()`,
-//! outside the `Singleton` permit), not by this module.
-//!
-//! # Pre-activation gates
-//!
-//! The `machineId` guard ([[xi-sources-gitops]] section 7.2) and the
-//! reboot-window check (section 10.2) run *before* this module decides to
-//! exec switch at all - they are what [`run`]'s caller consults first,
-//! short-circuiting to [`crate::health::DegradedReason::MachineIdMismatch`]
-//! or `TickOutcome::Deferred` without ever reaching this module. Fully
-//! wired by the sibling `xi-bqf` / `xi-96k` work.
+//! have been released *before* [`run`] is called - it execs processes
+//! that take `SourcesLock` themselves (both the probe build and the real
+//! switch go through `xi <verb> build`/`switch`'s case-2 path), and a
+//! caller that still held anything the callee also takes would deadlock.
+//! [`run`] takes no lock of its own and asserts nothing about the
+//! caller's state; the ordering is enforced by where `main.rs` calls it
+//! (after `control.end_tick()`, outside the `Singleton` permit), not by
+//! this module.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use xi_core::sources::Scope;
 
 use crate::{
   exec::{Exec, Invocation},
   health::DegradedReason,
+  machine_id,
   profile,
 };
 
@@ -121,16 +132,31 @@ pub const fn resolve_switch_verb_with(
   }
 }
 
-/// Everything [`run`] needs to exec the switch and register its result.
+/// Everything [`run`] needs to probe, gate, exec the switch, and register
+/// its result.
 #[derive(Debug, Clone, Copy)]
 pub struct ActivateInputs<'a> {
+  /// This host's identifying token ([`machine_id::host_token`]), resolved
+  /// once by the caller. `None` means "could not be determined" - the
+  /// guard's own "cannot decide" case, not "no guard configured".
+  pub host_token:        Option<&'a str>,
   /// Which concrete verb to exec.
-  pub verb:         SwitchVerb,
+  pub verb:              SwitchVerb,
   /// The scope's state dir - where `active-generation` lands after a
   /// successful switch, and where this module reads it back from.
-  pub state_dir:    &'a Path,
+  pub state_dir:         &'a Path,
   /// The daemon's own named profile to register the result on.
-  pub profile_path: &'a Path,
+  pub profile_path:      &'a Path,
+  /// `--out-link` target for the build-only probe
+  /// ([`probe_build`]) that [`run`] consults the pre-activation gates
+  /// against. Owned by the caller so a test can pre-populate it with a
+  /// fixture closure without a real `nix build` ever running.
+  pub probe_out_link:    &'a Path,
+  /// Operator override for the `machineId` guard. The daemon itself
+  /// never sets this - it is CLI-only, surfaced on `xi-sources-daemon`
+  /// as `--ignore-machine-id`, because an automated bypass of a safety
+  /// check is not a safety check.
+  pub ignore_machine_id: bool,
 }
 
 /// What activation did.
@@ -144,20 +170,39 @@ pub enum ActivateOutcome {
     /// precondition the activation can be rolled back over.
     hook: Option<DegradedReason>,
   },
-  /// `xi <verb> switch` failed to spawn or exited non-zero.
+  /// The build-only probe failed, a pre-activation gate refused, or
+  /// `xi <verb> switch` itself failed to spawn or exited non-zero. The
+  /// sources dir already advanced (that happened in `tick::run`); this
+  /// is purely "nothing got built/activated this time".
   Failed(DegradedReason),
 }
 
-/// Exec `xi <verb> switch` and, on success, register what it activated.
+/// Probe, gate, exec `xi <verb> switch`, and - on success - register
+/// what it activated.
 ///
-/// No positional argument is passed: this is exactly the case
-/// `xi_core::sources::switch::prepare`'s case 2 handles for an adopted
-/// scope - resolve the conflict policy, take the sources lock, build,
-/// activate, and write `active-generation`. The daemon's only remaining
-/// job is to read that value back and hand it to
-/// [`profile::register_generation`].
+/// The probe ([`probe_build`]) and the `machineId` guard both run before
+/// any attempt to exec the real switch: a mismatch (or `--ignore-
+/// machine-id` not covering it) refuses without ever touching
+/// `SourcesLock` for the real activation. When they pass, the real
+/// switch is exactly the case `xi_core::sources::switch::prepare`'s case
+/// 2 handles for an adopted scope - resolve the conflict policy, take
+/// the sources lock, build, activate, and write `active-generation`.
+/// The daemon's only remaining job is to read that value back and hand
+/// it to [`profile::register_generation`].
 #[must_use]
 pub fn run(exec: &dyn Exec, inputs: &ActivateInputs<'_>) -> ActivateOutcome {
+  let store_path = match probe_build(exec, inputs) {
+    Ok(store_path) => store_path,
+    Err(reason) => return ActivateOutcome::Failed(reason),
+  };
+
+  if !inputs.ignore_machine_id
+    && let Some(reason) =
+      check_machine_id(inputs.host_token, store_path.as_deref())
+  {
+    return ActivateOutcome::Failed(reason);
+  }
+
   let invocation = Invocation::new("xi", [inputs.verb.as_str(), "switch"]);
 
   let outcome = match exec.run(&invocation) {
@@ -180,6 +225,73 @@ pub fn run(exec: &dyn Exec, inputs: &ActivateInputs<'_>) -> ActivateOutcome {
   }
 }
 
+/// Build (but do not activate) the pending generation, for the
+/// pre-activation gates to inspect.
+///
+/// Runs `xi <verb> build --out-link <inputs.probe_out_link>` - the
+/// existing `build` subcommand, which resolves an adopted scope's
+/// installable through the same `prepare` case 2 path `switch` uses, but
+/// returns after building rather than activating. `Ok(None)` means the
+/// build reported success but left nothing resolvable at the out-link
+/// (nothing this module can act on - the gates treat "no data" as
+/// "nothing to enforce", not as a failure); a build that fails to spawn
+/// or exits non-zero is the only case this returns `Err` for, since a
+/// generation the daemon cannot even build is not one it should go on to
+/// gate-check and activate.
+fn probe_build(
+  exec: &dyn Exec,
+  inputs: &ActivateInputs<'_>,
+) -> Result<Option<PathBuf>, DegradedReason> {
+  let out_link = inputs.probe_out_link.to_string_lossy().into_owned();
+  let invocation = Invocation::new("xi", [
+    inputs.verb.as_str(),
+    "build",
+    "--out-link",
+    &out_link,
+  ]);
+
+  let outcome = exec.run(&invocation).map_err(|err| {
+    DegradedReason::ActivationFailed {
+      detail: err.to_string(),
+    }
+  })?;
+
+  if !outcome.ok() {
+    return Err(DegradedReason::ActivationFailed {
+      detail: outcome.failure_text(),
+    });
+  }
+
+  Ok(std::fs::canonicalize(inputs.probe_out_link).ok())
+}
+
+/// The `machineId` guard ([[xi-sources-gitops]] section 7.2).
+///
+/// A generation that embeds no `etc/machine-id` at all (the common case:
+/// most NixOS configurations never set `environment.etc."machine-
+/// id"`) has nothing for this guard to compare, so it passes - the guard
+/// exists for operators who explicitly pin a per-host id, not as a
+/// blanket requirement every generation must satisfy. A probe that could
+/// not resolve a store path at all ([`probe_build`] returning `None`)
+/// gets the same treatment, for the same reason: no data is not evidence
+/// of a mismatch.
+fn check_machine_id(
+  host_token: Option<&str>,
+  store_path: Option<&Path>,
+) -> Option<DegradedReason> {
+  let generation_id = generation_machine_id(store_path?)?;
+  machine_id::guard(host_token, &generation_id).err()
+}
+
+/// Read `<store_path>/etc/machine-id`, trimmed, treating absence or a
+/// blank file as "this generation does not embed one".
+fn generation_machine_id(store_path: &Path) -> Option<String> {
+  std::fs::read_to_string(store_path.join("etc/machine-id"))
+    .ok()
+    .map(|raw| raw.trim().to_owned())
+    .filter(|s| !s.is_empty())
+}
+
 /// Read back `active-generation` and register it on the named profile.
 ///
 /// `Ok(None)` - no recorded generation - is not an error: a scope with no
@@ -190,16 +302,17 @@ fn register(
   exec: &dyn Exec,
   inputs: &ActivateInputs<'_>,
 ) -> Option<DegradedReason> {
-  let active_generation =
-    match xi_core::sources::read_state_file(inputs.state_dir, "active-generation")
-    {
-      Ok(value) => value,
-      Err(err) => {
-        return Some(DegradedReason::ProfileRegisterFailed {
-          detail: format!("could not read active-generation: {err}"),
-        });
-      },
-    };
+  let active_generation = match xi_core::sources::read_state_file(
+    inputs.state_dir,
+    "active-generation",
+  ) {
+    Ok(value) => value,
+    Err(err) => {
+      return Some(DegradedReason::ProfileRegisterFailed {
+        detail: format!("could not read active-generation: {err}"),
+      });
+    },
+  };
 
   let store_path = active_generation?;
 
@@ -261,9 +374,10 @@ mod tests {
   // -- run --------------------------------------------------------------
 
   struct World {
-    _tmp:      TempDir,
-    state_dir: std::path::PathBuf,
-    profile:   std::path::PathBuf,
+    _tmp:           TempDir,
+    state_dir:      std::path::PathBuf,
+    profile:        std::path::PathBuf,
+    probe_out_link: std::path::PathBuf,
   }
 
   impl World {
@@ -271,18 +385,27 @@ mod tests {
       let tmp = TempDir::new().expect("tempdir");
       let state_dir = tmp.path().join("state");
       let profile = tmp.path().join("profile");
+      // Deliberately not created: a probe whose out-link does not
+      // resolve to anything is the common case in these tests, and
+      // exercises "no data, nothing to enforce" the same way a probe
+      // build that ran for real but produced nothing would.
+      let probe_out_link = tmp.path().join("probe-result");
       Self {
         _tmp: tmp,
         state_dir,
         profile,
+        probe_out_link,
       }
     }
 
     fn inputs(&self) -> ActivateInputs<'_> {
       ActivateInputs {
-        verb:         SwitchVerb::Nixos,
-        state_dir:    &self.state_dir,
-        profile_path: &self.profile,
+        host_token:        None,
+        verb:              SwitchVerb::Nixos,
+        state_dir:         &self.state_dir,
+        profile_path:      &self.profile,
+        probe_out_link:    &self.probe_out_link,
+        ignore_machine_id: false,
       }
     }
 
@@ -294,17 +417,36 @@ mod tests {
       )
       .expect("write active-generation");
     }
+
+    /// Simulate a probe build that resolved a real closure embedding
+    /// `machine_id`.
+    fn stage_probe_with_machine_id(&self, machine_id: &str) {
+      let etc = self.probe_out_link.join("etc");
+      std::fs::create_dir_all(&etc).expect("mkdir etc");
+      std::fs::write(etc.join("machine-id"), machine_id)
+        .expect("write machine-id");
+    }
+  }
+
+  fn probe_invocation(world: &World) -> String {
+    format!(
+      "xi nixos build --out-link {}",
+      world.probe_out_link.display()
+    )
   }
 
   #[test]
-  fn a_successful_switch_execs_the_bare_verb_switch_invocation() {
+  fn a_successful_switch_execs_the_probe_then_the_bare_switch_invocation() {
     let world = World::new();
     let exec = RecordingExec::always_ok();
 
     let outcome = run(&exec, &world.inputs());
 
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
-    assert_eq!(exec.argv_log(), vec!["xi nixos switch".to_owned()]);
+    assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
+      "xi nixos switch".to_owned(),
+    ]);
   }
 
   #[test]
@@ -317,6 +459,7 @@ mod tests {
 
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
       "xi nixos switch".to_owned(),
       format!(
         "nix-env --profile {} --set /nix/store/abc-config",
@@ -335,13 +478,15 @@ mod tests {
     let outcome = run(&exec, &world.inputs());
 
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
-    assert_eq!(exec.argv_log(), vec!["xi nixos switch".to_owned()]);
+    assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
+      "xi nixos switch".to_owned(),
+    ]);
   }
 
   #[test]
-  fn a_failing_switch_is_reported_and_never_registers() {
+  fn a_failing_probe_build_is_reported_and_never_reaches_switch() {
     let world = World::new();
-    world.record_active_generation("/nix/store/stale-config");
     let exec = RecordingExec::always_ok().with_reply(
       1,
       "",
@@ -357,19 +502,44 @@ mod tests {
       },
       other => panic!("expected Failed, got {other:?}"),
     }
-    // Only the switch invocation ran - no `nix-env` call followed it.
-    assert_eq!(exec.argv_log(), vec!["xi nixos switch".to_owned()]);
+    // Only the probe ran - the real switch never followed it.
+    assert_eq!(exec.argv_log(), vec![probe_invocation(&world)]);
+  }
+
+  #[test]
+  fn a_failing_switch_is_reported_and_never_registers() {
+    let world = World::new();
+    world.record_active_generation("/nix/store/stale-config");
+    let exec = RecordingExec::always_ok()
+      // Probe succeeds...
+      .with_reply(0, "", "")
+      // ...but the real switch fails.
+      .with_reply(1, "", "error: activation script failed");
+
+    let outcome = run(&exec, &world.inputs());
+
+    match outcome {
+      ActivateOutcome::Failed(reason) => {
+        assert_eq!(reason.token(), "activation-failed");
+        assert!(reason.to_string().contains("activation script"));
+      },
+      other => panic!("expected Failed, got {other:?}"),
+    }
+    // No `nix-env` call followed the failed switch.
+    assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
+      "xi nixos switch".to_owned(),
+    ]);
   }
 
   #[test]
   fn a_registration_failure_does_not_undo_the_activation() {
     let world = World::new();
     world.record_active_generation("/nix/store/abc-config");
-    let exec = RecordingExec::always_ok().with_reply(0, "", "").with_reply(
-      1,
-      "",
-      "error: profile is locked",
-    );
+    let exec = RecordingExec::always_ok()
+      .with_reply(0, "", "") // probe
+      .with_reply(0, "", "") // switch
+      .with_reply(1, "", "error: profile is locked"); // nix-env
 
     let outcome = run(&exec, &world.inputs());
 
@@ -390,6 +560,111 @@ mod tests {
 
     let _ = run(&exec, &inputs);
 
-    assert_eq!(exec.argv_log(), vec!["xi home switch".to_owned()]);
+    assert_eq!(exec.argv_log(), vec![
+      format!(
+        "xi home build --out-link {}",
+        world.probe_out_link.display()
+      ),
+      "xi home switch".to_owned(),
+    ]);
+  }
+
+  // -- machineId gate -----------------------------------------------------
+
+  #[test]
+  fn a_blank_embedded_machine_id_file_activates_unconditionally() {
+    let world = World::new();
+    std::fs::create_dir_all(world.probe_out_link.join("etc"))
+      .expect("mkdir etc");
+    std::fs::write(
+      world.probe_out_link.join("etc").join("machine-id"),
+      "   \n",
+    )
+    .expect("write blank machine-id");
+    let mut inputs = world.inputs();
+    inputs.host_token = Some("AAAA");
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
+  }
+
+  #[test]
+  fn matching_embedded_machine_id_activates() {
+    let world = World::new();
+    world.stage_probe_with_machine_id("AAAA");
+    let mut inputs = world.inputs();
+    inputs.host_token = Some("AAAA");
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
+    assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
+      "xi nixos switch".to_owned(),
+    ]);
+  }
+
+  /// SC-G-007 / the spec's "Mismatched machine-id refuses" scenario,
+  /// applied to the daemon's pre-activation gate: the real switch must
+  /// never be reached.
+  #[test]
+  fn mismatched_embedded_machine_id_refuses_before_exec_ing_switch() {
+    let world = World::new();
+    world.stage_probe_with_machine_id("BBBB");
+    let mut inputs = world.inputs();
+    inputs.host_token = Some("AAAA");
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    match outcome {
+      ActivateOutcome::Failed(reason) => {
+        assert_eq!(reason.token(), "machine-id-mismatch");
+        let text = reason.to_string();
+        assert!(text.contains("AAAA"), "got: {text}");
+        assert!(text.contains("BBBB"), "got: {text}");
+      },
+      other => panic!("expected Failed, got {other:?}"),
+    }
+    // Only the probe ran - the mismatch refused before the real switch.
+    assert_eq!(exec.argv_log(), vec![probe_invocation(&world)]);
+  }
+
+  #[test]
+  fn ignore_machine_id_bypasses_a_mismatch() {
+    let world = World::new();
+    world.stage_probe_with_machine_id("BBBB");
+    let mut inputs = world.inputs();
+    inputs.host_token = Some("AAAA");
+    inputs.ignore_machine_id = true;
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
+    assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
+      "xi nixos switch".to_owned(),
+    ]);
+  }
+
+  #[test]
+  fn an_undecidable_host_token_refuses_a_generation_with_an_embedded_id() {
+    let world = World::new();
+    world.stage_probe_with_machine_id("BBBB");
+    let inputs = world.inputs(); // host_token: None
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    match outcome {
+      ActivateOutcome::Failed(reason) => {
+        assert_eq!(reason.token(), "machine-id-mismatch");
+      },
+      other => panic!("expected Failed, got {other:?}"),
+    }
   }
 }
