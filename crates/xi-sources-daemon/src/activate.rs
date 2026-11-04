@@ -31,11 +31,29 @@
 //! resolves an adopted scope's installable exactly like `switch` does
 //! but stops short of activating - and returns the realised store path.
 //!
-//! [`run`] therefore: probes, gates, execs the real switch, and - on
-//! success - reads back the `active-generation` that exec just wrote and
-//! registers it on the daemon's own named profile
-//! ([`crate::profile::register_generation`]), the profile
-//! `register_generation`'s own doc says is section 6.2's job.
+//! # The reboot-window gate
+//!
+//! "Would this activation require a reboot" only has an honest answer
+//! once the pending generation exists on disk, for the same reason the
+//! `machineId` guard needs the probe: a NixOS closure's kernel is a real
+//! symlink inside it (`<store_path>/kernel`), not something evaluable
+//! ahead of a build. [`requires_reboot`] compares that symlink's target
+//! against the currently booted kernel (`/run/booted-system/kernel`);
+//! platforms with no such path (darwin, system-manager, home-manager -
+//! none of which this crate models a reboot concept for) always compare
+//! as "no reboot needed", which is a reasoned limitation rather than a
+//! blanket guess: only a NixOS kernel change is a reboot-relevant event
+//! this codebase can detect at all today. A kernel path that cannot be
+//! read on either side ("cannot determine") is treated the same way -
+//! the gate exists to catch a *known* kernel change, not to block
+//! indefinitely on missing data.
+//!
+//! [`run`] therefore: probes, gates (`machineId` then reboot-window),
+//! execs the real switch, and - on success - reads back the
+//! `active-generation` that exec just wrote and registers it on the
+//! daemon's own named profile ([`crate::profile::register_generation`]),
+//! the profile `register_generation`'s own doc says is section 6.2's
+//! job.
 //!
 //! # Lock discipline
 //!
@@ -52,7 +70,7 @@
 
 use std::path::{Path, PathBuf};
 
-use xi_core::sources::Scope;
+use xi_core::sources::{Scope, config::RebootWindow};
 
 use crate::{
   exec::{Exec, Invocation},
@@ -60,6 +78,10 @@ use crate::{
   machine_id,
   profile,
 };
+
+/// Where the currently booted system's kernel symlink lives on a NixOS
+/// host. Absent on every other platform this daemon targets.
+pub const BOOTED_KERNEL_PATH: &str = "/run/booted-system/kernel";
 
 /// Which concrete `xi <verb> switch` this scope resolves to.
 ///
@@ -139,24 +161,37 @@ pub struct ActivateInputs<'a> {
   /// This host's identifying token ([`machine_id::host_token`]), resolved
   /// once by the caller. `None` means "could not be determined" - the
   /// guard's own "cannot decide" case, not "no guard configured".
-  pub host_token:        Option<&'a str>,
+  pub host_token:         Option<&'a str>,
   /// Which concrete verb to exec.
-  pub verb:              SwitchVerb,
+  pub verb:               SwitchVerb,
   /// The scope's state dir - where `active-generation` lands after a
   /// successful switch, and where this module reads it back from.
-  pub state_dir:         &'a Path,
+  pub state_dir:          &'a Path,
   /// The daemon's own named profile to register the result on.
-  pub profile_path:      &'a Path,
+  pub profile_path:       &'a Path,
   /// `--out-link` target for the build-only probe
   /// ([`probe_build`]) that [`run`] consults the pre-activation gates
   /// against. Owned by the caller so a test can pre-populate it with a
   /// fixture closure without a real `nix build` ever running.
-  pub probe_out_link:    &'a Path,
+  pub probe_out_link:     &'a Path,
   /// Operator override for the `machineId` guard. The daemon itself
   /// never sets this - it is CLI-only, surfaced on `xi-sources-daemon`
   /// as `--ignore-machine-id`, because an automated bypass of a safety
   /// check is not a safety check.
-  pub ignore_machine_id: bool,
+  pub ignore_machine_id:  bool,
+  /// When a reboot-requiring activation may proceed. Defaults to
+  /// [`RebootWindow::Always`] (no gate) in every caller that does not
+  /// care.
+  pub reboot_window:      RebootWindow,
+  /// "Now", as minutes since local midnight - the caller's clock, not
+  /// this module's, so a test can pick any instant without touching the
+  /// real wall clock.
+  pub minute_of_day:      u32,
+  /// Where the currently booted system's kernel symlink lives.
+  /// Production callers pass [`BOOTED_KERNEL_PATH`]; a test points this
+  /// at a fixture so it never has to depend on what is actually booted
+  /// on the machine running the test suite.
+  pub booted_kernel_path: &'a str,
 }
 
 /// What activation did.
@@ -170,7 +205,15 @@ pub enum ActivateOutcome {
     /// precondition the activation can be rolled back over.
     hook: Option<DegradedReason>,
   },
-  /// The build-only probe failed, a pre-activation gate refused, or
+  /// The pending generation would require a reboot and
+  /// `reboot_window` does not admit the current minute. Nothing was
+  /// built or activated for real - the caller is expected to retry on
+  /// a later tick, inside the window.
+  Deferred {
+    /// Minutes until `reboot_window` next admits an activation.
+    minutes: u32,
+  },
+  /// The build-only probe failed, the `machineId` gate refused, or
   /// `xi <verb> switch` itself failed to spawn or exited non-zero. The
   /// sources dir already advanced (that happened in `tick::run`); this
   /// is purely "nothing got built/activated this time".
@@ -180,15 +223,17 @@ pub enum ActivateOutcome {
 /// Probe, gate, exec `xi <verb> switch`, and - on success - register
 /// what it activated.
 ///
-/// The probe ([`probe_build`]) and the `machineId` guard both run before
-/// any attempt to exec the real switch: a mismatch (or `--ignore-
-/// machine-id` not covering it) refuses without ever touching
-/// `SourcesLock` for the real activation. When they pass, the real
-/// switch is exactly the case `xi_core::sources::switch::prepare`'s case
-/// 2 handles for an adopted scope - resolve the conflict policy, take
-/// the sources lock, build, activate, and write `active-generation`.
-/// The daemon's only remaining job is to read that value back and hand
-/// it to [`profile::register_generation`].
+/// The probe ([`probe_build`]), the `machineId` guard, and the
+/// reboot-window gate all run before any attempt to exec the real
+/// switch: a `machineId` mismatch refuses, a reboot-requiring
+/// generation outside `reboot_window` defers, and either way the real
+/// switch - and the `SourcesLock` it takes - is never reached. When
+/// both gates pass, the real switch is exactly the case
+/// `xi_core::sources::switch::prepare`'s case 2 handles for an adopted
+/// scope - resolve the conflict policy, take the sources lock, build,
+/// activate, and write `active-generation`. The daemon's only remaining
+/// job is to read that value back and hand it to
+/// [`profile::register_generation`].
 #[must_use]
 pub fn run(exec: &dyn Exec, inputs: &ActivateInputs<'_>) -> ActivateOutcome {
   let store_path = match probe_build(exec, inputs) {
@@ -201,6 +246,18 @@ pub fn run(exec: &dyn Exec, inputs: &ActivateInputs<'_>) -> ActivateOutcome {
       check_machine_id(inputs.host_token, store_path.as_deref())
   {
     return ActivateOutcome::Failed(reason);
+  }
+
+  if requires_reboot(
+    booted_kernel_at(inputs.booted_kernel_path),
+    generation_kernel(store_path.as_deref()),
+  ) && !inputs.reboot_window.admits(inputs.minute_of_day)
+  {
+    return ActivateOutcome::Deferred {
+      minutes: inputs
+        .reboot_window
+        .minutes_until_open(inputs.minute_of_day),
+    };
   }
 
   let invocation = Invocation::new("xi", [inputs.verb.as_str(), "switch"]);
@@ -292,6 +349,37 @@ fn generation_machine_id(store_path: &Path) -> Option<String> {
     .filter(|s| !s.is_empty())
 }
 
+/// The reboot-window gate ([[xi-sources-gitops]] section 10.2).
+///
+/// `true` only when both kernels are known and differ: "cannot
+/// determine" (either symlink unreadable - not NixOS, or a probe that
+/// resolved no store path) is treated as "no reboot needed", the same
+/// "no data, nothing to enforce" stance the `machineId` guard takes.
+/// This is a reasoned limitation, not a stub: a kernel comparison is the
+/// one reboot-relevant signal this codebase can observe today, and
+/// refusing to ever activate on a host where the comparison cannot be
+/// made would be a worse failure mode than occasionally missing a
+/// reboot recommendation on such a host.
+#[must_use]
+fn requires_reboot(booted: Option<PathBuf>, pending: Option<PathBuf>) -> bool {
+  match (booted, pending) {
+    (Some(booted), Some(pending)) => booted != pending,
+    _ => false,
+  }
+}
+
+/// The target of `<store_path>/kernel`, the symlink every NixOS system
+/// closure carries pointing at its kernel package.
+fn generation_kernel(store_path: Option<&Path>) -> Option<PathBuf> {
+  std::fs::read_link(store_path?.join("kernel")).ok()
+}
+
+/// The target of the booted-kernel symlink at `path`
+/// ([`BOOTED_KERNEL_PATH`] in production, a fixture in tests).
+fn booted_kernel_at(path: &str) -> Option<PathBuf> {
+  std::fs::read_link(path).ok()
+}
+
 /// Read back `active-generation` and register it on the named profile.
 ///
 /// `Ok(None)` - no recorded generation - is not an error: a scope with no
@@ -374,10 +462,11 @@ mod tests {
   // -- run --------------------------------------------------------------
 
   struct World {
-    _tmp:           TempDir,
-    state_dir:      std::path::PathBuf,
-    profile:        std::path::PathBuf,
-    probe_out_link: std::path::PathBuf,
+    _tmp:               TempDir,
+    state_dir:          std::path::PathBuf,
+    profile:            std::path::PathBuf,
+    probe_out_link:     std::path::PathBuf,
+    booted_kernel_path: std::path::PathBuf,
   }
 
   impl World {
@@ -388,24 +477,34 @@ mod tests {
       // Deliberately not created: a probe whose out-link does not
       // resolve to anything is the common case in these tests, and
       // exercises "no data, nothing to enforce" the same way a probe
-      // build that ran for real but produced nothing would.
+      // build that ran for real but produced nothing would. Same for
+      // the booted-kernel path - not every test cares about the reboot
+      // gate.
       let probe_out_link = tmp.path().join("probe-result");
+      let booted_kernel_path = tmp.path().join("booted-kernel");
       Self {
         _tmp: tmp,
         state_dir,
         profile,
         probe_out_link,
+        booted_kernel_path,
       }
     }
 
     fn inputs(&self) -> ActivateInputs<'_> {
       ActivateInputs {
-        host_token:        None,
-        verb:              SwitchVerb::Nixos,
-        state_dir:         &self.state_dir,
-        profile_path:      &self.profile,
-        probe_out_link:    &self.probe_out_link,
-        ignore_machine_id: false,
+        host_token:         None,
+        verb:               SwitchVerb::Nixos,
+        state_dir:          &self.state_dir,
+        profile_path:       &self.profile,
+        probe_out_link:     &self.probe_out_link,
+        ignore_machine_id:  false,
+        reboot_window:      RebootWindow::Always,
+        minute_of_day:      0,
+        booted_kernel_path: self
+          .booted_kernel_path
+          .to_str()
+          .expect("utf8 path"),
       }
     }
 
@@ -425,6 +524,21 @@ mod tests {
       std::fs::create_dir_all(&etc).expect("mkdir etc");
       std::fs::write(etc.join("machine-id"), machine_id)
         .expect("write machine-id");
+    }
+
+    /// Simulate a probe build whose closure's `kernel` symlink points at
+    /// `target`. `target` need not exist: `fs::read_link` only reads the
+    /// link's text.
+    fn stage_probe_kernel(&self, target: &str) {
+      std::fs::create_dir_all(&self.probe_out_link).expect("mkdir probe dir");
+      std::os::unix::fs::symlink(target, self.probe_out_link.join("kernel"))
+        .expect("symlink kernel");
+    }
+
+    /// Simulate the host currently having `target` booted.
+    fn stage_booted_kernel(&self, target: &str) {
+      std::os::unix::fs::symlink(target, &self.booted_kernel_path)
+        .expect("symlink booted kernel");
     }
   }
 
@@ -666,5 +780,132 @@ mod tests {
       },
       other => panic!("expected Failed, got {other:?}"),
     }
+  }
+
+  // -- requires_reboot (pure) ----------------------------------------
+
+  #[test]
+  fn identical_kernels_never_require_a_reboot() {
+    let kernel = PathBuf::from("/nix/store/same-kernel");
+    assert!(!requires_reboot(Some(kernel.clone()), Some(kernel)));
+  }
+
+  #[test]
+  fn differing_kernels_require_a_reboot() {
+    assert!(requires_reboot(
+      Some(PathBuf::from("/nix/store/old-kernel")),
+      Some(PathBuf::from("/nix/store/new-kernel"))
+    ));
+  }
+
+  #[test]
+  fn an_undeterminable_kernel_on_either_side_never_requires_a_reboot() {
+    assert!(!requires_reboot(
+      None,
+      Some(PathBuf::from("/nix/store/new"))
+    ));
+    assert!(!requires_reboot(
+      Some(PathBuf::from("/nix/store/old")),
+      None
+    ));
+    assert!(!requires_reboot(None, None));
+  }
+
+  // -- reboot-window gate (via run) -----------------------------------
+
+  /// SC-G-009 / the spec's "Reboot-requiring activation deferred"
+  /// scenario, applied to the daemon's pre-activation gate: the real
+  /// switch must never be reached while the window is closed.
+  #[test]
+  fn a_reboot_requiring_generation_outside_the_window_defers() {
+    let world = World::new();
+    world.stage_booted_kernel("/nix/store/old-kernel");
+    world.stage_probe_kernel("/nix/store/new-kernel");
+    let mut inputs = world.inputs();
+    inputs.reboot_window = RebootWindow::Daily {
+      start: 120, // 02:00
+      end:   240, // 04:00
+    };
+    inputs.minute_of_day = 14 * 60; // 14:00, outside the window
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Deferred { minutes: 12 * 60 });
+    // Only the probe ran - the switch was never reached.
+    assert_eq!(exec.argv_log(), vec![probe_invocation(&world)]);
+  }
+
+  #[test]
+  fn a_reboot_requiring_generation_inside_the_window_activates() {
+    let world = World::new();
+    world.stage_booted_kernel("/nix/store/old-kernel");
+    world.stage_probe_kernel("/nix/store/new-kernel");
+    let mut inputs = world.inputs();
+    inputs.reboot_window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    inputs.minute_of_day = 3 * 60; // 03:00, inside the window
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
+    assert_eq!(exec.argv_log(), vec![
+      probe_invocation(&world),
+      "xi nixos switch".to_owned(),
+    ]);
+  }
+
+  #[test]
+  fn a_generation_not_requiring_a_reboot_ignores_the_window() {
+    let world = World::new();
+    world.stage_booted_kernel("/nix/store/same-kernel");
+    world.stage_probe_kernel("/nix/store/same-kernel");
+    let mut inputs = world.inputs();
+    inputs.reboot_window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    inputs.minute_of_day = 14 * 60; // outside the window, but no reboot needed
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
+  }
+
+  #[test]
+  fn the_always_window_never_defers_even_when_a_reboot_is_needed() {
+    let world = World::new();
+    world.stage_booted_kernel("/nix/store/old-kernel");
+    world.stage_probe_kernel("/nix/store/new-kernel");
+    let mut inputs = world.inputs();
+    inputs.reboot_window = RebootWindow::Always;
+    inputs.minute_of_day = 14 * 60;
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
+  }
+
+  #[test]
+  fn an_undeterminable_reboot_requirement_does_not_defer() {
+    let world = World::new();
+    // Neither kernel symlink staged - "cannot determine" - even with a
+    // closed window, there is nothing for the gate to defer over.
+    let mut inputs = world.inputs();
+    inputs.reboot_window = RebootWindow::Daily {
+      start: 120,
+      end:   240,
+    };
+    inputs.minute_of_day = 14 * 60;
+    let exec = RecordingExec::always_ok();
+
+    let outcome = run(&exec, &inputs);
+
+    assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
   }
 }
