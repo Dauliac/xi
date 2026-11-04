@@ -40,8 +40,20 @@
         set = lib.filterAttrs (_: v: v != null) (
           lib.mapAttrs (_: v: if lib.isPath v then toString v else v) keys
         );
+
+        # The build-location ladder's Nix-module rung: a sibling
+        # `[push]` table in the same file, read by
+        # `xi_deploy::push::config::PushConfig::from_toml_file` pointed
+        # at this same per-scope path. `{ }` renders no `[push]` table
+        # at all (`tomlFormat.generate` drops an empty attrset), which
+        # is what keeps the rung silent when `remoteBuild` is null.
+        pushKeys = lib.filterAttrs (_: v: v != null) {
+          "remote-build" = sources.push.remoteBuild;
+        };
       in
-      tomlFormat.generate "xi-sources.toml" { sources = set; };
+      tomlFormat.generate "xi-sources.toml" (
+        { sources = set; } // lib.optionalAttrs (pushKeys != { }) { push = pushKeys; }
+      );
     description = "Generate a sources.toml store path from a sources attrset.";
   };
 }

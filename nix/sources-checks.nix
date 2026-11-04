@@ -291,6 +291,16 @@ let
         }
       );
 
+      # xi-sources-push: the build-location ladder's Nix-module rung
+      # renders as a sibling `[push]` table in the same file, not a
+      # second file - `xi_deploy::push::config::PushConfig::from_toml_file`
+      # reads whichever table is present at a given path.
+      systemWithRemoteBuild = nixosWith (
+        lib.recursiveUpdate enabledSystem {
+          programs.xi.sources.push.remoteBuild = true;
+        }
+      );
+
       userHappy = homeManagerWith (
         lib.recursiveUpdate enabledUser {
           programs.xi.sources.workingDir = "${userHome}/src/dotfiles";
@@ -453,6 +463,11 @@ let
         }
 
         {
+          name = "programs.xi.sources.push.remoteBuild renders a [push] table";
+          ok = failures systemWithRemoteBuild == [ ];
+        }
+
+        {
           name = "user head creates the XDG dirs with mode 700";
           ok =
             let
@@ -522,14 +537,24 @@ let
       broken = lib.filter (case: !case.ok) cases;
     in
     {
-      inherit systemHappy broken homeManagerActivation;
+      inherit
+        systemHappy
+        systemWithRemoteBuild
+        broken
+        homeManagerActivation
+        ;
     };
 in
 {
   perSystem =
     { pkgs, ... }:
     let
-      inherit (fixtures pkgs) systemHappy broken homeManagerActivation;
+      inherit (fixtures pkgs)
+        systemHappy
+        systemWithRemoteBuild
+        broken
+        homeManagerActivation
+        ;
     in
     {
       checks = {
@@ -566,6 +591,7 @@ in
           pkgs.runCommand "xi-sources-module-fixtures"
             {
               sourcesToml = systemHappy.environment.etc."xi/sources.toml".source;
+              remoteBuildToml = systemWithRemoteBuild.environment.etc."xi/sources.toml".source;
               brokenCases = lib.concatMapStringsSep "\n" (case: case.name) broken;
             }
             ''
@@ -580,6 +606,13 @@ in
               grep -q '^poll-interval = "5m"$' "$sourcesToml"
               grep -q '^installer = "lix"$' "$sourcesToml"
               grep -q '^\[sources\]$' "$sourcesToml"
+
+              # xi-sources-push's build-location ladder: left unset, no
+              # [push] table at all (the silent rung); set, a sibling
+              # [push] table in the same file.
+              ! grep -q '^\[push\]$' "$sourcesToml"
+              grep -q '^\[push\]$' "$remoteBuildToml"
+              grep -q '^remote-build = true$' "$remoteBuildToml"
 
               # Options the tree declares but xi's closed key set does not
               # accept yet must stay out of the file, or loading it is an
