@@ -5,10 +5,10 @@
 //!
 //! - [`singleton`]  -  one scheduler per `SourcesId`, so two ticks can never
 //!   race on the same sources dir.
-//! - [`activate`]  -  section 6.2: after a successful advance, exec
-//!   `xi <scope> switch` and register what it activated on the named
-//!   profile. Gated by the pre-activation checks (`machine_id`, the
-//!   reboot window) the caller consults first.
+//! - [`activate`]  -  section 6.2: after a successful advance, exec `xi <scope>
+//!   switch` and register what it activated on the named profile. Gated by the
+//!   pre-activation checks (`machine_id`, the reboot window) the caller
+//!   consults first.
 //! - [`control`]  -  the `pause`/`resume` control socket ([[xi-sources-race]]
 //!   section 4): an inbound `xi push` suspends the tick loop and reclaims the
 //!   lock for the duration of the push, then resumes it.
@@ -28,9 +28,9 @@
 //!   execution, with output captured to the state dir.
 //! - [`profile`]  -  the named Nix profile the daemon registers generations on,
 //!   and the `nix-env` invocation that does it.
-//! - [`schedule`]  -  independent per-remote polling cadence, so a
-//!   multi-remote config's remotes do not all tick on the shortest
-//!   configured `poll_interval`.
+//! - [`schedule`]  -  independent per-remote polling cadence, so a multi-remote
+//!   config's remotes do not all tick on the shortest configured
+//!   `poll_interval`.
 //! - [`tick`]  -  the orchestrator: fetch, verify, resolve, and the
 //!   `on_advance` hook, tying the modules above into one `TickOutcome`.
 //!

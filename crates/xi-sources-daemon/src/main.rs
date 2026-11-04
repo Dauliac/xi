@@ -17,10 +17,10 @@
 //!    is due per its own `poll_interval` ([`Scheduler`]), run one
 //!    [`xi_sources_daemon::tick::run`], serialised through a [`Singleton`] gate
 //!    so a slow fetch cannot stack with the next one.
-//! 3. Sleep until the next remote becomes due and repeat, unless `--once`
-//!    asked for a single pass over every configured remote (used by operators
-//!    to drive the daemon by hand, and by integration tests that do not want
-//!    to wait out a real interval).
+//! 3. Sleep until the next remote becomes due and repeat, unless `--once` asked
+//!    for a single pass over every configured remote (used by operators to
+//!    drive the daemon by hand, and by integration tests that do not want to
+//!    wait out a real interval).
 
 use std::{
   path::PathBuf,
@@ -45,6 +45,7 @@ use xi_sources_daemon::{
   control::{self, ControlServer},
   exec::SystemExec,
   health::TickOutcome,
+  machine_id,
   profile,
   schedule::Scheduler,
   singleton::Singleton,
@@ -93,6 +94,16 @@ struct Cli {
   /// real deployment gets this from `ScopePaths::resolve`.
   #[arg(long)]
   sources_dir: Option<PathBuf>,
+
+  /// Skip the `machineId` guard before activating a generation.
+  ///
+  /// Operator-only, by design ([[xi-sources-gitops]] section 7.2): the
+  /// daemon itself never sets this on its own exec of the real switch -
+  /// an automated bypass of a safety check is not a safety check. Pass
+  /// it when a generation is deliberately meant to run on a different
+  /// host than the one it was built against (migrations, cloned VMs).
+  #[arg(long)]
+  ignore_machine_id: bool,
 
   #[command(flatten)]
   verbosity: Verbosity<InfoLevel>,
@@ -157,10 +168,12 @@ fn main() -> Result<()> {
   let control = ControlServer::spawn(control_socket, DEFAULT_PAUSE_TIMEOUT)?;
 
   // Resolved once: which concrete `xi <verb> switch` this host activates
-  // through, and the named profile that verb's registration lands on.
-  // Both are host/scope facts, not per-tick ones.
+  // through, the named profile that verb's registration lands on, and
+  // this host's `machineId` guard token. All three are host/scope
+  // facts, not per-tick ones.
   let switch_verb: SwitchVerb = activate::resolve_switch_verb(scope);
   let daemon_profile = profile::profile_path(scope);
+  let host_token = machine_id::host_token(scope);
 
   // Each remote polls on its own configured `poll_interval`, not on the
   // shortest one across the set: see [`xi_sources_daemon::schedule`].
@@ -235,10 +248,30 @@ fn main() -> Result<()> {
       // own fresh `SourcesLock`, and holding anything this crate also
       // holds while it runs would deadlock against it.
       if let TickOutcome::Advanced { ref to, .. } = outcome {
+        // A fresh probe dir per activation attempt: the `machineId` and
+        // reboot-window gates need to inspect a just-built closure, and
+        // a stale out-link from a previous sha would answer both
+        // questions about the wrong generation.
+        let probe_dir = tempfile::Builder::new()
+          .prefix("xi-sources-daemon-probe")
+          .tempdir();
+        let probe_dir = match probe_dir {
+          Ok(dir) => dir,
+          Err(err) => {
+            warn!(remote = %remote.url, error = %err, "could not create a probe tempdir; skipping activation this tick");
+            scheduler.mark_ticked(index, Instant::now());
+            continue;
+          },
+        };
+        let probe_out_link = probe_dir.path().join("result");
+
         let activate_inputs = activate::ActivateInputs {
-          verb:         switch_verb,
-          state_dir:    &paths.state_dir,
-          profile_path: &daemon_profile,
+          host_token:        host_token.as_deref(),
+          verb:              switch_verb,
+          state_dir:         &paths.state_dir,
+          profile_path:      &daemon_profile,
+          probe_out_link:    &probe_out_link,
+          ignore_machine_id: cli.ignore_machine_id,
         };
         match activate::run(&exec, &activate_inputs) {
           ActivateOutcome::Activated { hook: None } => {
