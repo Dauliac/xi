@@ -41,9 +41,11 @@ use xi_core::sources::{
   repair,
 };
 use xi_sources_daemon::{
+  activate::{self, ActivateOutcome, SwitchVerb},
   control::{self, ControlServer},
   exec::SystemExec,
   health::TickOutcome,
+  profile,
   schedule::Scheduler,
   singleton::Singleton,
   tick::{self, TickInputs},
@@ -154,6 +156,12 @@ fn main() -> Result<()> {
   let control_socket = control::socket_path(&paths.state_dir);
   let control = ControlServer::spawn(control_socket, DEFAULT_PAUSE_TIMEOUT)?;
 
+  // Resolved once: which concrete `xi <verb> switch` this host activates
+  // through, and the named profile that verb's registration lands on.
+  // Both are host/scope facts, not per-tick ones.
+  let switch_verb: SwitchVerb = activate::resolve_switch_verb(scope);
+  let daemon_profile = profile::profile_path(scope);
+
   // Each remote polls on its own configured `poll_interval`, not on the
   // shortest one across the set: see [`xi_sources_daemon::schedule`].
   let poll_intervals: Vec<Duration> =
@@ -218,6 +226,47 @@ fn main() -> Result<()> {
           }
         },
         TickOutcome::NoChange { .. } | TickOutcome::Deferred { .. } => {},
+      }
+
+      // Section 6.2: a git-level advance is only half the story now -
+      // exec `xi <verb> switch` to build, activate, and register the
+      // generation. Run strictly after `control.end_tick()` and outside
+      // `gate`'s permit (both released above): the subprocess takes its
+      // own fresh `SourcesLock`, and holding anything this crate also
+      // holds while it runs would deadlock against it.
+      if let TickOutcome::Advanced { ref to, .. } = outcome {
+        let activate_inputs = activate::ActivateInputs {
+          verb:         switch_verb,
+          state_dir:    &paths.state_dir,
+          profile_path: &daemon_profile,
+        };
+        match activate::run(&exec, &activate_inputs) {
+          ActivateOutcome::Activated { hook: None } => {
+            info!(
+              remote = %remote.url,
+              sha = %to,
+              verb = switch_verb.as_str(),
+              "activated and registered generation"
+            );
+          },
+          ActivateOutcome::Activated { hook: Some(reason) } => {
+            warn!(
+              remote = %remote.url,
+              sha = %to,
+              reason = %reason,
+              "activation succeeded but registering the generation degraded"
+            );
+          },
+          ActivateOutcome::Failed(reason) => {
+            warn!(
+              remote = %remote.url,
+              sha = %to,
+              reason = %reason,
+              verb = switch_verb.as_str(),
+              "activation failed"
+            );
+          },
+        }
       }
 
       // Measured from completion, not from when it became due: a tick

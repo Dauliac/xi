@@ -90,6 +90,19 @@ pub enum DegradedReason {
     detail: String,
   },
 
+  /// Exec'ing `xi <scope> switch` (or the build-only probe run ahead of
+  /// it) failed to spawn or exited non-zero.
+  ///
+  /// This is deliberately one token for both the probe and the real
+  /// switch: an operator grepping for why a generation never landed does
+  /// not need to know which of the two invocations failed, only that the
+  /// delegated build/activate pipeline did not complete successfully.
+  #[error("activation-failed: {detail}")]
+  ActivationFailed {
+    /// `xi`'s own stderr (or stdout, if stderr was empty).
+    detail: String,
+  },
+
   /// A write was aimed outside the sources dir.
   #[error("write-outside-sources-dir: {path}")]
   WriteOutsideSourcesDir {
@@ -118,6 +131,7 @@ impl DegradedReason {
       Self::ProfileRegisterFailed { .. } => {
         "profile-register-failed".to_owned()
       },
+      Self::ActivationFailed { .. } => "activation-failed".to_owned(),
       Self::WriteOutsideSourcesDir { .. } => {
         "write-outside-sources-dir".to_owned()
       },
