@@ -5,6 +5,10 @@
 //!
 //! - [`singleton`]  -  one scheduler per `SourcesId`, so two ticks can never
 //!   race on the same sources dir.
+//! - [`activate`]  -  section 6.2: after a successful advance, exec `xi <scope>
+//!   switch` and register what it activated on the named profile. Gated by the
+//!   pre-activation checks (`machine_id`, the reboot window) the caller
+//!   consults first.
 //! - [`control`]  -  the `pause`/`resume` control socket ([[xi-sources-race]]
 //!   section 4): an inbound `xi push` suspends the tick loop and reclaims the
 //!   lock for the duration of the push, then resumes it.
@@ -24,17 +28,18 @@
 //!   execution, with output captured to the state dir.
 //! - [`profile`]  -  the named Nix profile the daemon registers generations on,
 //!   and the `nix-env` invocation that does it.
-//! - [`schedule`]  -  independent per-remote polling cadence, so a
-//!   multi-remote config's remotes do not all tick on the shortest
-//!   configured `poll_interval`.
+//! - [`schedule`]  -  independent per-remote polling cadence, so a multi-remote
+//!   config's remotes do not all tick on the shortest configured
+//!   `poll_interval`.
 //! - [`tick`]  -  the orchestrator: fetch, verify, resolve, and the
 //!   `on_advance` hook, tying the modules above into one `TickOutcome`.
 //!
-//! Realising a generation and activating it (`xi-sources-gitops` section
-//! 6.2 and the machine-id-gated activation of section 7.2) are not written
-//! yet; [`tick::run`] stops once the sources dir has advanced or been
-//! refused. See the `xi-sources-gitops` change for the remaining work.
+//! [`tick::run`] itself still stops once the sources dir has advanced or
+//! been refused - it is the caller (`main.rs`) that, on `Advanced`, runs
+//! the pre-activation gates and then [`activate::run`]. See the
+//! `xi-sources-gitops` change for the full section 6/7/10 picture.
 
+pub mod activate;
 pub mod control;
 pub mod exec;
 pub mod fetch;
