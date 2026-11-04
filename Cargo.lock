@@ -1707,6 +1707,7 @@ dependencies = [
  "js-sys",
  "pin-project-lite",
  "thiserror 2.0.19",
+ "tracing",
 ]
 
 [[package]]
@@ -3540,6 +3541,7 @@ dependencies = [
  "nix",
  "nix-command",
  "regex",
+ "rusqlite",
  "serde_json",
  "serial_test",
  "tempfile",
@@ -3609,6 +3611,7 @@ dependencies = [
  "proptest",
  "regex",
  "reqwest",
+ "rusqlite",
  "secrecy",
  "semver",
  "serde",

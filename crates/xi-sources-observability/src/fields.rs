@@ -10,6 +10,21 @@
 //! Anything that does not fit the vocabulary is an *event*, not a span
 //! field - see the planned `events` store. That split is what keeps the log
 //! joinable: `sources_id` means the same thing in every line.
+//!
+//! # Why `finish` emits an event instead of just closing the span
+//!
+//! `TickSpan::finish`/`PhaseSpan::finish` record the final fields and then
+//! emit an explicit `close` event while the span is still entered, rather
+//! than recording the fields and letting the span simply drop.
+//! `tracing_subscriber`'s `FmtSpan::CLOSE` option looks like it would do
+//! this for free, and for a single `fmt` layer it does - but that
+//! synthesis is private to the layer that performs it
+//! (`fmt_layer.rs`'s `on_close` calls `self.on_event` directly, never the
+//! shared `Layered` dispatch), so a sibling layer with no `on_close` hook
+//! of its own - `tracing_journald::Layer`, in particular - never sees the
+//! fields a close-only span recorded. See `crate::journald`'s module doc
+//! for the full account; this module's job is only to make sure every
+//! sink, not just `fmt`, receives the same line.
 
 use std::time::Instant;
 
@@ -268,6 +283,7 @@ impl TickSpan {
     let duration_ms = self.elapsed_ms();
     self.span.record("outcome", outcome.as_str());
     self.span.record("duration_ms", duration_ms);
+    emit_close(&self.span);
     duration_ms
   }
 }
@@ -327,6 +343,7 @@ impl PhaseSpan {
     let duration_ms = elapsed_ms(self.started);
     self.span.record("outcome", outcome.as_str());
     self.span.record("duration_ms", duration_ms);
+    emit_close(&self.span);
     duration_ms
   }
 }
@@ -334,6 +351,21 @@ impl PhaseSpan {
 /// Milliseconds since `started`, saturating rather than wrapping.
 fn elapsed_ms(started: Instant) -> u64 {
   u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Emit the terminal event every span type ends on, while `span` is
+/// still entered.
+///
+/// See this module's top doc comment ("Why `finish` emits an event
+/// instead of just closing the span") for why this exists instead of
+/// relying on `FmtSpan::CLOSE` synthesis: that path never reaches a
+/// sibling layer such as `tracing_journald::Layer`, which has no
+/// `on_close` hook of its own. Message text is fixed at `"close"` to
+/// match the shape `FmtSpan::CLOSE` used to produce, so existing
+/// readers (log fixtures, downstream parsers) see the same wire format.
+fn emit_close(span: &Span) {
+  let _entered = span.enter();
+  tracing::info!("close");
 }
 
 #[cfg(test)]

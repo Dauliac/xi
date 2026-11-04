@@ -69,6 +69,13 @@ pub mod names {
     LOCK_WAIT_DURATION_SECONDS,
     HOOK_TOTAL,
   ];
+
+  /// Spec's tenth metric, "added to the Prometheus set when OTLP is
+  /// enabled" - deliberately *not* in [`ALL`]: unlike the fixed nine,
+  /// this one only exists once an operator has opted into OTLP export,
+  /// via [`Metrics::register_otlp_export_failures`].
+  pub const OTLP_EXPORT_FAILURES_TOTAL: &str =
+    "xi_sources_otlp_export_failures_total";
 }
 
 /// The daemon's metric registry and the one typed way to write to it.
@@ -241,6 +248,34 @@ impl Metrics {
       .inc();
   }
 
+  /// Register the OTLP export-failure counter.
+  ///
+  /// Not part of the fixed nine registered by [`Metrics::new`]: spec.md
+  /// names this metric as "added to the Prometheus set when OTLP is
+  /// enabled", so a daemon calls this once, only when
+  /// [`crate::config::ObservabilityConfig::otlp`] is `Some`. The
+  /// returned [`prometheus::Counter`] is the handle
+  /// [`crate::otlp::FailureCounterLayer`] increments on every export
+  /// failure it observes - passing it back rather than this struct
+  /// owning the increment keeps `Metrics` free of any OTLP-specific
+  /// type even though this one method is OTLP-specific by name.
+  ///
+  /// # Errors
+  ///
+  /// Returns a [`prometheus::Error`] if the counter cannot be
+  /// registered - in practice, only if this is called twice on the same
+  /// `Metrics` (a double registration collides on the metric name).
+  pub fn register_otlp_export_failures(
+    &self,
+  ) -> Result<prometheus::Counter, prometheus::Error> {
+    let counter = prometheus::Counter::with_opts(Opts::new(
+      names::OTLP_EXPORT_FAILURES_TOTAL,
+      "Spans dropped because an OTLP export attempt failed.",
+    ))?;
+    self.registry.register(Box::new(counter.clone()))?;
+    Ok(counter)
+  }
+
   /// Render the registry in Prometheus text exposition format.
   ///
   /// # Errors
@@ -324,6 +359,36 @@ mod tests {
 
     let encoded = metrics.encode().expect("must encode");
     assert!(encoded.contains("xi_sources_lock_wait_duration_seconds_count 1"));
+  }
+
+  #[test]
+  fn the_otlp_failure_counter_is_absent_until_registered() {
+    let metrics = Metrics::new().expect("metrics must register");
+    let encoded = metrics.encode().expect("must encode");
+    assert!(
+      !encoded.contains(names::OTLP_EXPORT_FAILURES_TOTAL),
+      "the OTLP failure counter must not appear before an OTLP-enabled \
+       daemon registers it:\n{encoded}"
+    );
+  }
+
+  #[test]
+  fn registering_the_otlp_failure_counter_makes_it_countable() {
+    let metrics = Metrics::new().expect("metrics must register");
+    let counter = metrics
+      .register_otlp_export_failures()
+      .expect("must register");
+    counter.inc();
+    counter.inc();
+
+    let encoded = metrics.encode().expect("must encode");
+    assert!(
+      encoded.contains(&format!(
+        "{} 2",
+        names::OTLP_EXPORT_FAILURES_TOTAL
+      )),
+      "{encoded}"
+    );
   }
 
   #[test]

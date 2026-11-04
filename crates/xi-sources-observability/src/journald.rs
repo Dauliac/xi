@@ -11,12 +11,12 @@
 //! `journalctl -o json` exposes `SOURCES_ID=`, `PHASE=`, `OUTCOME=` and
 //! so on as queryable keys rather than text an operator has to grep.
 //!
-//! # A gap this module does not close
+//! # A gap this module used to have
 //!
 //! [`tracing_journald::Layer`] has no `on_close` hook: unlike
-//! [`crate::subscriber`]'s `fmt` layer (which synthesizes a "close"
+//! [`crate::subscriber`]'s `fmt` layer (which could synthesize a "close"
 //! event from [`FmtSpan::CLOSE`](tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-//! and feeds it to *itself*, never to a sibling layer - see
+//! and feed it to *itself*, never to a sibling layer - see
 //! `tracing-subscriber`'s `fmt_layer.rs`, `on_close`), journald only
 //! ever logs a real [`tracing::Event`]. It *does* attach a span's
 //! recorded fields (including ones recorded after the span opened, such
@@ -24,17 +24,14 @@
 //! `duration_ms`) to any event logged while that span is still entered,
 //! because `on_record` mutates the span's field buffer in place.
 //!
-//! [`crate::fields::TickSpan::finish`] and
-//! [`crate::fields::PhaseSpan::finish`] record and then immediately
-//! drop their span, so there is no window left for an in-scope event to
-//! pick those fields up. Closing that gap is `fields`' shape to change
-//! (an explicit terminal event, or an `on_close` hook of this crate's
-//! own), tracked as `xi-sources-observability` task 2.2 rather than
-//! this one; it is not something this module can fix without touching
-//! code this change does not own. This module's test suite (see
-//! `a_span_field_recorded_before_an_in_scope_event_reaches_journald`)
-//! demonstrates the mechanism that will carry the fix: a field recorded
-//! on a span, read back from an event logged before the span drops.
+//! [`crate::fields::TickSpan::finish`] and [`crate::fields::PhaseSpan::finish`]
+//! now emit an explicit `"close"` event while still entered (task 2.2;
+//! see `fields`'s top doc comment), closing the gap: a real event, not a
+//! layer-private synthesis, reaches `journald::layer` the same way it
+//! reaches [`crate::subscriber::ndjson_layer`]. This module's test suite
+//! (see `a_span_field_recorded_before_an_in_scope_event_reaches_journald`
+//! and `finish_s_close_event_carries_its_recorded_fields_to_a_sibling_layer`)
+//! demonstrates the mechanism and proves it against `fields` directly.
 
 use std::io;
 
@@ -187,5 +184,40 @@ mod tests {
     assert_eq!(lines[0]["message"], "phase finished");
     assert_eq!(lines[0]["span"]["outcome"], "ok");
     assert_eq!(lines[0]["span"]["phase"], "fetch");
+  }
+
+  /// The gap this module's doc comment used to describe, closed: a
+  /// real [`crate::fields::PhaseSpan::finish`] call (not a hand-rolled
+  /// event standing in for it) reaches a layer with no `on_close` hook,
+  /// carrying `outcome` and `duration_ms` - the exact fields a
+  /// journald-backed system-scope daemon would otherwise have lost.
+  ///
+  /// Exercised against the in-memory capture layer (same reasoning as
+  /// the test above: this must run everywhere, not only where a real
+  /// journald socket exists), stacked through
+  /// [`crate::subscriber::ndjson_layer`] so it is the real production
+  /// layer composition, not a hand-rolled approximation of it.
+  #[test]
+  fn finish_s_close_event_carries_its_recorded_fields_to_a_sibling_layer() {
+    use crate::{
+      fields::{Outcome, Phase, PhaseSpan},
+      subscriber::{capture::CaptureWriter, ndjson_layer},
+    };
+
+    let writer = CaptureWriter::new();
+    let subscriber =
+      tracing_subscriber::Registry::default().with(ndjson_layer(writer.clone()));
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let phase = PhaseSpan::start(Phase::Verify);
+    let _ = phase.finish(Outcome::Ok);
+
+    let lines = writer.json_lines().expect("captured output must be ndjson");
+    let closes: Vec<_> =
+      lines.iter().filter(|l| l["message"] == "close").collect();
+    assert_eq!(closes.len(), 1, "got: {lines:?}");
+    assert_eq!(closes[0]["span"]["phase"], "verify");
+    assert_eq!(closes[0]["span"]["outcome"], "ok");
+    assert!(closes[0]["span"]["duration_ms"].is_number());
   }
 }

@@ -19,6 +19,7 @@ nix.workspace           = true
 nix-command.workspace   = true
 regex.workspace         = true
 reqwest.workspace       = true
+rusqlite.workspace      = true
 secrecy.workspace       = true
 semver.workspace        = true
 serde.workspace         = true

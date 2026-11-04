@@ -34,6 +34,7 @@ pub mod cache_prestage;
 pub mod config;
 pub mod conflict;
 pub mod credentials;
+pub mod events;
 pub mod lock;
 pub mod log;
 pub mod pause;
