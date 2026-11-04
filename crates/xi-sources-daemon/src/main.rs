@@ -31,15 +31,17 @@ use std::{
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::{Result, eyre::eyre};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use xi_core::sources::{
   Scope,
   SourcesId,
   args::resolve_layers,
   config::{ScopePaths, SourcesConfig},
+  pause::{DEFAULT_PAUSE_TIMEOUT, TickGate},
   repair,
 };
 use xi_sources_daemon::{
+  control::{self, ControlServer},
   exec::SystemExec,
   health::TickOutcome,
   schedule::Scheduler,
@@ -149,6 +151,8 @@ fn main() -> Result<()> {
 
   let gate = Singleton::new();
   let exec = SystemExec;
+  let control_socket = control::socket_path(&paths.state_dir);
+  let control = ControlServer::spawn(control_socket, DEFAULT_PAUSE_TIMEOUT)?;
 
   // Each remote polls on its own configured `poll_interval`, not on the
   // shortest one across the set: see [`xi_sources_daemon::schedule`].
@@ -161,26 +165,47 @@ fn main() -> Result<()> {
 
     for index in due {
       let remote = &remotes[index];
-      let _permit = gate.enter();
 
-      let tick_span = TickSpan::start(&sources_id.to_string(), &remote.url);
-      let inputs = TickInputs {
-        sources_id:      &sources_id,
-        sources_dir:     &sources_dir,
-        state_dir:       &paths.state_dir,
-        remote_url:      &remote.url,
-        branch:          &remote.branch,
-        require_signed:  resolved.require_signed,
-        allowed_signers: resolved.allowed_signers.as_deref(),
-        gpg_public_keys: resolved.gpg_public_keys.as_deref(),
-        on_advance:      resolved.on_advance.as_deref(),
-        sync_mode:       resolved.sync_mode,
+      // An inbound `xi push` (or the pause timeout) may have asked the tick
+      // loop to stand down. `gate` also polls auto-resume, so a daemon that
+      // only ever asks this question before a tick cannot forget to check
+      // whether a stale pause has expired - see `xi-sources-race` section 4.
+      // A held remote is not marked ticked, so it stays due and is
+      // re-checked on the next pass rather than losing its slot.
+      if matches!(control.gate(Instant::now()), TickGate::Hold) {
+        debug!(remote = %remote.url, "tick held: daemon is paused");
+        continue;
+      }
+
+      let outcome = {
+        let _permit = gate.enter();
+        control.begin_tick();
+
+        let tick_span = TickSpan::start(&sources_id.to_string(), &remote.url);
+        let inputs = TickInputs {
+          sources_id:      &sources_id,
+          sources_dir:     &sources_dir,
+          state_dir:       &paths.state_dir,
+          remote_url:      &remote.url,
+          branch:          &remote.branch,
+          require_signed:  resolved.require_signed,
+          allowed_signers: resolved.allowed_signers.as_deref(),
+          gpg_public_keys: resolved.gpg_public_keys.as_deref(),
+          on_advance:      resolved.on_advance.as_deref(),
+          sync_mode:       resolved.sync_mode,
+        };
+
+        let outcome = tick::run(&exec, &inputs);
+        let span_outcome = span_outcome_for(&outcome);
+        let duration_ms = tick_span.finish(span_outcome);
+        tracing::debug!(remote = %remote.url, duration_ms, "tick finished");
+        outcome
+        // `_permit` drops here, before `control.end_tick()` below -
+        // the ordering `xi-sources-race` task 4.2 pins: a `pause` caller
+        // must not be told it is safe to acquire until the tick that held
+        // the lock has actually released it.
       };
-
-      let outcome = tick::run(&exec, &inputs);
-      let span_outcome = span_outcome_for(&outcome);
-      let duration_ms = tick_span.finish(span_outcome);
-      tracing::debug!(remote = %remote.url, duration_ms, "tick finished");
+      control.end_tick();
 
       match &outcome {
         TickOutcome::Degraded(reason) => {
@@ -210,6 +235,8 @@ fn main() -> Result<()> {
     let sleep_for = scheduler.sleep_duration(Instant::now());
     thread::sleep(sleep_for.max(Duration::from_secs(1)));
   }
+
+  control.shutdown();
 
   Ok(())
 }
