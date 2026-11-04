@@ -7,6 +7,8 @@
 //!   other modules dispatch on.
 //! - [`context`]  -  resolves the sources context a push deploys from, and
 //!   refuses before dispatch if the scope has no sources configured.
+//! - [`config`]  -  the `.xi.toml [push]` table: the declarative
+//!   `[[push.hosts]]` inventory and the `remote-build` config rung.
 //! - [`discover`]  -  which targets exist, read off the flake output taxonomy,
 //!   and which backend each one wants.
 //! - [`preflight`]  -  the four per-target checks that run before anything
@@ -25,6 +27,7 @@
 //!   resolve context, discover, select, pick a backend, dispatch.
 
 pub mod args;
+pub mod config;
 pub mod context;
 pub mod discover;
 pub mod engine;

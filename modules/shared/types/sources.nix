@@ -243,6 +243,27 @@ in
         };
       };
 
+      # Owned by xi-sources-push. `remoteBuild` is the third (lowest)
+      # rung of the build-location ladder: a `--remote-build` CLI flag,
+      # then `.xi.toml [push] remote-build`, then this Nix-module
+      # default, then `false` (closure: build on the pushing operator's
+      # machine). Named to match deploy-rs's own `remote-build`
+      # terminology rather than inventing new vocabulary.
+      push = {
+        remoteBuild = unpinned {
+          type = lib.types.bool;
+          description = ''
+            Default build location for `xi push` against this scope:
+            `false` (the xi-wide default) builds on the operator's
+            machine and copies the closure in; `true` is `--mode
+            sources` - the target rsyncs the sources dir and builds it
+            locally. Left null so the CLI flag and `.xi.toml [push]
+            remote-build` can still answer without this module pinning
+            a value.
+          '';
+        };
+      };
+
       secrets = lib.mkOption {
         default = { };
         example = lib.literalExpression ''

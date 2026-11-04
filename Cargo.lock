@@ -3657,6 +3657,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml_edit",
  "tracing",
  "which",
  "xi-core",
