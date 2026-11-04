@@ -104,5 +104,30 @@ in
       "d /var/lib/xi/sources 0700 root root -"
       "d /var/lib/xi/state 0700 root root -"
     ];
+
+    # The pull-GitOps loop (xi-sources-gitops). Unit name is fixed at
+    # `xi-sources-daemon` - `xi_core::sources::log::SYSTEMD_UNIT` and
+    # `xi sources log tail` both hard-code it to shell out to
+    # `journalctl -u xi-sources-daemon`, so renaming this stanza's
+    # attribute name would silently break that readout.
+    systemd.services.xi-sources-daemon = lib.mkIf cfg.sources.gitops.enable {
+      description = "xi sources gitops daemon (system scope)";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+
+      serviceConfig = {
+        ExecStart = "${lib.getExe' cfg.package "xi-sources-daemon"} --scope system";
+        Restart = "on-failure";
+        RestartSec = "10s";
+
+        # journald is the structured sink `xi_sources_observability::journald`
+        # writes to over the native socket; routing stdout/stderr there too
+        # keeps a crash's raw output next to the structured fields under
+        # the same `journalctl -u xi-sources-daemon`.
+        StandardOutput = "journal";
+        StandardError = "journal";
+      };
+    };
   };
 }
