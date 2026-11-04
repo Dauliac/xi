@@ -312,6 +312,12 @@ pub struct RefLineage {
 /// successful bootstrap report `Degraded` for having succeeded. (At
 /// system scope the receipt lands in the state dir's parent and never
 /// reaches this check.)
+///
+/// `pending-activation` is `xi-sources-gitops`'s: the sha of a generation
+/// the daemon advanced to but has not yet activated, because the
+/// reboot-window gate deferred it. It outlives a daemon restart so a
+/// deferral spanning one (a `02:00-04:00` window is long enough to) is
+/// still honoured on the next tick rather than silently forgotten.
 pub const STATE_FILE_NAMES: &[&str] = &[
   "remote-url",
   "remote-head",
@@ -319,6 +325,7 @@ pub const STATE_FILE_NAMES: &[&str] = &[
   "sources-head",
   "working-dir",
   "active-generation",
+  "pending-activation",
   "lock",
   lock::ALIVE_FILE,
   lock::WAITERS_DIR,
