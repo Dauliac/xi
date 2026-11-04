@@ -34,6 +34,7 @@ pub mod cache_prestage;
 pub mod config;
 pub mod conflict;
 pub mod credentials;
+pub mod deployment;
 pub mod events;
 pub mod lock;
 pub mod log;
@@ -325,6 +326,8 @@ pub const STATE_FILE_NAMES: &[&str] = &[
   "sources-head",
   "working-dir",
   "active-generation",
+  "applied-via",
+  "applied-at",
   "pending-activation",
   "lock",
   lock::ALIVE_FILE,
@@ -471,12 +474,31 @@ pub fn unknown_state_files(state_dir: &Path) -> io::Result<Vec<String>> {
     .filter_map(|entry| {
       let name = entry.ok()?.file_name().to_string_lossy().into_owned();
       (!STATE_FILE_NAMES.contains(&name.as_str())
-        && !atomic::is_temp_name(&name))
+        && !atomic::is_temp_name(&name)
+        && !is_foreign_subsystem_entry(&name))
       .then_some(name)
     })
     .collect();
   unknown.sort();
   Ok(unknown)
+}
+
+/// Entries a *different* xi subsystem legitimately owns in this same
+/// directory.
+///
+/// User-scope `state_dir` is `$XDG_STATE_HOME/xi`, with no dedicated
+/// subdirectory of its own (unlike system scope's `/var/lib/xi/state`),
+/// and `xi-develop` independently settled on that exact same root for
+/// its own sidecars (`develop/<fid>/`, `hook-queue/`, `hook-cache/`,
+/// `hook.log`, see `xi_develop::dirs::xi_state_root`). Neither
+/// subsystem is wrong; they just never coordinated on the directory.
+/// Flagging `xi-develop`'s own files as sources-model corruption would
+/// be, so this lists what to leave alone. Narrowing `state_dir` to its
+/// own subdirectory would remove the need for this list entirely, but
+/// is a path migration for already-adopted machines, not a one-line fix.
+fn is_foreign_subsystem_entry(name: &str) -> bool {
+  matches!(name, "develop" | "hook-queue" | "hook-cache")
+    || name.starts_with("hook.log")
 }
 
 // ---------------------------------------------------------------------------
