@@ -42,11 +42,17 @@ let
       assertions = assertionsOption;
       lib = unspecifiedAttrs;
       programs.xi.enable = lib.mkEnableOption "xi";
+      # No default: the real default lives in `modules/nixos/package.nix`,
+      # which this stub does not import. Unforced unless a case actually
+      # enables gitops (laziness under `lib.mkIf`), so the happy-path
+      # fixtures below never need to supply one.
+      programs.xi.package = lib.mkOption { type = lib.types.package; };
       environment.etc = fileAttrs;
       systemd.tmpfiles.rules = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
       };
+      systemd.services = unspecifiedAttrs;
       home-manager.users = unspecifiedAttrs;
     };
     config.lib = { inherit mkSourcesFile; };
@@ -67,10 +73,13 @@ let
       assertions = assertionsOption;
       lib = unspecifiedAttrs;
       programs.xi.enable = lib.mkEnableOption "xi";
+      # See the matching comment on `nixosStub` above.
+      programs.xi.package = lib.mkOption { type = lib.types.package; };
       xdg.dataHome = lib.mkOption { type = lib.types.str; };
       xdg.stateHome = lib.mkOption { type = lib.types.str; };
       xdg.configFile = fileAttrs;
       home.activation = unspecifiedAttrs;
+      systemd.user.services = unspecifiedAttrs;
     };
     config = {
       lib = { inherit mkSourcesFile; };
@@ -299,6 +308,27 @@ let
       userActivation = userHappy.home.activation.xiSourcesDirs.data;
       projectSources = projectHappy.xi.settings.sources;
 
+      # xi-llb.1: the gitops daemon's systemd unit, each scope. `pkgs.hello`
+      # stands in for `programs.xi.package` - the fixture only inspects the
+      # rendered `ExecStart` string, never runs it, so any cheap derivation
+      # that is already in the test closure will do.
+      systemGitops = nixosWith (
+        lib.recursiveUpdate enabledSystem {
+          programs.xi.package = pkgs.hello;
+          programs.xi.sources.gitops.enable = true;
+        }
+      );
+
+      userGitops = homeManagerWith (
+        lib.recursiveUpdate enabledUser {
+          programs.xi.package = pkgs.hello;
+          programs.xi.sources.gitops.enable = true;
+        }
+      );
+
+      systemGitopsExecStart = systemGitops.systemd.services.xi-sources-daemon.serviceConfig.ExecStart;
+      userGitopsExecStart = userGitops.systemd.user.services.xi-sources-daemon.Service.ExecStart;
+
       # A second, execution-based fixture alongside the string-matching
       # cases below. Those cases prove the activation script CONTAINS the
       # right mkdir/chmod invocation; this one actually runs it and
@@ -448,6 +478,37 @@ let
         }
 
         {
+          name = "gitops disabled defines no systemd unit at either scope";
+          ok =
+            !(systemHappy.systemd.services ? "xi-sources-daemon")
+            && !(userHappy.systemd.user.services ? "xi-sources-daemon");
+        }
+
+        {
+          name = "system head's gitops unit execs xi-sources-daemon --scope system";
+          ok =
+            lib.hasSuffix "/bin/xi-sources-daemon --scope system" systemGitopsExecStart
+            && lib.hasPrefix "${pkgs.hello}" systemGitopsExecStart;
+        }
+
+        {
+          name = "system head's gitops unit is wanted by multi-user.target";
+          ok = systemGitops.systemd.services.xi-sources-daemon.wantedBy == [ "multi-user.target" ];
+        }
+
+        {
+          name = "user head's gitops unit execs xi-sources-daemon --scope user";
+          ok =
+            lib.hasSuffix "/bin/xi-sources-daemon --scope user" userGitopsExecStart
+            && lib.hasPrefix "${pkgs.hello}" userGitopsExecStart;
+        }
+
+        {
+          name = "user head's gitops unit is wanted by default.target";
+          ok = userGitops.systemd.user.services.xi-sources-daemon.Install.WantedBy == [ "default.target" ];
+        }
+
+        {
           name = "flake-parts head folds kebab-case keys into the wrapper settings";
           ok =
             projectSources == {
@@ -572,6 +633,9 @@ in
                 enable = true;
                 remote = "https://example.invalid/nix-config.git";
                 pollInterval = "5m";
+                # xi-llb.1: exercises the gitops systemd unit through the
+                # real module system, not just the stub fixtures above.
+                gitops.enable = true;
               };
             };
           };
@@ -593,6 +657,16 @@ in
                 "grep -q '^remote = \"https://example.invalid/nix-config.git\"$' /etc/xi/sources.toml"
             )
             machine.succeed("grep -q '^poll-interval = \"5m\"$' /etc/xi/sources.toml")
+
+            # xi-llb.1: the gitops unit is defined (unit name fixed, per
+            # `xi_core::sources::log::SYSTEMD_UNIT`) and execs the daemon
+            # binary with the scope flag matching this module.
+            machine.succeed(
+                "systemctl show -p ExecStart xi-sources-daemon.service | grep -q -- '--scope system '"
+            )
+            machine.succeed(
+                "systemctl show -p ExecStart xi-sources-daemon.service | grep -q '/bin/xi-sources-daemon'"
+            )
           '';
         };
       };
