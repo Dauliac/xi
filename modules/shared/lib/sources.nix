@@ -21,7 +21,6 @@
         #   gitops.*              (xi-sources-gitops)
         #   cachePrestage.*       (xi-sources-cache-prestage)
         #   secrets.*             (xi-sources-push)
-        #   credentials.*         (xi-sources-credentials)
         keys = {
           remote = sources.remote;
           branch = sources.branch;
@@ -33,13 +32,36 @@
           installer = sources.bootstrap.installer;
         };
 
+        # `[sources.credentials.<kind>]` - crates/xi-core/src/sources/credentials.rs.
+        # Only the genuinely nullable, secret-path-shaped fields are
+        # rendered: `identityFile`/`tokenFile`/`credentialHelper` are
+        # already `str` (never `path`), so, like the keys above, they
+        # never enter the Nix store. `useAgent`/`username` are left out
+        # on purpose: they carry concrete, non-null defaults that already
+        # match xi's own built-in defaults, so rendering them here would
+        # only flip their provenance from `default` to `nix-module` with
+        # no behavioural effect.
+        sshCredentials = lib.filterAttrs (_: v: v != null) {
+          "identity-file" = sources.credentials.ssh.identityFile;
+        };
+        httpsCredentials = lib.filterAttrs (_: v: v != null) {
+          "token-file" = sources.credentials.https.tokenFile;
+          "credential-helper" = sources.credentials.https.credentialHelper;
+        };
+        credentials = lib.filterAttrs (_: v: v != { }) {
+          ssh = sshCredentials;
+          https = httpsCredentials;
+        };
+
         # Null means "this module does not pin the key", which is not the
         # same as pinning a default: dropping it keeps the rung empty so
         # the built-in default still answers and the provenance map says
         # `default` rather than `nix-module`.
-        set = lib.filterAttrs (_: v: v != null) (
-          lib.mapAttrs (_: v: if lib.isPath v then toString v else v) keys
-        );
+        set =
+          lib.filterAttrs (_: v: v != null) (
+            lib.mapAttrs (_: v: if lib.isPath v then toString v else v) keys
+          )
+          // lib.optionalAttrs (credentials != { }) { inherit credentials; };
 
         # The build-location ladder's Nix-module rung: a sibling
         # `[push]` table in the same file, read by
