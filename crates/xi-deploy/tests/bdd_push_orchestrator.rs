@@ -226,7 +226,11 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     .script
     .clone();
   assert!(
-    last_script.contains("switch-to-configuration switch"),
+    last_script.contains("XI_APPLIED_ORIGIN=push:"),
+    "got: {last_script}"
+  );
+  assert!(
+    last_script.contains("xi system switch"),
     "got: {last_script}"
   );
 }
