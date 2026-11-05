@@ -527,16 +527,32 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn with_nothing_configured_the_nix_module_default_answers() {
     let toml = PushConfig::default();
-    assert!(resolve_remote_build(None, "web1", &toml, Some(true)));
-    assert!(!resolve_remote_build(None, "web1", &toml, Some(false)));
+    for env_value in [None, Some("1")] {
+      let _guard = match env_value {
+        Some(value) => EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, value),
+        None => EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV),
+      };
+      // The Nix-module rung outranks the floor either way: the opt-in
+      // gate must not change this answer.
+      assert!(resolve_remote_build(None, "web1", &toml, Some(true)));
+      assert!(!resolve_remote_build(None, "web1", &toml, Some(false)));
+    }
   }
 
   #[test]
-  fn with_every_rung_silent_the_floor_is_false() {
+  #[serial]
+  fn with_every_rung_silent_the_floor_matches_the_opt_in_gate() {
     let toml = PushConfig::default();
+
+    let _guard = EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV);
     assert!(!resolve_remote_build(None, "web1", &toml, None));
+    drop(_guard);
+
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    assert!(resolve_remote_build(None, "web1", &toml, None));
   }
 
   // -- resolve_remote_build: the floor flip, behind its opt-in -----------
