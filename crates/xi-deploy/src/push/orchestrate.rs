@@ -19,7 +19,6 @@
 
 use std::{
   collections::BTreeMap,
-  path::Path,
   sync::atomic::{AtomicBool, Ordering},
   time::Duration,
 };
@@ -30,7 +29,6 @@ use color_eyre::{
 };
 use tracing::{info, warn};
 use xi_core::sources::{
-  Scope,
   SourcesContext,
   conflict::inspect_working_tree,
   secrets::{SecretSpec, UploadAt},
@@ -43,9 +41,11 @@ use super::{
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources, preflight, rollback,
+  mode_sources,
+  preflight,
+  rollback,
 };
-use crate::{fleet_digest::FleetDigestInput, target::ProfileKind};
+use crate::target::ProfileKind;
 
 /// How often [`rollback::confirm`] polls the sentinel.
 ///
@@ -58,25 +58,18 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name: String,
+  pub name:    String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
   pub outcome: Result<()>,
 }
 
-/// The whole run's report: one [`TargetResult`] per selected target,
-/// plus the backend and build-location decisions [`run`] caches into
-/// `fleet-digest` on success.
-#[derive(Debug)]
+/// The whole run's report: one [`TargetResult`] per selected target.
+#[derive(Debug, Default)]
 pub struct PushReport {
   /// Per-target results, in selection order.
   pub results: Vec<TargetResult>,
-  /// The backend this run dispatched to.
-  pub backend: ResolvedBackend,
-  /// The resolved build-location decision (`--mode`'s effective value),
-  /// as a `fleet-digest` hash input.
-  pub build_location: String,
 }
 
 impl PushReport {
@@ -143,7 +136,6 @@ pub fn run(args: &PushArgs) -> Result<()> {
     &secrets,
     &inventory,
     nix_module_remote_build,
-    Path::new(".xi.toml"),
     &nix,
     &transport,
   )?;
@@ -169,26 +161,6 @@ pub fn run(args: &PushArgs) -> Result<()> {
         .collect::<Vec<_>>()
         .join(", ")
     );
-  }
-}
-
-/// Cache `fleet-digest` next to `xi_toml_path`, after a successful
-/// rollout.
-///
-/// Best-effort by design, matching [`xi_core::sources::switch::record_activation`]'s
-/// stance: the fleet has already been pushed by the time this runs, so
-/// a cache-write failure (an unwritable directory, a read-only repo
-/// checkout) must not turn a successful rollout into a failed command -
-/// it only costs the next run the re-evaluation skip this cache exists
-/// to grant.
-fn cache_fleet_digest(xi_toml_path: &Path, report: &PushReport) {
-  let input = FleetDigestInput {
-    targets: report.results.iter().map(|r| r.name.clone()).collect(),
-    backend: report.backend.as_str().to_owned(),
-    build_location: report.build_location.clone(),
-  };
-  if let Err(err) = crate::fleet_digest::store(xi_toml_path, &input) {
-    warn!("push succeeded but caching fleet-digest failed: {err}");
   }
 }
 
@@ -229,10 +201,6 @@ fn refuse_if_dirty(context: &SourcesContext, force_dirty: bool) -> Result<()> {
 /// per-target failure is *not* an error here - it is recorded in the
 /// returned [`PushReport`], so the caller can decide (via
 /// `--fail-fast`'s effect on which targets even ran) how to react.
-///
-/// On a fully successful rollout (every target in the returned
-/// [`PushReport`] `Ok`), also caches `fleet-digest` next to
-/// `xi_toml_path` - best-effort, per [`cache_fleet_digest`].
 #[expect(clippy::too_many_arguments, reason = "every argument is load-bearing")]
 pub fn execute(
   args: &PushArgs,
@@ -241,7 +209,6 @@ pub fn execute(
   secrets: &BTreeMap<String, SecretSpec>,
   inventory: &PushConfig,
   nix_module_remote_build: Option<bool>,
-  xi_toml_path: &Path,
   nix: &dyn Nix,
   transport: &dyn Transport,
 ) -> Result<PushReport> {
@@ -252,49 +219,26 @@ pub fn execute(
     config::apply_inventory(selected.into_iter().cloned().collect(), inventory);
 
   let colmena_present = discover::has_colmena_hive(nix, flake_ref)?;
-  // The one precedence table (deploy stanza > colmenaHive output >
-  // builtin): `crate::detect_and_deploy`'s own auto-detection, used by
-  // the standalone `xi deploy` verb, is a thin wrapper over this same
-  // function as of xi-jhh4.5.1, so this and that entrypoint can never
-  // disagree on the same flake (SC-UA-005).
   let backend =
     discover::detect_backend(args.backend, &targets, colmena_present);
 
-  // The fleet-level build-location decision, resolved with no per-host
-  // override: a `fleet-digest` hash input describes the whole rollout,
-  // not any one target, so it reads the same ladder `push_one` reads
-  // per-host but without a host name to look up.
-  let fleet_remote_build = config::resolve_remote_build(
-    args.remote_build,
-    "",
-    inventory,
-    nix_module_remote_build,
-  );
-  let build_location = format!("{:?}", args.effective_mode(fleet_remote_build));
-
   if backend != ResolvedBackend::Builtin {
     delegate(backend, flake_ref, args, &targets)?;
-    let report = PushReport {
+    return Ok(PushReport {
       results: targets
         .iter()
-        .map(|target| TargetResult {
-          name: target.addr.name.clone(),
-          outcome: Ok(()),
+        .map(|target| {
+          TargetResult {
+            name:    target.addr.name.clone(),
+            outcome: Ok(()),
+          }
         })
         .collect(),
-      backend,
-      build_location,
-    };
-    cache_fleet_digest(xi_toml_path, &report);
-    return Ok(report);
+    });
   }
 
   let limits = PhaseLimits::new(args.parallel);
   let aborted = AtomicBool::new(false);
-  // The activation step tags itself with the operator's own hostname,
-  // not the target's, so it is resolved once here rather than inside
-  // each per-target `xi <scope> switch` invocation.
-  let origin_host = xi_core::util::get_hostname(None)?;
 
   let results: Vec<TargetResult> = std::thread::scope(|scope| {
     let handles: Vec<_> = targets
@@ -302,7 +246,6 @@ pub fn execute(
       .map(|target| {
         let limits = &limits;
         let aborted = &aborted;
-        let origin_host = &origin_host;
         let name = target.addr.name.clone();
         let handle = scope.spawn(move || {
           push_one(
@@ -315,7 +258,6 @@ pub fn execute(
             secrets,
             inventory,
             nix_module_remote_build,
-            origin_host,
             aborted,
           )
         });
@@ -340,30 +282,11 @@ pub fn execute(
       .collect()
   });
 
-  let report = PushReport {
-    results,
-    backend,
-    build_location,
-  };
-  if report.ok() {
-    cache_fleet_digest(xi_toml_path, &report);
-  }
-  Ok(report)
+  Ok(PushReport { results })
 }
 
 /// Delegate to the already-tested `deploy-rs` / `colmena` backend `xi
 /// deploy` uses, restricted to the targets this push already selected.
-///
-/// `backend` is passed through as an explicit [`crate::args::DeployArgs`]
-/// override rather than left for [`crate::detect_and_deploy`] to
-/// auto-detect: it was already resolved by [`discover::detect_backend`]
-/// against this push's own filtered target list, and re-detecting from
-/// bare `flake_ref` inside `detect_and_deploy` would discover the
-/// flake's *full* target set instead. `push::orchestrate` and
-/// `crate::detect_and_deploy` share the one `discover::detect_backend`
-/// precedence table either way (xi-jhh4.5.1/5.2) - this is the one place
-/// that table is *called* with push's own targets rather than
-/// rediscovered ones.
 ///
 /// `on` is left unset on the constructed [`crate::args::DeployArgs`]:
 /// [`discover::select`] already applied `--on` against the taxonomy
@@ -381,21 +304,21 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref: Some(flake_ref.to_owned()),
-    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on: None,
-    backend: Some(backend.as_str().to_owned()),
-    dry: false,
-    no_nom: false,
-    skip_checks: false,
+    flake_ref:         Some(flake_ref.to_owned()),
+    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on:                None,
+    backend:           Some(backend.as_str().to_owned()),
+    dry:               false,
+    no_nom:            false,
+    skip_checks:       false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout: if args.magic_rollback > 0 {
+    confirm_timeout:   if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace: false,
-    extra_args: Vec::new(),
+    show_trace:        false,
+    extra_args:        Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
@@ -421,7 +344,6 @@ fn push_one(
   secrets: &BTreeMap<String, SecretSpec>,
   inventory: &PushConfig,
   nix_module_remote_build: Option<bool>,
-  origin_host: &str,
   aborted: &AtomicBool,
 ) -> Result<()> {
   // Checked again just after every `apply` permit acquisition below: a
@@ -493,7 +415,6 @@ fn push_one(
           transport,
           target,
           args.sources_scope(),
-          origin_host,
           args.interactive_sudo,
         )
       }) {
@@ -520,12 +441,7 @@ fn push_one(
         return Err(e);
       }
 
-      let script = activation_script(
-        target,
-        &store_path,
-        args.sources_scope(),
-        origin_host,
-      );
+      let script = activation_script(target, &store_path);
       let outcome = transport.run(
         &target.addr,
         &RemoteCommand::elevated(script, args.interactive_sudo),
@@ -612,46 +528,39 @@ fn upload_secrets(
   Ok(())
 }
 
-/// The activation command for `--mode closure`: for a NixOS, Darwin or
-/// Home Manager target, a remote `xi <scope> switch <store_path>`
-/// invocation, tagged with `XI_APPLIED_ORIGIN=push:<origin_host>` so
-/// `record_activation_at` can tell this activation apart from a local
-/// interactive switch or a gitops-daemon tick.
+/// The activation command for `--mode closure`: register `store_path` in
+/// the target's profile, then run the activation the target's kind
+/// needs.
 ///
-/// `store_path` is already a built, realized store path, so this costs
-/// `xi <scope> switch` nothing it was not already going to do - the
-/// target's own switch command resolves a store path positional as an
-/// installable that needs no further evaluation, then runs the exact
-/// register-and-activate sequence it would for an interactive switch.
-/// `Scope::sources_verb` picks `system` over naming `nixos`/`darwin`
-/// explicitly, which is what lets one push target either kind without
-/// this orchestrator needing to know which OS it runs.
+/// There is no flake on the target under this mode, so this cannot shell
+/// out to `nixos-rebuild`/`darwin-rebuild switch` the way
+/// [`mode_sources::switch_script`] does - it runs the lower-level
+/// commands those tools themselves run, which is also exactly what
+/// deploy-rs does for the same reason.
 ///
-/// [`ProfileKind::Custom`] and [`ProfileKind::Noop`] have no
-/// corresponding `xi` entrypoint and keep the lower-level commands they
-/// always have: a user-supplied script, or a bare profile registration
-/// with no activation at all.
+/// `ProfileKind::Custom`'s `activate_command` is a template fixed at
+/// discovery time, before any store path exists, so it carries a
+/// [`discover::STORE_PATH_PLACEHOLDER`] (`TargetSource::profile_kind`
+/// populates it for `SystemConfigs` targets) that gets substituted here
+/// with the real store path, the same way `register` is assembled for
+/// every other kind.
 #[must_use]
-fn activation_script(
-  target: &PushTarget,
-  store_path: &str,
-  scope: Scope,
-  origin_host: &str,
-) -> String {
+fn activation_script(target: &PushTarget, store_path: &str) -> String {
+  let register = format!(
+    "nix-env --profile {} --set {store_path}",
+    target.profile_path
+  );
   match &target.kind {
-    ProfileKind::NixOS | ProfileKind::Darwin | ProfileKind::HomeManager => {
-      format!(
-        "XI_APPLIED_ORIGIN=push:{origin_host} xi {} switch {store_path}",
-        scope.sources_verb()
-      )
+    ProfileKind::NixOS => {
+      format!("{register} && {store_path}/bin/switch-to-configuration switch")
     },
-    ProfileKind::Custom { activate_command } => activate_command.clone(),
-    ProfileKind::Noop => {
-      format!(
-        "nix-env --profile {} --set {store_path}",
-        target.profile_path
-      )
+    ProfileKind::Darwin | ProfileKind::HomeManager => {
+      format!("{register} && {store_path}/activate")
     },
+    ProfileKind::Custom { activate_command } => {
+      activate_command.replace(discover::STORE_PATH_PLACEHOLDER, store_path)
+    },
+    ProfileKind::Noop => register,
   }
 }
 
@@ -672,16 +581,16 @@ mod tests {
   /// Answers flake evaluation from a fixture table keyed by attr, the
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
-    outputs: Vec<(&'static str, serde_json::Value)>,
-    built: Mutex<Vec<String>>,
+    outputs:     Vec<(&'static str, serde_json::Value)>,
+    built:       Mutex<Vec<String>>,
     build_fails: bool,
   }
 
   impl FixtureNix {
     fn single_nixos_host(name: &'static str) -> Self {
       Self {
-        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
-        built: Mutex::new(Vec::new()),
+        outputs:     vec![(".#nixosConfigurations", serde_json::json!([name]))],
+        built:       Mutex::new(Vec::new()),
         build_fails: false,
       }
     }
@@ -719,10 +628,10 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls: Mutex<Vec<RemoteCommand>>,
-    copy_calls: Mutex<Vec<(String, String)>>,
-    secret_calls: Mutex<Vec<String>>,
-    sync_calls: Mutex<Vec<String>>,
+    run_calls:        Mutex<Vec<RemoteCommand>>,
+    copy_calls:       Mutex<Vec<(String, String)>>,
+    secret_calls:     Mutex<Vec<String>>,
+    sync_calls:       Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -751,7 +660,9 @@ mod tests {
       if cmd.script.starts_with("command -v") {
         return Ok(Outcome::ok(""));
       }
-      if cmd.script.contains("xi system switch") && self.activation_fails {
+      if cmd.script.contains("switch-to-configuration switch")
+        && self.activation_fails
+      {
         return Ok(Outcome::failed("switch-to-configuration failed"));
       }
       Ok(Outcome::ok(""))
@@ -895,7 +806,7 @@ mod tests {
   fn a_single_host_closure_push_builds_copies_and_activates() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -905,7 +816,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -923,11 +833,9 @@ mod tests {
       .expect("ran something")
       .script
       .clone();
-    assert!(last.contains("XI_APPLIED_ORIGIN=push:"), "got: {last}");
-    assert!(last.contains("xi system switch"), "got: {last}");
     assert!(
-      last.contains("/nix/store/fake-"),
-      "activation must point at the copied closure, not a flake ref: {last}"
+      last.contains("switch-to-configuration switch"),
+      "got: {last}"
     );
   }
 
@@ -935,7 +843,7 @@ mod tests {
   fn an_unreachable_target_never_mutates() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = NoRebuildTool(FixtureTransport::default());
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -945,7 +853,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -959,7 +866,7 @@ mod tests {
   fn mode_sources_syncs_and_switches_without_a_local_build() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -969,7 +876,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -995,7 +901,7 @@ mod tests {
     // module that builds the string.
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1005,7 +911,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1025,11 +930,8 @@ mod tests {
       "got: {switch_call}"
     );
     assert!(
-      switch_call.contains("XI_APPLIED_ORIGIN=push:"),
-      "got: {switch_call}"
-    );
-    assert!(
-      switch_call.ends_with("xi system switch /etc/xi/sources#web1"),
+      switch_call
+        .ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
       "got: {switch_call}"
     );
   }
@@ -1038,11 +940,11 @@ mod tests {
   fn with_no_mode_flag_a_toml_remote_build_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts: Vec::new(),
+      hosts:        Vec::new(),
     };
 
     let report = execute(
@@ -1052,7 +954,6 @@ mod tests {
       &secrets,
       &inventory,
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1071,11 +972,11 @@ mod tests {
   fn an_explicit_mode_flag_overrides_the_toml_remote_build_default() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts: Vec::new(),
+      hosts:        Vec::new(),
     };
 
     let report = execute(
@@ -1085,7 +986,6 @@ mod tests {
       &secrets,
       &inventory,
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1104,7 +1004,7 @@ mod tests {
   fn with_no_mode_flag_the_nix_module_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1114,7 +1014,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       Some(true),
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1128,20 +1027,17 @@ mod tests {
   fn pre_activate_secrets_land_before_the_activation_script_runs() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let mut secrets = BTreeMap::new();
-    secrets.insert(
-      "ssh-key".to_owned(),
-      SecretSpec {
-        name: "ssh-key".to_owned(),
-        source: std::path::PathBuf::from("./ssh-key"),
-        destination: std::path::PathBuf::from("/run/keys/ssh"),
-        owner: "root".to_owned(),
-        group: None,
-        mode: "0600".to_owned(),
-        upload_at: UploadAt::PreActivate,
-      },
-    );
+    secrets.insert("ssh-key".to_owned(), SecretSpec {
+      name:        "ssh-key".to_owned(),
+      source:      std::path::PathBuf::from("./ssh-key"),
+      destination: std::path::PathBuf::from("/run/keys/ssh"),
+      owner:       "root".to_owned(),
+      group:       None,
+      mode:        "0600".to_owned(),
+      upload_at:   UploadAt::PreActivate,
+    });
 
     let report = execute(
       &args(PushMode::Closure),
@@ -1150,7 +1046,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1165,18 +1060,18 @@ mod tests {
   #[test]
   fn a_failed_activation_is_reported_but_other_targets_still_run() {
     let nix = FixtureNix {
-      outputs: vec![(
+      outputs:     vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built: Mutex::new(Vec::new()),
+      built:       Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
       activation_fails: true,
       ..FixtureTransport::default()
     };
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
@@ -1188,7 +1083,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1202,18 +1096,18 @@ mod tests {
   #[test]
   fn fail_fast_skips_targets_queued_after_the_first_failure() {
     let nix = FixtureNix {
-      outputs: vec![(
+      outputs:     vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built: Mutex::new(Vec::new()),
+      built:       Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
       activation_fails: true,
       ..FixtureTransport::default()
     };
-    let (root, context) = fixture_context();
+    let (_root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
@@ -1227,7 +1121,6 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
-      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1271,11 +1164,17 @@ mod tests {
     working_dir: std::path::PathBuf,
   ) -> SourcesContext {
     SourcesContext {
-      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir: working_dir.parent().expect("parent").join("sources"),
-      state_dir: working_dir.parent().expect("parent").join("state"),
-      working_dir: Some(working_dir),
-      refs: xi_core::sources::RefLineage::default(),
+      sources_id:          SourcesId::new(
+        Scope::System,
+        "https://example/repo",
+      ),
+      sources_dir:         working_dir
+        .parent()
+        .expect("parent")
+        .join("sources"),
+      state_dir:           working_dir.parent().expect("parent").join("state"),
+      working_dir:         Some(working_dir),
+      refs:                xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -1311,101 +1210,55 @@ mod tests {
     );
   }
 
-  fn push_target(kind: ProfileKind) -> PushTarget {
-    PushTarget {
-      addr: TargetAddr {
-        name:     "web1".to_owned(),
-        ssh_host: "web1".to_owned(),
-        ssh_opts: Vec::new(),
-      },
-      source: crate::push::discover::TargetSource::NixosConfigurations,
-      tags: Vec::new(),
-      installable: String::new(),
-      kind,
-      profile_path: "/nix/var/nix/profiles/system".to_owned(),
-      rebuild_tool: "nixos-rebuild",
-    }
-  }
-
-  #[test]
-  fn nixos_darwin_and_home_manager_activate_via_the_remote_switch_entrypoint() {
-    for kind in [
-      ProfileKind::NixOS,
-      ProfileKind::Darwin,
-      ProfileKind::HomeManager,
-    ] {
-      let target = push_target(kind);
-      let script = activation_script(
-        &target,
-        "/nix/store/fake-web1",
-        Scope::System,
-        "operator-host",
-      );
-      assert_eq!(
-        script,
-        "XI_APPLIED_ORIGIN=push:operator-host xi system switch \
-         /nix/store/fake-web1"
-      );
-    }
-  }
-
-  #[test]
-  fn the_user_scope_resolves_to_the_home_switch_verb() {
-    let target = push_target(ProfileKind::HomeManager);
-    let script = activation_script(
-      &target,
-      "/nix/store/fake-web1",
-      Scope::User,
-      "operator-host",
-    );
-    assert_eq!(
-      script,
-      "XI_APPLIED_ORIGIN=push:operator-host xi home switch \
-       /nix/store/fake-web1"
-    );
-  }
-
-  #[test]
-  fn a_custom_profile_kind_keeps_its_own_activate_command() {
-    let target = push_target(ProfileKind::Custom {
-      activate_command: "/run/current-system/activate".to_owned(),
-    });
-    let script = activation_script(
-      &target,
-      "/nix/store/fake-web1",
-      Scope::System,
-      "operator-host",
-    );
-    assert_eq!(script, "/run/current-system/activate");
-  }
-
-  #[test]
-  fn a_noop_profile_kind_only_registers_the_profile() {
-    let target = push_target(ProfileKind::Noop);
-    let script = activation_script(
-      &target,
-      "/nix/store/fake-web1",
-      Scope::System,
-      "operator-host",
-    );
-    assert_eq!(
-      script,
-      "nix-env --profile /nix/var/nix/profiles/system --set \
-       /nix/store/fake-web1"
-    );
-  }
-
   #[test]
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir: root.path().join("sources"),
-      state_dir: root.path().join("state"),
-      working_dir: None,
-      refs: xi_core::sources::RefLineage::default(),
+      sources_id:          SourcesId::new(
+        Scope::System,
+        "https://example/repo",
+      ),
+      sources_dir:         root.path().join("sources"),
+      state_dir:           root.path().join("state"),
+      working_dir:         None,
+      refs:                xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
+  }
+
+  /// xi-slej.3.2: `ProfileKind::Custom`'s `{store_path}` placeholder
+  /// (populated by `TargetSource::profile_kind` for `SystemConfigs`
+  /// targets) is substituted with the real store path, the same way
+  /// `register` is assembled for every other kind.
+  #[test]
+  fn custom_activation_substitutes_the_store_path_placeholder() {
+    let target = PushTarget {
+      addr:         TargetAddr {
+        name:     "web3".to_owned(),
+        ssh_host: "web3".to_owned(),
+        ssh_opts: Vec::new(),
+      },
+      source:       discover::TargetSource::SystemConfigs,
+      tags:         Vec::new(),
+      installable:  ".#systemConfigs.web3".to_owned(),
+      kind:         ProfileKind::Custom {
+        activate_command: "nix build --no-link --profile /p {store_path} && \
+                           {store_path}/bin/activate"
+          .to_owned(),
+      },
+      profile_path: "/p".to_owned(),
+      rebuild_tool: "nix",
+    };
+
+    let script = activation_script(&target, "/nix/store/abc-web3");
+
+    assert_eq!(
+      script,
+      "nix build --no-link --profile /p /nix/store/abc-web3 && \
+       /nix/store/abc-web3/bin/activate"
+    );
+    assert!(!script.contains("nixos-rebuild"));
+    assert!(!script.contains("darwin-rebuild"));
   }
 }
