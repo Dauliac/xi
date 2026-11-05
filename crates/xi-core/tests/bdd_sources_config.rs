@@ -977,7 +977,7 @@ fn a_clone_is_pending_until_an_activation_is_recorded() {
   // Now what a successful activation leaves behind.
   let profile = tmp.path().join("generation-42");
   std::fs::create_dir_all(&profile).expect("mkdir profile");
-  record_activation_at(&paths, &profile).expect("record activation");
+  record_activation_at(&paths, &profile, false).expect("record activation");
 
   let resolved = profile
     .canonicalize()
@@ -1024,7 +1024,7 @@ fn the_envelope_reports_pending_before_an_activation_and_ready_after() {
   assert_eq!(before["status"], "pending");
   assert!(before["active_generation"].is_null());
 
-  record_activation_at(&paths, &tmp.path().join("sources"))
+  record_activation_at(&paths, &tmp.path().join("sources"), false)
     .expect("record activation");
 
   let after = envelope(&paths);
