@@ -257,7 +257,7 @@ pub fn resolve_ladder<T>(
 /// higher rung still overrides the floor unchanged either way.
 ///
 /// The caller still has the final word through an explicit `--mode` flag
-/// - see [`super::args::PushArgs::effective_mode`] - which this function
+/// (see [`super::args::PushArgs::effective_mode`]), which this function
 /// does not know about: it only resolves what the *ladder itself* says,
 /// not whether something further up overrides the ladder outright.
 #[must_use]
@@ -270,7 +270,9 @@ pub fn resolve_remote_build(
   let floor = build_floor_remote_opt_in();
   resolve_ladder(
     cli,
-    toml_config.host(host_name).and_then(|host| host.remote_build),
+    toml_config
+      .host(host_name)
+      .and_then(|host| host.remote_build),
     toml_config.remote_build,
     nix_module_remote_build,
     floor,
