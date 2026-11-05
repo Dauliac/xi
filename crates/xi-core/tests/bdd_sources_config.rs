@@ -25,6 +25,7 @@
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
+use serial_test::serial;
 use tempfile::TempDir;
 use xi_core::sources::{
   GitopsHealth,
@@ -849,6 +850,39 @@ fn deploy_positional_resolves_a_bare_word_target_first() {
   assert_eq!(
     classify_deploy_positional("web1", &targets),
     DeployPositionalKind::Target
+  );
+}
+
+/// A bare word matching a target resolves as a target even when a
+/// same-named directory exists in `cwd` - `classify_deploy_positional`
+/// never stats the filesystem, so a colliding local directory must not
+/// change the reading.
+#[test]
+#[serial]
+fn deploy_positional_resolves_as_target_even_with_a_same_named_local_dir() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    classify_deploy_positional,
+  };
+
+  let tmp = TempDir::new().expect("tempdir");
+  std::fs::create_dir(tmp.path().join("web1")).expect("create colliding dir");
+
+  let original_dir = std::env::current_dir().expect("current dir");
+  std::env::set_current_dir(tmp.path()).expect("chdir into tempdir");
+  let result = std::panic::catch_unwind(|| {
+    let targets: BTreeSet<String> = ["web1".to_owned()].into();
+    classify_deploy_positional("web1", &targets)
+  });
+  std::env::set_current_dir(original_dir).expect("restore cwd");
+
+  assert_eq!(
+    result.expect("classify_deploy_positional must not panic"),
+    DeployPositionalKind::Target,
+    "a bare word matching a target must resolve as a target even when a \
+     same-named directory exists in cwd"
   );
 }
 
