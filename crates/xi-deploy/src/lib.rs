@@ -39,6 +39,14 @@ use crate::{
 /// 3. `colmenaHive` output → colmena
 /// 4. `nixosConfigurations` with `--target-host` → builtin
 ///
+/// `push::orchestrate::delegate` calls this same function for a push
+/// that resolves to `deploy-rs` or `colmena`, with `args.backend` always
+/// `Some` (its own [`push::discover::detect_backend`] call already
+/// picked the backend against push's own filtered target list, so this
+/// entrypoint's detection path is only exercised by the standalone `xi
+/// deploy` verb). This is the one dispatch path both entrypoints share,
+/// not two independently maintained ones (xi-jhh4.5.1/5.2).
+///
 /// # Errors
 ///
 /// Returns an error if no backend can be detected or if deployment fails.
