@@ -73,7 +73,7 @@ pub struct Main {
   after_help = "\x1b[1mCommand groups:\x1b[0m
   Config mgmt:  os, home, darwin, system
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
-                doctor, materialize
+                doctor
   Deployment:   deploy, push
   Development:  develop, search
   Agent:        agent
@@ -106,7 +106,6 @@ pub enum XiCommand {
   Lib(xi_flake::args::LibArgs),
   Test(xi_flake::args::TestArgs),
   Doctor(xi_flake::args::DoctorArgs),
-  Materialize(xi_flake::args::MaterializeArgs),
 
   // -- Deployment --
   Deploy(xi_deploy::args::DeployArgs),
@@ -187,7 +186,6 @@ impl XiCommand {
       | Self::Lib(..)
       | Self::Test(..)
       | Self::Doctor(..)
-      | Self::Materialize(..)
       | Self::Deploy(..)
       | Self::Push(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Agent(..)
@@ -374,7 +372,6 @@ impl XiCommand {
       Self::Lib(args) => args.run(),
       Self::Test(args) => args.run(),
       Self::Doctor(args) => args.run(),
-      Self::Materialize(args) => args.run(),
       Self::Deploy(args) => xi_deploy::detect_and_deploy(&args),
       Self::Push(args) => xi_deploy::push::orchestrate::run(&args),
       Self::Agent(args) => xi_agent::run(args),

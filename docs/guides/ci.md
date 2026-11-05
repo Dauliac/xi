@@ -2,8 +2,8 @@
 
 `xi ci` validates and builds a flake in one command. It is more thorough than
 `nix flake check`: it verifies your `flake.lock` is in sync, evaluates every
-system, runs your eval-time tests, checks your `lib` deeply, verifies
-materialized artefacts are fresh, and only then builds everything.
+system, runs your eval-time tests, checks your `lib` deeply, and only then
+builds everything.
 
 ## Run it
 
@@ -27,7 +27,6 @@ If any step reports FAIL, `xi ci` exits non-zero.
 | Health check      | `xi doctor` diagnostics (input freshness, branch)    | `--no-health-check`                     |
 | Eval tests        | `lib.runTests` evaluates (assertion failures caught) | `--no-test`                             |
 | Lib eval          | `lib` deep-evaluates                                 | `--no-lib-eval`                         |
-| Materialize check | Committed materialized files are fresh               | Set `check-in-ci = false` in `.xi.toml` |
 | Build             | Every buildable output builds                        | `--no-build`                            |
 
 Each step reports name, status (ok / warn / FAIL), duration, and detail.
@@ -110,47 +109,6 @@ Skip cross-system evaluation. Right for local dev; wrong for release CI.
 xi ci --no-ifd
 ```
 
-## Materialization
-
-Xi can pre-compute expensive evaluations (Cargo hashes, generated Nix files,
-prefetch outputs) and commit the results to git so CI doesn't have to redo them.
-
-### Configure targets in `.xi.toml`
-
-```toml
-[materialize]
-commit-path = "nix/materialized"   # where committed files go
-check-in-ci = true                 # fail CI if stale
-pre-build = true                   # rebuild stale before build
-git-hide = true                    # apply skip-worktree
-auto-stage = true                  # git add after commit
-auto-stage-branches = ["main"]     # restrict auto-stage to specific branches
-
-[[materialize.target]]
-name = "cargo-hash"
-command = "nix eval .#cargoHash --json"
-output = "cargo-hash.json"
-sources = ["Cargo.lock", "Cargo.toml"]
-```
-
-### Materialization commands
-
-```sh
-xi materialize                # run stale targets
-xi materialize --force        # ignore cache, re-run every target
-xi materialize --commit       # also write to nix/materialized/
-xi materialize --check        # verify freshness (exit 1 if stale)
-xi materialize --list         # show targets and their staleness
-xi materialize --setup        # apply git skip-worktree + merge driver
-xi materialize --clean        # remove the cache directory
-```
-
-Freshness is computed from a SHA-256 of every file matched by `sources`. If the
-hash matches, the target is skipped.
-
-With `check-in-ci = true`, `xi ci` fails when any materialized target is stale.
-With `pre-build = true`, `xi ci` re-runs the stale ones before building.
-
 ## Standalone checks
 
 If you only want `nix flake check`:
@@ -181,4 +139,4 @@ xi ci --offline              # no network access
 ## See also
 
 - [CLI Reference: `xi ci`](../reference/cli.md#xi-ci--ci-pipeline)
-- [Configuration Reference: `[ci]`, `[materialize]`](../reference/configuration.md)
+- [Configuration Reference: `[ci]`](../reference/configuration.md)
