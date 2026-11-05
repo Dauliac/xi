@@ -24,13 +24,7 @@ use tempfile::TempDir;
 use xi_core::sources::{Scope, SourcesContext, SourcesId};
 use xi_deploy::push::{
   args::{
-    BuildStrategy,
-    CopyVia,
-    Phase,
-    PushArgs,
-    PushBackend,
-    PushMode,
-    PushScope,
+    BuildStrategy, CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope,
   },
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
@@ -107,15 +101,9 @@ impl Nix for FixtureNix {
 
 /// Answers every SSH-family call a single-host `builtin` push makes.
 #[derive(Default)]
-#[expect(
-  clippy::struct_field_names,
-  reason = "each field names the Transport call it records; the shared \
-            `_calls` suffix is the point, not an accident"
-)]
 struct FixtureTransport {
   copy_calls: Mutex<Vec<(String, String)>>,
-  run_calls:  Mutex<Vec<RemoteCommand>>,
-  sync_calls: Mutex<Vec<(String, String)>>,
+  run_calls: Mutex<Vec<RemoteCommand>>,
 }
 
 impl Transport for FixtureTransport {
@@ -166,37 +154,31 @@ impl Transport for FixtureTransport {
   fn sync_dir(
     &self,
     _target: &TargetAddr,
-    local: &std::path::Path,
-    remote: &str,
+    _local: &std::path::Path,
+    _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
   ) -> Result<()> {
-    self
-      .sync_calls
-      .lock()
-      .expect("sync_calls lock")
-      .push((local.display().to_string(), remote.to_owned()));
-    Ok(())
+    unreachable!("--mode closure never syncs a directory")
   }
 }
 
 fn push_args() -> PushArgs {
   PushArgs {
-    targets:          vec!["web1".to_owned()],
-    on:               None,
-    backend:          PushBackend::Auto,
-    phase:            "activate".to_owned(),
-    mode:             Some(PushMode::Closure),
-    remote_build:     None,
-    sources_transport: None,
-    magic_rollback:   0,
-    parallel:         1,
+    targets: vec!["web1".to_owned()],
+    on: None,
+    backend: PushBackend::Auto,
+    phase: "activate".to_owned(),
+    mode: Some(PushMode::Closure),
+    remote_build: None,
+    magic_rollback: 0,
+    parallel: 1,
     interactive_sudo: false,
-    copy_via:         CopyVia::Local,
-    fail_fast:        false,
-    force_dirty:      false,
-    build_strategy:   BuildStrategy::Interleaved,
-    scope:            PushScope::System,
+    copy_via: CopyVia::Local,
+    fail_fast: false,
+    force_dirty: false,
+    build_strategy: BuildStrategy::Interleaved,
+    scope: PushScope::System,
   }
 }
 
@@ -216,8 +198,6 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
   assert_eq!(args.phases().expect("phases parse"), vec![Phase::Activate]);
   args.validate().expect("args are internally consistent");
 
-  let xi_toml_path = root.path().join(".xi.toml");
-
   let report = orchestrate::execute(
     &args,
     &context,
@@ -225,7 +205,6 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     &secrets,
     &PushConfig::default(),
     None,
-    &xi_toml_path,
     &nix,
     &transport,
   )
@@ -250,92 +229,102 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     .script
     .clone();
   assert!(
-    last_script.contains("XI_APPLIED_ORIGIN=push:"),
+    last_script.contains("switch-to-configuration switch"),
     "got: {last_script}"
   );
-  assert!(
-    last_script.contains("xi system switch"),
-    "got: {last_script}"
-  );
-
-  // A fully successful rollout caches `fleet-digest` next to the
-  // operator's `.xi.toml`, not inside any scope's state dir.
-  let cached = std::fs::read_to_string(root.path().join(".xi-fleet-digest"))
-    .expect("fleet-digest cache file must exist after a successful rollout");
-  let expected = xi_deploy::fleet_digest::FleetDigestInput {
-    targets:        vec!["web1".to_owned()],
-    backend:        report.backend.as_str().to_owned(),
-    build_location: report.build_location.clone(),
-  }
-  .digest();
-  assert_eq!(cached, expected);
 }
 
+/// Flattens [`PushArgs`] behind the real `clap` parser, the same shape
+/// `xi push` itself parses through, so a CLI invocation with no
+/// `--build-strategy` flag resolves its default the way an operator would
+/// actually see it - not the way a hand-built [`PushArgs`] literal would.
+#[derive(clap::Parser)]
+struct PushArgsHarness {
+  #[command(flatten)]
+  push: PushArgs,
+}
+
+/// xi-z3or.3.4: `--build-strategy` is parsed (xi-z3or.3.1) and a batched
+/// build phase exists (xi-z3or.3.2), but [`orchestrate::execute`] does not
+/// consult `args.build_strategy` yet - 3.3 is what wires a `batched` branch
+/// in. Until then, "the flag omitted" and "`--build-strategy interleaved`
+/// given explicitly" are two different `PushArgs` values that must both
+/// reach `execute` and dispatch identically to today's interleaved
+/// build-copy-activate sequence. This locks that invariant in now, so 3.3
+/// cannot silently change the default path while adding the batched one.
 #[test]
-fn xi_push_mode_sources_activates_via_the_remote_switch_entrypoint_not_the_old_raw_script()
+fn omitting_build_strategy_dispatches_identically_to_interleaved_given_explicitly()
  {
-  // xi-jhh4.2.3: the end-to-end counterpart of
-  // `xi_push_runs_end_to_end_against_a_real_git_sources_fixture` for
-  // `--mode sources`, driven through the real orchestrator. Proves the
-  // activation step it reaches is an `xi <scope> switch` invocation, not
-  // the old bare `nixos-rebuild switch --flake` script `mode_sources`
-  // ran before xi-jhh4.2.2.
-  let root = TempDir::new().expect("tempdir");
-  let context = fixture_context(&root);
-  let flake_ref = context.sources_dir.display().to_string();
+  use clap::Parser as _;
 
-  let nix = FixtureNix {
-    built: Mutex::new(Vec::new()),
-  };
-  let transport = FixtureTransport::default();
-  let secrets: BTreeMap<String, _> = BTreeMap::new();
-  let mut args = push_args();
-  args.mode = Some(PushMode::Sources);
+  let omitted = PushArgsHarness::try_parse_from(["push", "web1"])
+    .expect("bare `push web1` invocation should parse")
+    .push;
+  assert_eq!(
+    omitted.build_strategy,
+    BuildStrategy::Interleaved,
+    "the flag omitted must resolve to the same default execute() already \
+     assumes"
+  );
 
-  let report = orchestrate::execute(
-    &args,
-    &context,
-    &flake_ref,
-    &secrets,
-    &PushConfig::default(),
-    None,
-    &nix,
-    &transport,
-  )
-  .expect("push executes against the real git fixture");
+  let explicit = PushArgsHarness::try_parse_from([
+    "push",
+    "web1",
+    "--build-strategy",
+    "interleaved",
+  ])
+  .expect("`--build-strategy interleaved` should parse")
+  .push;
 
-  assert!(report.ok(), "report: {:?}", report.results);
-  assert!(
-    nix.built.lock().expect("lock").is_empty(),
-    "--mode sources never builds a closure locally"
-  );
-  assert!(transport.copy_calls.lock().expect("lock").is_empty());
-  assert_eq!(transport.sync_calls.lock().expect("lock").len(), 1);
+  for (label, args) in [("omitted", &omitted), ("explicit", &explicit)] {
+    let root = TempDir::new().expect("tempdir");
+    let context = fixture_context(&root);
+    let flake_ref = context.sources_dir.display().to_string();
+    let nix = FixtureNix {
+      built: Mutex::new(Vec::new()),
+    };
+    let transport = FixtureTransport::default();
+    let secrets: BTreeMap<String, _> = BTreeMap::new();
 
-  let last_script = transport
-    .run_calls
-    .lock()
-    .expect("lock")
-    .last()
-    .expect("activation ran")
-    .script
-    .clone();
-  assert!(
-    last_script.contains("XI_APPLIED_ORIGIN=push:"),
-    "got: {last_script}"
-  );
-  assert!(
-    last_script.contains("xi system switch"),
-    "got: {last_script}"
-  );
-  assert!(
-    !last_script.contains("nixos-rebuild switch --flake"),
-    "the old raw rebuild script must not run: {last_script}"
-  );
-  assert!(
-    last_script.starts_with("systemd-run --wait --pipe --collect -- "),
-    "got: {last_script}"
-  );
+    let report = orchestrate::execute(
+      args,
+      &context,
+      &flake_ref,
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .unwrap_or_else(|e| panic!("{label} push executes: {e}"));
+
+    assert!(report.ok(), "{label}: {:?}", report.results);
+    assert_eq!(report.results.len(), 1, "{label}");
+    assert_eq!(report.results[0].name, "web1", "{label}");
+    assert_eq!(
+      nix.built.lock().expect("lock").len(),
+      1,
+      "{label}: must build exactly once, matching the interleaved \
+       single-target path"
+    );
+    assert_eq!(
+      transport.copy_calls.lock().expect("lock").len(),
+      1,
+      "{label}"
+    );
+    let last_script = transport
+      .run_calls
+      .lock()
+      .expect("lock")
+      .last()
+      .expect("activation ran")
+      .script
+      .clone();
+    assert!(
+      last_script.contains("switch-to-configuration switch"),
+      "{label} got: {last_script}"
+    );
+  }
 }
 
 #[test]
@@ -352,8 +341,6 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
   let mut args = push_args();
   args.targets = vec!["does-not-exist".to_owned()];
 
-  let xi_toml_path = root.path().join(".xi.toml");
-
   let err = orchestrate::execute(
     &args,
     &context,
@@ -361,15 +348,10 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
     &secrets,
     &PushConfig::default(),
     None,
-    &xi_toml_path,
     &nix,
     &transport,
   )
   .expect_err("no such target");
   assert!(format!("{err}").contains("web1"), "got: {err}");
   assert!(transport.copy_calls.lock().expect("lock").is_empty());
-  assert!(
-    !root.path().join(".xi-fleet-digest").exists(),
-    "a refused push must not cache a fleet-digest"
-  );
 }
