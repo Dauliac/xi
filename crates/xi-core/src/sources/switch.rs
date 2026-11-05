@@ -7,6 +7,7 @@
 //! identically. See `openspec/changes/xi-sources-config/design.md`.
 
 use std::{
+  io::{self, IsTerminal},
   path::{Path, PathBuf},
   process::Command,
 };
@@ -107,6 +108,16 @@ pub struct SwitchSourcesArgs {
   /// meant it. The resulting generation is marked `dirty-source`.
   #[arg(long)]
   pub force_dirty: bool,
+
+  /// Build from an explicit positional that disagrees with this scope's
+  /// configured `working_dir`, without the interactive prompt.
+  ///
+  /// Without this, a case-3 [`WorkingDirMismatch`] warns and asks
+  /// (`inquire::Confirm`, the same shape `--ask` already uses) before
+  /// building from the positional; with no TTY attached, it refuses
+  /// rather than guessing which tree the operator meant.
+  #[arg(long)]
+  pub force_working_dir: bool,
 }
 
 impl SwitchSourcesArgs {
@@ -226,10 +237,122 @@ pub fn prepare(
   }
 
   // Case 3: this scope has no source, so there is nothing to serialise.
+  if let Some(mismatch) =
+    working_dir_mismatch(&installable, working_dir.as_deref())
+  {
+    confirm_working_dir_mismatch(scope, &mismatch, opts.force_working_dir)?;
+  }
+
   Ok(PreparedSwitch {
     installable,
     _lock: None,
   })
+}
+
+/// A local positional passed to `xi <scope> switch` that disagrees with
+/// this scope's configured `working_dir`.
+///
+/// Both paths are already canonicalised, so xi-jhh4.4.2's prompt can
+/// display or compare them without touching the filesystem again.
+#[derive(Debug, PartialEq, Eq)]
+struct WorkingDirMismatch {
+  /// The canonicalised positional the operator passed.
+  positional:  PathBuf,
+  /// The canonicalised, scope-configured `working_dir`.
+  working_dir: PathBuf,
+}
+
+/// Compare an explicit switch positional against `working_dir`, when both
+/// name real local paths.
+///
+/// `None` covers every case that is not a mismatch worth a prompt: no
+/// configured `working_dir`, a positional that is not a local path (a
+/// flake registry ref, a remote, a store path, a `--file`/`--expr`
+/// installable), or either side failing to canonicalise. That last case
+/// is deliberate: whether the positional actually exists is the resolver's
+/// job once this guard is done, not this comparison's.
+///
+/// Pure and read-only - canonicalising both paths is the only filesystem
+/// contact it makes, and it never prompts. That is what makes the
+/// comparison testable on its own, ahead of the prompt xi-jhh4.4.2 wires
+/// in.
+fn working_dir_mismatch(
+  installable: &InstallableArgs,
+  working_dir: Option<&Path>,
+) -> Option<WorkingDirMismatch> {
+  let working_dir = working_dir?;
+  let InstallableArgs::Specified(Installable::Flake { reference, .. }) =
+    installable
+  else {
+    return None;
+  };
+  let positional = crate::installable::local_flake_reference_path(reference)?;
+
+  let positional = positional.canonicalize().ok()?;
+  let working_dir = working_dir.canonicalize().ok()?;
+
+  if positional == working_dir {
+    return None;
+  }
+
+  Some(WorkingDirMismatch {
+    positional,
+    working_dir,
+  })
+}
+
+/// Warn about a [`WorkingDirMismatch`] and get the operator's go-ahead
+/// before building from the positional, or refuse.
+///
+/// `--force-working-dir` skips both the warning and the prompt: the
+/// operator has already said which tree they meant, on this call and
+/// (per its own doc) every one after. Otherwise this warns and prompts
+/// exactly as `--ask` does elsewhere in xi, except with no TTY attached
+/// there is no one to ask, so it refuses rather than guessing which tree
+/// the operator meant.
+///
+/// # Errors
+///
+/// Returns an error naming the mismatch and `--force-working-dir` when no
+/// TTY is attached, and when the operator declines the prompt.
+fn confirm_working_dir_mismatch(
+  scope: Scope,
+  mismatch: &WorkingDirMismatch,
+  force: bool,
+) -> Result<()> {
+  if force {
+    return Ok(());
+  }
+
+  let positional = mismatch.positional.display();
+  let working_dir = mismatch.working_dir.display();
+  warn!(
+    "{positional} differs from the {scope} scope's configured working_dir \
+     {working_dir}"
+  );
+
+  if !io::stdin().is_terminal() {
+    return Err(eyre!(
+      "{positional} does not match the {scope} scope's configured working_dir \
+       {working_dir}; rerun with --force-working-dir to build from \
+       {positional} anyway, or with no positional to build from {working_dir}"
+    ));
+  }
+
+  let proceed = inquire::Confirm::new(&format!(
+    "Build and activate from {positional} anyway?"
+  ))
+  .with_default(false)
+  .prompt()?;
+
+  if !proceed {
+    return Err(eyre!(
+      "switch cancelled: {positional} does not match the {scope} scope's \
+       configured working_dir {working_dir}"
+    ));
+  }
+
+  Ok(())
 }
 
 /// Take the sources lock for the whole switch, or say who has it.
@@ -659,6 +782,19 @@ pub fn record_activation_at(
     "local"
   };
   write_state_file(&paths.state_dir, "applied-via", applied_via)?;
+
+  // `XI_APPLIED_ORIGIN` is the authoritative trigger when a caller sets
+  // it: the gitops daemon tags its own activations `daemon`, and an
+  // inbound push tags its target-side activation `push:<operator
+  // host>`. Its absence means neither of those triggered this call, so
+  // the existing SSH-env-var inference above stands in - unchanged
+  // meaning, just reused for this marker too.
+  let applied_origin = std::env::var("XI_APPLIED_ORIGIN")
+    .ok()
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| applied_via.to_string());
+  write_state_file(&paths.state_dir, "applied-origin", &applied_origin)?;
+
   write_state_file(
     &paths.state_dir,
     "applied-at",
@@ -815,6 +951,7 @@ pub fn sources_dir_for(scope: Scope) -> PathBuf {
 mod tests {
   use std::fs;
 
+  use serial_test::serial;
   use tempfile::TempDir;
 
   use super::*;
@@ -1180,5 +1317,252 @@ mod tests {
     // own CWD does not track a fake `https://git.example` remote, so this
     // must fall through to `None` rather than panic or false-positive.
     assert_eq!(dirty_adoption_warning(REMOTE, None), None);
+  }
+
+  // -- working_dir_mismatch ------------------------------------------------
+
+  #[test]
+  fn no_mismatch_when_no_working_dir_is_configured() {
+    let tmp = TempDir::new().unwrap();
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: tmp.path().display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(working_dir_mismatch(&installable, None), None);
+  }
+
+  #[test]
+  fn no_mismatch_when_the_installable_is_unspecified() {
+    let tmp = TempDir::new().unwrap();
+
+    assert_eq!(
+      working_dir_mismatch(&InstallableArgs::Unspecified, Some(tmp.path())),
+      None
+    );
+  }
+
+  #[test]
+  fn no_mismatch_for_a_non_local_flake_reference() {
+    let tmp = TempDir::new().unwrap();
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: String::from("github:example/config"),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(
+      working_dir_mismatch(&installable, Some(tmp.path())),
+      None,
+      "a registry/URL-style flake ref is not a local path to compare"
+    );
+  }
+
+  #[test]
+  fn no_mismatch_when_the_positional_does_not_exist() {
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("does-not-exist");
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: missing.display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(
+      working_dir_mismatch(&installable, Some(tmp.path())),
+      None,
+      "a positional that fails to canonicalise is not this guard's job to \
+       report; the resolver that builds it does that"
+    );
+  }
+
+  #[test]
+  fn no_mismatch_when_the_canonical_paths_agree() {
+    let tmp = TempDir::new().unwrap();
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: tmp.path().display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(working_dir_mismatch(&installable, Some(tmp.path())), None);
+  }
+
+  #[test]
+  fn mismatch_names_both_canonicalised_paths() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: positional_dir.display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    let mismatch = working_dir_mismatch(&installable, Some(&working_dir))
+      .expect("differing canonical paths must be reported as a mismatch");
+    assert_eq!(mismatch.positional, positional_dir.canonicalize().unwrap());
+    assert_eq!(mismatch.working_dir, working_dir.canonicalize().unwrap());
+  }
+
+  #[test]
+  fn mismatch_recognises_the_path_scheme_prefix() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: format!("path:{}", positional_dir.display()),
+      attribute: Vec::new(),
+    });
+
+    assert!(
+      working_dir_mismatch(&installable, Some(&working_dir)).is_some(),
+      "a `path:` prefixed reference is still a local path to compare"
+    );
+  }
+
+  // -- confirm_working_dir_mismatch -----------------------------------------
+
+  #[test]
+  fn force_working_dir_skips_the_warning_and_the_prompt() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+    let mismatch = WorkingDirMismatch {
+      positional:  positional_dir.canonicalize().unwrap(),
+      working_dir: working_dir.canonicalize().unwrap(),
+    };
+
+    confirm_working_dir_mismatch(Scope::User, &mismatch, true)
+      .expect("--force-working-dir must build without prompting");
+  }
+
+  #[test]
+  fn no_tty_and_no_force_refuses_naming_the_mismatch_and_the_flag() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+    let mismatch = WorkingDirMismatch {
+      positional:  positional_dir.canonicalize().unwrap(),
+      working_dir: working_dir.canonicalize().unwrap(),
+    };
+
+    // `cargo test`/`nextest` run with no TTY attached to stdin, so this
+    // exercises the same refusal an operator with no terminal would hit,
+    // without having to fake one.
+    let err = confirm_working_dir_mismatch(Scope::User, &mismatch, false)
+      .expect_err("no TTY and no --force-working-dir must refuse");
+    let message = err.to_string();
+    assert!(
+      message.contains(&mismatch.positional.display().to_string()),
+      "got: {message}"
+    );
+    assert!(
+      message.contains(&mismatch.working_dir.display().to_string()),
+      "got: {message}"
+    );
+    assert!(message.contains("--force-working-dir"), "got: {message}");
+  }
+
+  /// Saves, clears, and restores the env vars `record_activation_at`
+  /// reads for `applied-origin`, so the three cases below do not race
+  /// each other or leak into other tests in the same process.
+  struct OriginEnvGuard {
+    saved: [(&'static str, Option<String>); 4],
+  }
+
+  impl OriginEnvGuard {
+    fn clear() -> Self {
+      let names = [
+        "XI_APPLIED_ORIGIN",
+        "SSH_CONNECTION",
+        "SSH_CLIENT",
+        "SSH_TTY",
+      ];
+      let saved = [
+        (names[0], std::env::var(names[0]).ok()),
+        (names[1], std::env::var(names[1]).ok()),
+        (names[2], std::env::var(names[2]).ok()),
+        (names[3], std::env::var(names[3]).ok()),
+      ];
+      unsafe {
+        for (name, _) in &saved {
+          std::env::remove_var(name);
+        }
+      }
+      Self { saved }
+    }
+
+    fn set(&self, name: &str, value: &str) {
+      debug_assert!(
+        self.saved.iter().any(|(saved_name, _)| *saved_name == name)
+      );
+      unsafe {
+        std::env::set_var(name, value);
+      }
+    }
+  }
+
+  impl Drop for OriginEnvGuard {
+    fn drop(&mut self) {
+      unsafe {
+        for (name, value) in &self.saved {
+          match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  #[serial]
+  fn record_activation_at_writes_applied_origin_for_local_daemon_and_push() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = scope_paths(tmp.path());
+    create_private_dir(&paths.state_dir).expect("mkdir state");
+    let profile = tmp.path().join("profile");
+    fs::write(&profile, "generation").expect("write profile");
+
+    // Case 1: no `XI_APPLIED_ORIGIN` and no SSH session var -> "local",
+    // reusing today's `applied-via` inference.
+    let guard = OriginEnvGuard::clear();
+    record_activation_at(&paths, &profile).expect("record local");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "applied-origin")
+        .expect("read")
+        .as_deref(),
+      Some("local")
+    );
+
+    // Case 2: the gitops daemon tags its own activation explicitly.
+    guard.set("XI_APPLIED_ORIGIN", "daemon");
+    record_activation_at(&paths, &profile).expect("record daemon");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "applied-origin")
+        .expect("read")
+        .as_deref(),
+      Some("daemon")
+    );
+
+    // Case 3: an inbound push tags its target-side activation with the
+    // operator's hostname.
+    guard.set("XI_APPLIED_ORIGIN", "push:operator-host");
+    record_activation_at(&paths, &profile).expect("record push");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "applied-origin")
+        .expect("read")
+        .as_deref(),
+      Some("push:operator-host")
+    );
+
+    drop(guard);
   }
 }
