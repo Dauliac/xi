@@ -114,6 +114,17 @@ pub enum CopyVia {
   Target,
 }
 
+/// When the build step runs relative to shipping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum BuildStrategy {
+  /// Build, copy, and activate each target in sequence (today's behavior).
+  #[default]
+  Interleaved,
+  /// Build every selected target upfront, producing a manifest, then ship
+  /// already-built targets in a second phase.
+  Batched,
+}
+
 /// Which half of the machine the push governs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum PushScope {
@@ -301,6 +312,10 @@ pub struct PushArgs {
   #[arg(long)]
   pub force_dirty: bool,
 
+  /// Build every target upfront, or interleave building with shipping
+  #[arg(long, value_enum, default_value_t = BuildStrategy::Interleaved)]
+  pub build_strategy: BuildStrategy,
+
   /// Which half of the machine to push
   ///
   /// `push` is top-level, so it cannot take the scope from a parent verb
@@ -387,6 +402,8 @@ impl PushArgs {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
+  use clap::Parser as _;
+
   use super::*;
 
   #[test]
@@ -431,6 +448,7 @@ mod tests {
       copy_via: CopyVia::Local,
       fail_fast: false,
       force_dirty: false,
+      build_strategy: BuildStrategy::Interleaved,
       scope: PushScope::System,
     }
   }
@@ -492,6 +510,19 @@ mod tests {
     push_args.copy_via = CopyVia::Target;
     let err = push_args.validate().expect_err("conflicting flags");
     assert!(format!("{err}").contains("--copy-via target"), "got: {err}");
+  }
+
+  #[derive(clap::Parser)]
+  struct PushArgsHarness {
+    #[command(flatten)]
+    push: PushArgs,
+  }
+
+  #[test]
+  fn with_no_build_strategy_flag_the_default_is_interleaved() {
+    let harness = PushArgsHarness::try_parse_from(["push"])
+      .expect("bare `push` invocation should parse");
+    assert_eq!(harness.push.build_strategy, BuildStrategy::Interleaved);
   }
 
   #[test]
