@@ -141,7 +141,11 @@ pub fn resolve(facts: &Facts) -> Decision {
 /// both are somehow set true - the CLI's `ArgGroup` is what should
 /// actually stop that combination from parsing in the first place.
 #[must_use]
-pub fn apply_override(decision: Decision, local: bool, fleet: bool) -> Decision {
+pub fn apply_override(
+  decision: Decision,
+  local: bool,
+  fleet: bool,
+) -> Decision {
   if matches!(decision, Decision::Refuse(_)) {
     return decision;
   }
@@ -267,5 +271,86 @@ mod tests {
       targets:             Vec::new(),
       reuse_cached_digest: false,
     });
+  }
+
+  // -- `--local`/`--here` and `--fleet` overrides (xi-fxgx.2.3) -----------
+
+  fn dirty_with_inventory() -> Facts {
+    Facts {
+      scope_adopted: true,
+      tree_dirty: true,
+      inventory_configured: true,
+      ..Facts::default()
+    }
+  }
+
+  /// The one case where the two flags actually disagree with the
+  /// default: a dirty tree with an inventory configured resolves
+  /// local on its own (untested changes never fan out), but `--fleet`
+  /// forces the whole-fleet rollout anyway.
+  #[test]
+  fn fleet_override_forces_a_rollout_on_a_dirty_tree_with_inventory() {
+    let decision = resolve(&dirty_with_inventory());
+    assert_eq!(decision, Decision::ActivateLocal(LocalReason::Dirty));
+    assert_eq!(
+      apply_override(decision, false, true),
+      Decision::RolloutFleet {
+        targets:             Vec::new(),
+        reuse_cached_digest: false,
+      }
+    );
+  }
+
+  /// `--local` on the same fixture agrees with the default outcome,
+  /// but still activates locally under its own, forced reason rather
+  /// than silently reusing `LocalReason::Dirty`.
+  #[test]
+  fn local_override_keeps_the_same_fixture_local() {
+    let decision = resolve(&dirty_with_inventory());
+    assert_eq!(
+      apply_override(decision, true, false),
+      Decision::ActivateLocal(LocalReason::Forced)
+    );
+  }
+
+  /// The mirror disagreement: a clean, adopted host with an inventory
+  /// rolls out to the fleet on its own, but `--local` forces it back.
+  #[test]
+  fn local_override_forces_local_activation_despite_an_inventory() {
+    let facts = Facts {
+      scope_adopted: true,
+      inventory_configured: true,
+      ..Facts::default()
+    };
+    let decision = resolve(&facts);
+    assert_eq!(decision, Decision::RolloutFleet {
+      targets:             Vec::new(),
+      reuse_cached_digest: false,
+    });
+    assert_eq!(
+      apply_override(decision, true, false),
+      Decision::ActivateLocal(LocalReason::Forced)
+    );
+  }
+
+  /// With neither flag set, the tree's own outcome passes through
+  /// unchanged.
+  #[test]
+  fn no_override_leaves_the_trees_decision_untouched() {
+    let decision = resolve(&dirty_with_inventory());
+    assert_eq!(apply_override(decision.clone(), false, false), decision);
+  }
+
+  /// Neither flag can conjure a destination out of a refusal: with no
+  /// adopted source there is nothing to activate or roll out to.
+  #[test]
+  fn an_override_does_not_resolve_a_refusal() {
+    let decision = resolve(&Facts::default());
+    assert_eq!(decision, Decision::Refuse(RefuseReason::NotAdopted));
+    assert_eq!(
+      apply_override(decision.clone(), true, false),
+      decision.clone()
+    );
+    assert_eq!(apply_override(decision.clone(), false, true), decision);
   }
 }
