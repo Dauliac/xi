@@ -196,6 +196,8 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
   assert_eq!(args.phases().expect("phases parse"), vec![Phase::Activate]);
   args.validate().expect("args are internally consistent");
 
+  let xi_toml_path = root.path().join(".xi.toml");
+
   let report = orchestrate::execute(
     &args,
     &context,
@@ -203,6 +205,7 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     &secrets,
     &PushConfig::default(),
     None,
+    &xi_toml_path,
     &nix,
     &transport,
   )
@@ -230,6 +233,18 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     last_script.contains("switch-to-configuration switch"),
     "got: {last_script}"
   );
+
+  // A fully successful rollout caches `fleet-digest` next to the
+  // operator's `.xi.toml`, not inside any scope's state dir.
+  let cached = std::fs::read_to_string(root.path().join(".xi-fleet-digest"))
+    .expect("fleet-digest cache file must exist after a successful rollout");
+  let expected = xi_deploy::fleet_digest::FleetDigestInput {
+    targets:        vec!["web1".to_owned()],
+    backend:        report.backend.as_str().to_owned(),
+    build_location: report.build_location.clone(),
+  }
+  .digest();
+  assert_eq!(cached, expected);
 }
 
 #[test]
@@ -246,6 +261,8 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
   let mut args = push_args();
   args.targets = vec!["does-not-exist".to_owned()];
 
+  let xi_toml_path = root.path().join(".xi.toml");
+
   let err = orchestrate::execute(
     &args,
     &context,
@@ -253,10 +270,15 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
     &secrets,
     &PushConfig::default(),
     None,
+    &xi_toml_path,
     &nix,
     &transport,
   )
   .expect_err("no such target");
   assert!(format!("{err}").contains("web1"), "got: {err}");
   assert!(transport.copy_calls.lock().expect("lock").is_empty());
+  assert!(
+    !root.path().join(".xi-fleet-digest").exists(),
+    "a refused push must not cache a fleet-digest"
+  );
 }

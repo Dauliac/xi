@@ -58,9 +58,13 @@ use crate::installable::{Installable, InstallableArgs};
 #[must_use = "the sources lock is released when this is dropped, so it has to \
               outlive activation"]
 pub struct PreparedSwitch {
-  installable: InstallableArgs,
+  installable:  InstallableArgs,
   /// `None` when this scope has no source to contend over.
-  _lock:       Option<SourcesLock>,
+  _lock:        Option<SourcesLock>,
+  /// Whether this switch is building from uncommitted edits
+  /// (`--force-dirty` let a dirty working dir through). `false` for
+  /// cases 1 and 3, which never evaluate a working dir at all.
+  dirty_source: bool,
 }
 
 impl PreparedSwitch {
@@ -72,6 +76,16 @@ impl PreparedSwitch {
   #[must_use]
   pub const fn installable(&self) -> &InstallableArgs {
     &self.installable
+  }
+
+  /// Whether this switch is building from a dirty working dir.
+  ///
+  /// The caller's own [`record_activation`] call reads this to decide
+  /// whether the activation it is about to record also qualifies as
+  /// `verified-at`: only a clean-tree build does.
+  #[must_use]
+  pub const fn dirty_source(&self) -> bool {
+    self.dirty_source
   }
 }
 
@@ -182,8 +196,9 @@ pub fn prepare(
     warn_on_dirty_adoption(reference, working_dir.as_deref());
     adopt(scope, reference, &resolved.branch, &paths, opts.force)?;
     return Ok(PreparedSwitch {
-      installable: sources_installable(&paths.sources_dir, attribute.clone()),
-      _lock:       Some(lock),
+      installable:  sources_installable(&paths.sources_dir, attribute.clone()),
+      _lock:        Some(lock),
+      dirty_source: false,
     });
   }
 
@@ -204,6 +219,7 @@ pub fn prepare(
       return Ok(PreparedSwitch {
         installable,
         _lock: None,
+        dirty_source: false,
       });
     }
 
@@ -219,9 +235,12 @@ pub fn prepare(
       working_dir.as_deref(),
     );
 
+    let (installable, dirty_source) =
+      evaluate_from(scope, &paths, working_dir.as_deref(), opts)?;
     return Ok(PreparedSwitch {
-      installable: evaluate_from(scope, &paths, working_dir.as_deref(), opts)?,
-      _lock:       Some(lock),
+      installable,
+      _lock: Some(lock),
+      dirty_source,
     });
   }
 
@@ -229,6 +248,7 @@ pub fn prepare(
   Ok(PreparedSwitch {
     installable,
     _lock: None,
+    dirty_source: false,
   })
 }
 
@@ -258,12 +278,16 @@ fn take_lock(scope: Scope, paths: &ScopePaths) -> Result<SourcesLock> {
 /// non-pushed version is a normal state": the policy answers with the
 /// working dir whenever one is usable, so unpushed commits are deployed
 /// rather than treated as a conflict to resolve.
+///
+/// Also returns whether the resolved tree was dirty, so the caller can
+/// decide whether the activation this installable builds towards also
+/// qualifies as `verified-at` once it succeeds.
 fn evaluate_from(
   scope: Scope,
   paths: &ScopePaths,
   working_dir: Option<&Path>,
   opts: &SwitchSourcesArgs,
-) -> Result<InstallableArgs> {
+) -> Result<(InstallableArgs, bool)> {
   let recorded = recorded_refs(&paths.state_dir)?;
   let what = format!("xi {} switch", scope.as_str());
 
@@ -282,10 +306,10 @@ fn evaluate_from(
         // worse than naming nothing.
         mark_dirty_source(&paths.state_dir);
       }
-      Ok(sources_installable(&path, Vec::new()))
+      Ok((sources_installable(&path, Vec::new()), dirty_source))
     },
     EvaluationSource::SourcesDir { path } => {
-      Ok(sources_installable(&path, Vec::new()))
+      Ok((sources_installable(&path, Vec::new()), false))
     },
     EvaluationSource::Error { reason } => Err(eyre!(reason)),
   }
@@ -590,10 +614,19 @@ fn adopt(
 /// `xi home switch .` is not a sources-managed deployment, and minting
 /// state for it would make `status` describe a source nobody adopted.
 ///
+/// `dirty_source` is [`PreparedSwitch::dirty_source`] from the same
+/// switch: when `false`, this activation also writes `verified-at`,
+/// per `xi-deploy-unified-verb/spec.md`'s "`fleet-digest` and
+/// `verified-at` back the tree's decisions" requirement.
+///
 /// Best-effort by design. The machine is switched whether or not the
 /// metadata lands, so a write failure warns rather than turning a
 /// successful activation into a failed command.
-pub fn record_activation(scope: Scope, activated_profile: &Path) {
+pub fn record_activation(
+  scope: Scope,
+  activated_profile: &Path,
+  dirty_source: bool,
+) {
   let paths = ScopePaths::resolve(scope);
 
   match recorded_remote(&paths.state_dir) {
@@ -608,7 +641,9 @@ pub fn record_activation(scope: Scope, activated_profile: &Path) {
     },
   }
 
-  if let Err(err) = record_activation_at(&paths, activated_profile) {
+  if let Err(err) =
+    record_activation_at(&paths, activated_profile, dirty_source)
+  {
     warn!(
       "activation succeeded but recording it under {} failed: {err}",
       paths.state_dir.display()
@@ -628,6 +663,7 @@ pub fn record_activation(scope: Scope, activated_profile: &Path) {
 pub fn record_activation_at(
   paths: &ScopePaths,
   activated_profile: &Path,
+  dirty_source: bool,
 ) -> Result<()> {
   // The out-link normally lives in a tempdir that is gone by the time
   // anyone reads this file, so resolve it to the store path behind it.
@@ -669,6 +705,19 @@ pub fn record_activation_at(
   // so the two refs belong to the same moment and are written together.
   if let Some(head) = git_head(&paths.sources_dir)? {
     write_state_file(&paths.state_dir, "sources-head", &head)?;
+  }
+
+  // Only a clean-tree build is reproducible from a sha, so only a
+  // clean-tree build gets to say it was verified: `xi deploy`'s
+  // decision tree reads this at the dirty/clean boundary, and a
+  // `verified-at` written for a dirty activation would be a lie about
+  // what was actually confirmed.
+  if !dirty_source {
+    write_state_file(
+      &paths.state_dir,
+      "verified-at",
+      &chrono::Utc::now().to_rfc3339(),
+    )?;
   }
   Ok(())
 }

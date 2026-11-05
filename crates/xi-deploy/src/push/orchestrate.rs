@@ -19,6 +19,7 @@
 
 use std::{
   collections::BTreeMap,
+  path::Path,
   sync::atomic::{AtomicBool, Ordering},
   time::Duration,
 };
@@ -47,7 +48,7 @@ use super::{
   preflight,
   rollback,
 };
-use crate::target::ProfileKind;
+use crate::{fleet_digest::FleetDigestInput, target::ProfileKind};
 
 /// How often [`rollback::confirm`] polls the sentinel.
 ///
@@ -67,11 +68,18 @@ pub struct TargetResult {
   pub outcome: Result<()>,
 }
 
-/// The whole run's report: one [`TargetResult`] per selected target.
-#[derive(Debug, Default)]
+/// The whole run's report: one [`TargetResult`] per selected target,
+/// plus the backend and build-location decisions [`run`] caches into
+/// `fleet-digest` on success.
+#[derive(Debug)]
 pub struct PushReport {
   /// Per-target results, in selection order.
-  pub results: Vec<TargetResult>,
+  pub results:        Vec<TargetResult>,
+  /// The backend this run dispatched to.
+  pub backend:        ResolvedBackend,
+  /// The resolved build-location decision (`--mode`'s effective value),
+  /// as a `fleet-digest` hash input.
+  pub build_location: String,
 }
 
 impl PushReport {
@@ -138,6 +146,7 @@ pub fn run(args: &PushArgs) -> Result<()> {
     &secrets,
     &inventory,
     nix_module_remote_build,
+    Path::new(".xi.toml"),
     &nix,
     &transport,
   )?;
@@ -163,6 +172,26 @@ pub fn run(args: &PushArgs) -> Result<()> {
         .collect::<Vec<_>>()
         .join(", ")
     );
+  }
+}
+
+/// Cache `fleet-digest` next to `xi_toml_path`, after a successful
+/// rollout.
+///
+/// Best-effort by design, matching [`xi_core::sources::switch::record_activation`]'s
+/// stance: the fleet has already been pushed by the time this runs, so
+/// a cache-write failure (an unwritable directory, a read-only repo
+/// checkout) must not turn a successful rollout into a failed command -
+/// it only costs the next run the re-evaluation skip this cache exists
+/// to grant.
+fn cache_fleet_digest(xi_toml_path: &Path, report: &PushReport) {
+  let input = FleetDigestInput {
+    targets:        report.results.iter().map(|r| r.name.clone()).collect(),
+    backend:        report.backend.as_str().to_owned(),
+    build_location: report.build_location.clone(),
+  };
+  if let Err(err) = crate::fleet_digest::store(xi_toml_path, &input) {
+    warn!("push succeeded but caching fleet-digest failed: {err}");
   }
 }
 
@@ -203,6 +232,10 @@ fn refuse_if_dirty(context: &SourcesContext, force_dirty: bool) -> Result<()> {
 /// per-target failure is *not* an error here - it is recorded in the
 /// returned [`PushReport`], so the caller can decide (via
 /// `--fail-fast`'s effect on which targets even ran) how to react.
+///
+/// On a fully successful rollout (every target in the returned
+/// [`PushReport`] `Ok`), also caches `fleet-digest` next to
+/// `xi_toml_path` - best-effort, per [`cache_fleet_digest`].
 #[expect(clippy::too_many_arguments, reason = "every argument is load-bearing")]
 pub fn execute(
   args: &PushArgs,
@@ -211,6 +244,7 @@ pub fn execute(
   secrets: &BTreeMap<String, SecretSpec>,
   inventory: &PushConfig,
   nix_module_remote_build: Option<bool>,
+  xi_toml_path: &Path,
   nix: &dyn Nix,
   transport: &dyn Transport,
 ) -> Result<PushReport> {
@@ -224,9 +258,21 @@ pub fn execute(
   let backend =
     discover::detect_backend(args.backend, &targets, colmena_present);
 
+  // The fleet-level build-location decision, resolved with no per-host
+  // override: a `fleet-digest` hash input describes the whole rollout,
+  // not any one target, so it reads the same ladder `push_one` reads
+  // per-host but without a host name to look up.
+  let fleet_remote_build = config::resolve_remote_build(
+    args.remote_build,
+    "",
+    inventory,
+    nix_module_remote_build,
+  );
+  let build_location = format!("{:?}", args.effective_mode(fleet_remote_build));
+
   if backend != ResolvedBackend::Builtin {
     delegate(backend, flake_ref, args, &targets)?;
-    return Ok(PushReport {
+    let report = PushReport {
       results: targets
         .iter()
         .map(|target| {
@@ -236,7 +282,11 @@ pub fn execute(
           }
         })
         .collect(),
-    });
+      backend,
+      build_location,
+    };
+    cache_fleet_digest(xi_toml_path, &report);
+    return Ok(report);
   }
 
   let limits = PhaseLimits::new(args.parallel);
@@ -284,7 +334,15 @@ pub fn execute(
       .collect()
   });
 
-  Ok(PushReport { results })
+  let report = PushReport {
+    results,
+    backend,
+    build_location,
+  };
+  if report.ok() {
+    cache_fleet_digest(xi_toml_path, &report);
+  }
+  Ok(report)
 }
 
 /// Delegate to the already-tested `deploy-rs` / `colmena` backend `xi
