@@ -441,14 +441,13 @@ impl LogTailArgs {
       follow: self.follow,
     };
     let paths = ScopePaths::resolve(scope);
-    log::tail(scope, &paths.state_dir, &request, &mut std::io::stdout()).map_err(
-      |e| {
+    log::tail(scope, &paths.state_dir, &request, &mut std::io::stdout())
+      .map_err(|e| {
         eyre!(
-          "reading the {scope} sources log failed: {e}\nHas the gitops \
-           daemon run yet? See [[xi-sources-gitops]]."
+          "reading the {scope} sources log failed: {e}\nHas the gitops daemon \
+           run yet? See [[xi-sources-gitops]]."
         )
-      },
-    )
+      })
   }
 }
 

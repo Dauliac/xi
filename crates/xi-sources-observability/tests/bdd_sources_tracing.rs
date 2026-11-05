@@ -5,8 +5,8 @@
 //!
 //! - GIVEN a tick that advances the sources dir and successfully activates
 //! - WHEN the tick runs
-//! - THEN the tracing sink receives one root `xi.sources.tick` span with
-//!   five child spans in order (fetch, verify, resolve, build, activate)
+//! - THEN the tracing sink receives one root `xi.sources.tick` span with five
+//!   child spans in order (fetch, verify, resolve, build, activate)
 //!
 //! There is no tick loop to run yet (`xi-sources-gitops` has not landed
 //! one), so this drives `fields::TickSpan`/`fields::PhaseSpan` - the
@@ -33,7 +33,9 @@ use xi_sources_observability::{
 /// now emit their own explicit `"close"` event while still entered (see
 /// `fields`'s top doc comment), so a second, `fmt`-synthesized close
 /// event here would double every count this file asserts on.
-fn init_with_ancestry(writer: CaptureWriter) -> tracing::subscriber::DefaultGuard {
+fn init_with_ancestry(
+  writer: CaptureWriter,
+) -> tracing::subscriber::DefaultGuard {
   let layer = fmt::layer()
     .json()
     .flatten_event(true)
@@ -63,7 +65,8 @@ fn a_full_tick_emits_one_root_span_and_five_ordered_phase_children() {
   let _ = tick.finish(Outcome::Ok);
 
   let lines = writer.json_lines().expect("captured output must be ndjson");
-  let closes: Vec<_> = lines.iter().filter(|l| l["message"] == "close").collect();
+  let closes: Vec<_> =
+    lines.iter().filter(|l| l["message"] == "close").collect();
 
   // Exactly 5 phase closes plus 1 tick close - no more, no fewer.
   assert_eq!(closes.len(), 6, "got: {lines:#?}");
@@ -86,10 +89,7 @@ fn a_full_tick_emits_one_root_span_and_five_ordered_phase_children() {
     tick_close["span"]["sources_id"],
     "user:https://git.example/cfg"
   );
-  assert_eq!(
-    tick_close["span"]["remote"],
-    "https://git.example/cfg"
-  );
+  assert_eq!(tick_close["span"]["remote"], "https://git.example/cfg");
   assert_eq!(tick_close["span"]["actor_name"], "daemon");
   assert_eq!(tick_close["span"]["outcome"], "ok");
   assert!(tick_close["span"]["duration_ms"].is_number());
@@ -111,7 +111,9 @@ fn a_tick_that_stops_early_emits_only_the_phases_it_reached() {
   let lines = writer.json_lines().expect("captured output must be ndjson");
   let phase_closes: Vec<_> = lines
     .iter()
-    .filter(|l| l["message"] == "close" && l["span"]["name"] == "xi.sources.phase")
+    .filter(|l| {
+      l["message"] == "close" && l["span"]["name"] == "xi.sources.phase"
+    })
     .collect();
   assert_eq!(phase_closes.len(), 1, "got: {lines:#?}");
   assert_eq!(phase_closes[0]["span"]["phase"], "fetch");

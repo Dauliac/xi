@@ -1586,7 +1586,11 @@ impl BootstrapPlan {
       let txn = super::transaction::Transaction::begin(
         &self.lock_state_dir,
         ActorName::Bootstrap.as_str(),
-        format!("xi {} bootstrap: {}", self.scope.as_str(), action.describe()),
+        format!(
+          "xi {} bootstrap: {}",
+          self.scope.as_str(),
+          action.describe()
+        ),
       )?;
 
       match action.apply(runner, facts) {
@@ -2410,7 +2414,9 @@ mod tests {
     let tmp = TempDir::new().unwrap();
     let runner = RecordingRunner::new().with_program("nix");
 
-    full_plan(&tmp).execute(&runner, &facts()).expect("the plan must run");
+    full_plan(&tmp)
+      .execute(&runner, &facts())
+      .expect("the plan must run");
 
     assert!(
       !tmp
@@ -2455,8 +2461,8 @@ mod tests {
       .expect("sentinel present");
     assert_eq!(
       sentinel.actor, "bootstrap",
-      "a bootstrap phase must open its transaction under the bootstrap \
-       actor name"
+      "a bootstrap phase must open its transaction under the bootstrap actor \
+       name"
     );
     sentinel.pid = 0x7FFF_FFFF; // Above any real pid: stands in for "gone".
     fs::write(
@@ -2466,13 +2472,13 @@ mod tests {
     .expect("rewrite sentinel as abandoned");
 
     let ctx = RepairContext {
-      scope: Scope::System,
-      sources_dir: tmp.path().join("sources"),
-      state_dir: state_dir.clone(),
-      nix_conf: None,
-      xi_conf: None,
+      scope:            Scope::System,
+      sources_dir:      tmp.path().join("sources"),
+      state_dir:        state_dir.clone(),
+      nix_conf:         None,
+      xi_conf:          None,
       receipt_evidence: Vec::new(),
-      resume_sync: false,
+      resume_sync:      false,
     };
 
     let abandoned = repair::discover(&ctx)

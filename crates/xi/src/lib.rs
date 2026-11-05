@@ -28,6 +28,28 @@ pub fn long_version() -> &'static str {
   })
 }
 
+/// Whether any argument on the command line names a known top-level
+/// subcommand (by its primary name or an alias).
+///
+/// Used to tell a top-level `xi --help` from a subcommand one like `xi
+/// build --help`: both fail `Main::try_parse()` with the same
+/// `ErrorKind::DisplayHelp`, but only the former should get the
+/// bounded-context-grouped help from `interface::grouped_help`.
+fn has_known_subcommand_token() -> bool {
+  use clap::CommandFactory;
+
+  let cmd = crate::interface::Main::command();
+  let known: std::collections::HashSet<&str> = cmd
+    .get_subcommands()
+    .flat_map(|sub| {
+      std::iter::once(sub.get_name()).chain(sub.get_all_aliases())
+    })
+    .collect();
+  std::env::args()
+    .skip(1)
+    .any(|arg| known.contains(arg.as_str()))
+}
+
 /// Run xi with arguments parsed from the process environment.
 ///
 /// # Errors
@@ -42,7 +64,27 @@ pub fn main() -> Result<()> {
   )
   .complete();
 
-  let mut args = <crate::interface::Main as clap::Parser>::parse();
+  let mut args = match <crate::interface::Main as clap::Parser>::try_parse() {
+    Ok(args) => args,
+    // `DisplayHelp` fires for ANY `--help`/`-h`, at any depth (e.g. `xi
+    // build --help` too), with the subcommand's own help text already
+    // rendered into `err`. Only override it when no subcommand token is
+    // present at all, i.e. this is top-level `xi -h` / `xi --help` (or
+    // the bare-invocation `MissingSubcommand` case)  -  otherwise fall
+    // through to `err.exit()` so `xi build --help` keeps showing build's
+    // help, not ours.
+    Err(err)
+      if matches!(
+        err.kind(),
+        clap::error::ErrorKind::MissingSubcommand
+          | clap::error::ErrorKind::DisplayHelp
+      ) && !has_known_subcommand_token() =>
+    {
+      println!("{}", crate::interface::grouped_help());
+      std::process::exit(0)
+    },
+    Err(err) => err.exit(),
+  };
 
   // Backward compatibility: support XI_ELEVATION_PROGRAM env var if
   // XI_ELEVATION_STRATEGY is not set.

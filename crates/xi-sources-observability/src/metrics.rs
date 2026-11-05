@@ -73,7 +73,7 @@ pub mod names {
   /// Spec's tenth metric, "added to the Prometheus set when OTLP is
   /// enabled" - deliberately *not* in [`ALL`]: unlike the fixed nine,
   /// this one only exists once an operator has opted into OTLP export,
-  /// via [`Metrics::register_otlp_export_failures`].
+  /// via [`Metrics::register_otlp_export_failures`](super::Metrics::register_otlp_export_failures).
   pub const OTLP_EXPORT_FAILURES_TOTAL: &str =
     "xi_sources_otlp_export_failures_total";
 }
@@ -83,15 +83,15 @@ pub mod names {
 pub struct Metrics {
   registry: Registry,
 
-  fetch_total: CounterVec,
-  fetch_duration_seconds: Histogram,
-  sources_head_age_seconds: Gauge,
-  build_duration_seconds: Histogram,
-  build_total: CounterVec,
-  activation_total: CounterVec,
+  fetch_total:                    CounterVec,
+  fetch_duration_seconds:         Histogram,
+  sources_head_age_seconds:       Gauge,
+  build_duration_seconds:         Histogram,
+  build_total:                    CounterVec,
+  activation_total:               CounterVec,
   last_failure_timestamp_seconds: Gauge,
-  lock_wait_duration_seconds: Histogram,
-  hook_total: CounterVec,
+  lock_wait_duration_seconds:     Histogram,
+  hook_total:                     CounterVec,
 }
 
 impl Metrics {
@@ -128,7 +128,10 @@ impl Metrics {
       &["outcome"],
     )?;
     let activation_total = CounterVec::new(
-      Opts::new(names::ACTIVATION_TOTAL, "Outcomes of activating a generation."),
+      Opts::new(
+        names::ACTIVATION_TOTAL,
+        "Outcomes of activating a generation.",
+      ),
       &["outcome"],
     )?;
     let last_failure_timestamp_seconds = Gauge::with_opts(Opts::new(
@@ -194,7 +197,10 @@ impl Metrics {
 
   /// Record one fetch's outcome and duration.
   pub fn record_fetch(&self, outcome: Outcome, duration: Duration) {
-    self.fetch_total.with_label_values(&[outcome.as_str()]).inc();
+    self
+      .fetch_total
+      .with_label_values(&[outcome.as_str()])
+      .inc();
     self.fetch_duration_seconds.observe(duration.as_secs_f64());
   }
 
@@ -205,13 +211,19 @@ impl Metrics {
 
   /// Record one build's outcome and duration.
   pub fn record_build(&self, outcome: Outcome, duration: Duration) {
-    self.build_total.with_label_values(&[outcome.as_str()]).inc();
+    self
+      .build_total
+      .with_label_values(&[outcome.as_str()])
+      .inc();
     self.build_duration_seconds.observe(duration.as_secs_f64());
   }
 
   /// Record one activation's outcome.
   pub fn record_activation(&self, outcome: Outcome) {
-    self.activation_total.with_label_values(&[outcome.as_str()]).inc();
+    self
+      .activation_total
+      .with_label_values(&[outcome.as_str()])
+      .inc();
   }
 
   /// Record that a tick failed at `when`.
@@ -231,13 +243,18 @@ impl Metrics {
       clippy::unwrap_used,
       reason = "see the doc comment: not reachable on a real clock"
     )]
-    let seconds = when.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
+    let seconds = when
+      .duration_since(SystemTime::UNIX_EPOCH)
+      .unwrap()
+      .as_secs_f64();
     self.last_failure_timestamp_seconds.set(seconds);
   }
 
   /// Record how long a tick waited to acquire the sources lock.
   pub fn record_lock_wait(&self, duration: Duration) {
-    self.lock_wait_duration_seconds.observe(duration.as_secs_f64());
+    self
+      .lock_wait_duration_seconds
+      .observe(duration.as_secs_f64());
   }
 
   /// Record one lifecycle hook's outcome.
@@ -255,7 +272,8 @@ impl Metrics {
   /// enabled", so a daemon calls this once, only when
   /// [`crate::config::ObservabilityConfig::otlp`] is `Some`. The
   /// returned [`prometheus::Counter`] is the handle
-  /// [`crate::otlp::FailureCounterLayer`] increments on every export
+  /// `crate::otlp::FailureCounterLayer` (behind the `otlp` feature)
+  /// increments on every export
   /// failure it observes - passing it back rather than this struct
   /// owning the increment keeps `Metrics` free of any OTLP-specific
   /// type even though this one method is OTLP-specific by name.
@@ -343,7 +361,9 @@ mod tests {
   fn gauges_report_the_last_value_set() {
     let metrics = Metrics::new().expect("metrics must register");
     metrics.set_sources_head_age(Duration::from_secs(120));
-    metrics.record_failure_at(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000));
+    metrics.record_failure_at(
+      SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    );
 
     let encoded = metrics.encode().expect("must encode");
     assert!(encoded.contains("xi_sources_sources_head_age_seconds 120"));
@@ -367,8 +387,8 @@ mod tests {
     let encoded = metrics.encode().expect("must encode");
     assert!(
       !encoded.contains(names::OTLP_EXPORT_FAILURES_TOTAL),
-      "the OTLP failure counter must not appear before an OTLP-enabled \
-       daemon registers it:\n{encoded}"
+      "the OTLP failure counter must not appear before an OTLP-enabled daemon \
+       registers it:\n{encoded}"
     );
   }
 
@@ -383,10 +403,7 @@ mod tests {
 
     let encoded = metrics.encode().expect("must encode");
     assert!(
-      encoded.contains(&format!(
-        "{} 2",
-        names::OTLP_EXPORT_FAILURES_TOTAL
-      )),
+      encoded.contains(&format!("{} 2", names::OTLP_EXPORT_FAILURES_TOTAL)),
       "{encoded}"
     );
   }

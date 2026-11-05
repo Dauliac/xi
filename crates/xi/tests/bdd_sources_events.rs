@@ -8,10 +8,7 @@
 
 #![expect(clippy::expect_used, reason = "Fine in tests")]
 
-use std::{
-  path::PathBuf,
-  process::Command,
-};
+use std::{path::PathBuf, process::Command};
 
 /// Path to the binary under test, as cargo built it for this run.
 fn xi() -> PathBuf {
@@ -49,31 +46,26 @@ fn fixture() -> tempfile::TempDir {
     .expect("create schema");
   conn
     .execute(
-      "INSERT INTO events \
-       (ts, kind, sources_id, remote, outcome, old_sha, new_sha, \
-        duration_ms, message) \
-       VALUES ('2026-11-03T09:00:00Z', 'fetch', 'user:x', 'origin', 'ok', \
-       NULL, NULL, 120, NULL)",
+      "INSERT INTO events (ts, kind, sources_id, remote, outcome, old_sha, \
+       new_sha, duration_ms, message) VALUES ('2026-11-03T09:00:00Z', \
+       'fetch', 'user:x', 'origin', 'ok', NULL, NULL, 120, NULL)",
       [],
     )
     .expect("insert fetch");
   conn
     .execute(
-      "INSERT INTO events \
-       (ts, kind, sources_id, remote, outcome, old_sha, new_sha, \
-        duration_ms, message) \
-       VALUES ('2026-11-03T10:00:00Z', 'advance', 'user:x', 'origin', 'ok', \
-       'aaa111', 'bbb222', 5, 'advanced')",
+      "INSERT INTO events (ts, kind, sources_id, remote, outcome, old_sha, \
+       new_sha, duration_ms, message) VALUES ('2026-11-03T10:00:00Z', \
+       'advance', 'user:x', 'origin', 'ok', 'aaa111', 'bbb222', 5, 'advanced')",
       [],
     )
     .expect("insert advance");
   conn
     .execute(
-      "INSERT INTO events \
-       (ts, kind, sources_id, remote, outcome, old_sha, new_sha, \
-        duration_ms, message) \
-       VALUES ('2026-11-03T11:00:00Z', 'activate', 'user:x', NULL, \
-       'degraded', NULL, NULL, NULL, 'activation needed a rebuild')",
+      "INSERT INTO events (ts, kind, sources_id, remote, outcome, old_sha, \
+       new_sha, duration_ms, message) VALUES ('2026-11-03T11:00:00Z', \
+       'activate', 'user:x', NULL, 'degraded', NULL, NULL, NULL, 'activation \
+       needed a rebuild')",
       [],
     )
     .expect("insert activate");
@@ -138,8 +130,9 @@ fn events_lists_every_row_most_recent_first() {
 #[test]
 fn events_filters_by_kind() {
   let tmp = fixture();
-  let (out, ok) =
-    run(tmp.path(), &["home", "sources", "events", "--kind", "advance"]);
+  let (out, ok) = run(tmp.path(), &[
+    "home", "sources", "events", "--kind", "advance",
+  ]);
   assert!(ok, "events failed: {out}");
   assert!(out.contains("advance"), "got: {out}");
   assert!(!out.contains("fetch"), "got: {out}");
@@ -213,8 +206,7 @@ fn no_event_store_yet_is_a_clear_message_not_an_error() {
 #[test]
 fn json_mode_emits_the_schema_versioned_envelope() {
   let tmp = fixture();
-  let (out, ok) =
-    run(tmp.path(), &["home", "sources", "events", "--json"]);
+  let (out, ok) = run(tmp.path(), &["home", "sources", "events", "--json"]);
   assert!(ok, "events --json failed: {out}");
   let parsed: serde_json::Value =
     serde_json::from_str(&out).expect("valid JSON");
@@ -229,8 +221,7 @@ fn json_mode_emits_the_schema_versioned_envelope() {
 #[test]
 fn system_scope_does_not_read_the_user_scope_store() {
   let tmp = fixture(); // a user-scope fixture that must be ignored
-  let (out, ok) =
-    run(tmp.path(), &["system", "sources", "events", "--json"]);
+  let (out, ok) = run(tmp.path(), &["system", "sources", "events", "--json"]);
   assert!(ok, "events failed: {out}");
   let parsed: serde_json::Value =
     serde_json::from_str(&out).expect("valid JSON");

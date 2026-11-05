@@ -36,10 +36,10 @@
 //! `tokio` for one optional feature would be a cost every consumer of
 //! `otlp` pays even if their collector never changes. `opentelemetry_sdk`
 //! 0.33's batch span processor runs its own dedicated worker thread
-//! rather than requiring one - `experimental_trace_batch_span_processor_with_async_runtime`
-//! is an opt-in feature this crate does not enable - so the blocking
-//! `reqwest` client (already a dependency, gated the same way) is
-//! sufficient.
+//! rather than requiring one -
+//! `experimental_trace_batch_span_processor_with_async_runtime` is an opt-in
+//! feature this crate does not enable - so the blocking `reqwest` client
+//! (already a dependency, gated the same way) is sufficient.
 
 use std::time::Duration;
 
@@ -242,7 +242,9 @@ mod tests {
     let config = OtlpConfig::new("http://127.0.0.1:1/v1/traces".to_owned());
     let trace = Trace::build(&config).expect("exporter must build offline");
     let _layer = trace.layer();
-    trace.shutdown().expect("shutdown must flush cleanly with nothing queued");
+    trace
+      .shutdown()
+      .expect("shutdown must flush cleanly with nothing queued");
   }
 
   #[test]
@@ -254,7 +256,8 @@ mod tests {
     // runs earlier, at config-load time, and is not this test's
     // concern).
     let config = OtlpConfig::new("http://not a valid uri/v1/traces".to_owned());
-    let err = Trace::build(&config).expect_err("a malformed URI must fail to build");
+    let err =
+      Trace::build(&config).expect_err("a malformed URI must fail to build");
     assert!(matches!(err, OtlpError::Exporter { .. }));
     assert!(err.to_string().contains("OTLP span exporter"));
   }

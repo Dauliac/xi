@@ -178,6 +178,10 @@ pub fn assert_daemon_write_target(
   clippy::panic,
   reason = "the spec mandates a debug-build panic on this invariant"
 )]
+#[expect(
+  clippy::needless_pass_by_value,
+  reason = "must match the release build's by-value signature; same call site"
+)]
 fn reject_write(violation: WriteOutsideRoot) -> WriteOutsideRoot {
   panic!("{violation}");
 }
@@ -659,7 +663,7 @@ impl fmt::Display for DirtyTree {
 ///
 /// A plain `git status` is read first; when it reports nothing, that is
 /// unambiguous and `paths` is empty. When it reports *something*,
-/// [`tracked_dirty_paths`] is asked to settle what it means: `git
+/// `tracked_dirty_paths` is asked to settle what it means: `git
 /// status`'s staged/unstaged split goes through the index, and
 /// [`sync`]'s `reset --soft` is a deliberate case where the index
 /// disagrees with both `HEAD` and the working tree it just wrote - see
@@ -808,20 +812,18 @@ impl Drop for TempIndex {
 /// right - both tried and rejected while writing the BDD suite for
 /// this bead, kept here so the next person does not retry them:
 ///
-/// - **`git diff --name-only HEAD`**, comparing the working tree
-///   straight to `HEAD` without the real index as an intermediate.
-///   This handles a *modified* tracked file correctly, but
-///   `sync`'s write pass can also add a path the index has never
-///   seen, and `git diff <commit>` resolves "`HEAD` has this path,
-///   the index does not" as a deletion without ever reading the
+/// - **`git diff --name-only HEAD`**, comparing the working tree straight to
+///   `HEAD` without the real index as an intermediate. This handles a
+///   *modified* tracked file correctly, but `sync`'s write pass can also add a
+///   path the index has never seen, and `git diff <commit>` resolves "`HEAD`
+///   has this path, the index does not" as a deletion without ever reading the
 ///   working tree - so a file `sync` just wrote still read as dirty.
-/// - **`git stash create`**, snapshotting index and worktree into a
-///   commit with no ref and no index/worktree side effects. This
-///   handles additions correctly, but its worktree layer does not
-///   reliably represent a path `sync`'s delete pass removed from
-///   disk while the stale index entry survives: the resulting tree
-///   kept the pre-sync blob, so a file `sync` just erased still read
-///   as dirty too.
+/// - **`git stash create`**, snapshotting index and worktree into a commit with
+///   no ref and no index/worktree side effects. This handles additions
+///   correctly, but its worktree layer does not reliably represent a path
+///   `sync`'s delete pass removed from disk while the stale index entry
+///   survives: the resulting tree kept the pre-sync blob, so a file `sync` just
+///   erased still read as dirty too.
 ///
 /// What works: build a **fresh** index from the literal working tree
 /// (`git add -A` against a throw-away [`TempIndex`], touching neither
@@ -839,14 +841,19 @@ impl Drop for TempIndex {
 /// file in the working tree, which is why [`inspect_working_tree`]
 /// only reaches for it once a plain `git status` has already reported
 /// something to disambiguate.
-fn tracked_dirty_paths(working_dir: &Path, git_dir: &Path) -> Option<Vec<String>> {
+fn tracked_dirty_paths(
+  working_dir: &Path,
+  git_dir: &Path,
+) -> Option<Vec<String>> {
   let temp_index = TempIndex::new(git_dir);
-  working_dir_git_with_index(working_dir, &temp_index.0, &["add", "-A"]).ok()?;
-  let diff = working_dir_git_with_index(
-    working_dir,
-    &temp_index.0,
-    &["diff", "--cached", "--name-only", "HEAD"],
-  )
+  working_dir_git_with_index(working_dir, &temp_index.0, &["add", "-A"])
+    .ok()?;
+  let diff = working_dir_git_with_index(working_dir, &temp_index.0, &[
+    "diff",
+    "--cached",
+    "--name-only",
+    "HEAD",
+  ])
   .ok()?;
   Some(non_empty_lines(&diff))
 }
@@ -1645,7 +1652,10 @@ fn clear_sync_sentinel(state_dir: &Path) {
   if let Err(err) = std::fs::remove_file(&sentinel)
     && err.kind() != io::ErrorKind::NotFound
   {
-    warn!("could not clear the sync sentinel {}: {err}", sentinel.display());
+    warn!(
+      "could not clear the sync sentinel {}: {err}",
+      sentinel.display()
+    );
   }
 }
 
@@ -2192,10 +2202,12 @@ mod tests {
       std::fs::read_dir(repo.join(".git"))
         .unwrap()
         .filter_map(Result::ok)
-        .all(|entry| !entry
-          .file_name()
-          .to_string_lossy()
-          .starts_with("xi-dirty-check-index-")),
+        .all(|entry| {
+          !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("xi-dirty-check-index-")
+        }),
       "the temp index file must not survive the call"
     );
   }
@@ -2250,8 +2262,8 @@ mod tests {
     let paths = tracked_dirty_paths(&repo, &git_dir_of(&repo)).unwrap();
     assert!(
       paths.is_empty(),
-      "a working tree identical to HEAD must not read as dirty, got \
-       {paths:?} (raw status: {status:?})"
+      "a working tree identical to HEAD must not read as dirty, got {paths:?} \
+       (raw status: {status:?})"
     );
   }
 

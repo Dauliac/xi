@@ -133,14 +133,16 @@ impl FromStr for Phase {
       "disko" => Ok(Self::Disko),
       "install" => Ok(Self::Install),
       "activate" => Ok(Self::Activate),
-      other => Err(format!(
-        "unknown phase '{other}'; expected one of {}",
-        Self::ALL
-          .iter()
-          .map(|p| p.as_str())
-          .collect::<Vec<_>>()
-          .join(", ")
-      )),
+      other => {
+        Err(format!(
+          "unknown phase '{other}'; expected one of {}",
+          Self::ALL
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+        ))
+      },
     }
   }
 }
@@ -391,8 +393,8 @@ mod tests {
     assert!(
       push_args.validate().is_ok(),
       "the static check only fires on an explicit --mode sources; the \
-       ladder's own answer is resolved later, with the sources context \
-       this layer does not have"
+       ladder's own answer is resolved later, with the sources context this \
+       layer does not have"
     );
   }
 }

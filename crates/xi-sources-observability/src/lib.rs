@@ -8,16 +8,16 @@
 //! not written yet; only the linked ones exist. See *Implementation
 //! status*.
 //!
-//! - **structured logs** - [`fields`] fixes the span vocabulary,
-//!   [`subscriber`] builds the ndjson tracing stack, [`rotating`] is the
-//!   user-scope daily-rotating sink, [`journald`] is the system-scope one,
-//!   `readout` reads either sink back.
-//! - **events** - [`events`] is a tiny sqlite store that outlives the log
-//!   it describes, queried by `xi <scope> sources events`.
-//! - **metrics** - [`metrics`] is the closed Prometheus set and
-//!   [`server`] exposes it on loopback alongside `health`.
-//! - **traces** - `otlp` batches tick root spans out to a collector when
-//!   (and only when) an operator names one.
+//! - **structured logs** - [`fields`] fixes the span vocabulary, [`subscriber`]
+//!   builds the ndjson tracing stack, [`rotating`] is the user-scope
+//!   daily-rotating sink, [`journald`] is the system-scope one, `readout` reads
+//!   either sink back.
+//! - **events** - [`events`] is a tiny sqlite store that outlives the log it
+//!   describes, queried by `xi <scope> sources events`.
+//! - **metrics** - [`metrics`] is the closed Prometheus set and [`server`]
+//!   exposes it on loopback alongside `health`.
+//! - **traces** - `otlp` batches tick root spans out to a collector when (and
+//!   only when) an operator names one.
 //!
 //! [`redact`] cuts across all four: the credential type
 //! (`xi_core::sources::credentials::Secret`) has no `Serialize` impl,
@@ -65,16 +65,11 @@ pub mod fields;
 pub mod redact;
 pub mod rotating;
 
-#[cfg(all(feature = "daemon", unix))]
-pub mod journald;
-#[cfg(feature = "daemon")]
-pub mod metrics;
-#[cfg(feature = "otlp")]
-pub mod otlp;
-#[cfg(feature = "daemon")]
-pub mod server;
-#[cfg(feature = "daemon")]
-pub mod subscriber;
+#[cfg(all(feature = "daemon", unix))] pub mod journald;
+#[cfg(feature = "daemon")] pub mod metrics;
+#[cfg(feature = "otlp")] pub mod otlp;
+#[cfg(feature = "daemon")] pub mod server;
+#[cfg(feature = "daemon")] pub mod subscriber;
 
 pub use config::{LogLevel, ObservabilityConfig};
 pub use fields::{Outcome, Phase, PhaseSpan, TickSpan};

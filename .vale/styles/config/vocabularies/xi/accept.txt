@@ -330,3 +330,6 @@ zsh
 GitOps
 unparsable
 disambiguates
+distro
+distro's
+dotfiles

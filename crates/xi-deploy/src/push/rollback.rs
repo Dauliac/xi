@@ -60,14 +60,14 @@ pub fn plant(
 ) -> Result<()> {
   let script = format!(
     "set -e; mkdir -p $(dirname {sentinel}); date +%s > {sentinel}; printf \
-     '%s\\n' '#!/bin/sh' 'exec switch-to-configuration --rollback' > \
-     {hatch}; chmod 0700 {hatch}",
+     '%s\\n' '#!/bin/sh' 'exec switch-to-configuration --rollback' > {hatch}; \
+     chmod 0700 {hatch}",
     sentinel = shell_quote(SENTINEL_PATH),
     hatch = shell_quote(ESCAPE_HATCH_PATH),
   );
 
-  let outcome =
-    transport.run(target, &RemoteCommand::elevated(script, interactive_sudo))?;
+  let outcome = transport
+    .run(target, &RemoteCommand::elevated(script, interactive_sudo))?;
   if !outcome.success {
     bail!(
       "planting the magic-rollback sentinel on {} failed: {}",
@@ -131,7 +131,7 @@ pub fn trigger(
 ///
 /// `poll_interval` is a parameter rather than a fixed constant so a test
 /// can shrink both it and `window` to keep the real
-/// [`thread::sleep`](std::thread::sleep) calls well under a second;
+/// [`thread::sleep`] calls well under a second;
 /// production callers are expected to pass a few seconds.
 ///
 /// # Errors
@@ -175,8 +175,8 @@ pub fn confirm(
 #[expect(
   clippy::expect_used,
   clippy::unreachable,
-  reason = "Fine in tests; the unreachable! calls are unimplemented \
-            Transport methods this module's tests never exercise"
+  reason = "Fine in tests; the unreachable! calls are unimplemented Transport \
+            methods this module's tests never exercise"
 )]
 mod tests {
   use std::sync::Mutex;
@@ -219,7 +219,11 @@ mod tests {
       _target: &TargetAddr,
       cmd: &RemoteCommand,
     ) -> Result<crate::push::engine::Outcome> {
-      self.commands.lock().expect("commands lock").push(cmd.clone());
+      self
+        .commands
+        .lock()
+        .expect("commands lock")
+        .push(cmd.clone());
       let mut script = self.script.lock().expect("script lock");
       let success = if script.is_empty() {
         true
@@ -280,7 +284,11 @@ mod tests {
     assert_eq!(commands.len(), 1, "one round trip, not two");
     assert!(commands[0].script.contains(SENTINEL_PATH));
     assert!(commands[0].script.contains(ESCAPE_HATCH_PATH));
-    assert!(commands[0].script.contains("switch-to-configuration --rollback"));
+    assert!(
+      commands[0]
+        .script
+        .contains("switch-to-configuration --rollback")
+    );
   }
 
   #[test]
@@ -337,7 +345,11 @@ mod tests {
     // Last command must not be the escape hatch.
     let commands = transport.commands();
     assert!(
-      !commands.last().expect("a command ran").script.contains("rollback.sh")
+      !commands
+        .last()
+        .expect("a command ran")
+        .script
+        .contains("rollback.sh")
     );
   }
 

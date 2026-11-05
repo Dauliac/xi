@@ -15,8 +15,8 @@
 #![expect(
   clippy::expect_used,
   clippy::unreachable,
-  reason = "Fine in tests; the unreachable! calls are unimplemented \
-            Transport methods this scenario never exercises"
+  reason = "Fine in tests; the unreachable! calls are unimplemented Transport \
+            methods this scenario never exercises"
 )]
 
 use std::sync::Mutex;
@@ -26,7 +26,8 @@ use xi_deploy::push::{
   args::{CopyVia, PushBackend},
   discover::{self, PushTarget, ResolvedBackend},
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
-  preflight, rollback,
+  preflight,
+  rollback,
 };
 
 const FLAKE: &str = ".";
@@ -43,10 +44,7 @@ struct FixtureNix {
 impl FixtureNix {
   fn single_nixos_host(name: &'static str) -> Self {
     Self {
-      outputs: vec![(
-        ".#nixosConfigurations",
-        serde_json::json!([name]),
-      )],
+      outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
       built:   Mutex::new(Vec::new()),
     }
   }
@@ -68,7 +66,11 @@ impl Nix for FixtureNix {
   }
 
   fn build(&self, installable: &str) -> Result<String> {
-    self.built.lock().expect("built lock").push(installable.to_owned());
+    self
+      .built
+      .lock()
+      .expect("built lock")
+      .push(installable.to_owned());
     Ok("/nix/store/fake-web1-system".to_owned())
   }
 }
@@ -88,7 +90,11 @@ struct FixtureTransport {
 
 impl Transport for FixtureTransport {
   fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
-    self.run_calls.lock().expect("run_calls lock").push(cmd.clone());
+    self
+      .run_calls
+      .lock()
+      .expect("run_calls lock")
+      .push(cmd.clone());
 
     if cmd.script == "true" {
       return Ok(if self.ssh_unreachable {
@@ -120,11 +126,11 @@ impl Transport for FixtureTransport {
     store_path: &str,
     via: CopyVia,
   ) -> Result<()> {
-    self.copy_closure_calls.lock().expect("copy_closure_calls lock").push((
-      target.name.clone(),
-      store_path.to_owned(),
-      via,
-    ));
+    self
+      .copy_closure_calls
+      .lock()
+      .expect("copy_closure_calls lock")
+      .push((target.name.clone(), store_path.to_owned(), via));
     Ok(())
   }
 
@@ -221,7 +227,13 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
   assert!(report.ok(), "preflight must pass before any mutation");
 
   let store_path = nix.build(&target.installable).expect("builds");
-  assert!(nix.built.lock().expect("built lock").contains(&target.installable));
+  assert!(
+    nix
+      .built
+      .lock()
+      .expect("built lock")
+      .contains(&target.installable)
+  );
 
   transport
     .copy_closure(&target.addr, &store_path, CopyVia::Local)
@@ -229,7 +241,10 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
 
   let activation = activation_script(target, &store_path);
   let outcome = transport
-    .run(&target.addr, &RemoteCommand::elevated(activation.clone(), false))
+    .run(
+      &target.addr,
+      &RemoteCommand::elevated(activation.clone(), false),
+    )
     .expect("activates");
   assert!(outcome.success);
 
@@ -237,8 +252,14 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
   assert_eq!(copies.len(), 1);
   assert_eq!(copies[0], ("web1".to_owned(), store_path, CopyVia::Local));
 
-  let last_script =
-    transport.run_calls.lock().expect("lock").last().expect("ran").script.clone();
+  let last_script = transport
+    .run_calls
+    .lock()
+    .expect("lock")
+    .last()
+    .expect("ran")
+    .script
+    .clone();
   assert_eq!(last_script, activation);
 }
 
@@ -260,7 +281,13 @@ fn an_unreachable_target_fails_preflight_and_the_push_never_mutates() {
     1,
     "an unreachable ssh short-circuits the other three checks"
   );
-  assert!(transport.copy_closure_calls.lock().expect("lock").is_empty());
+  assert!(
+    transport
+      .copy_closure_calls
+      .lock()
+      .expect("lock")
+      .is_empty()
+  );
 }
 
 #[test]
@@ -285,5 +312,9 @@ fn magic_rollback_confirms_a_healthy_activation_without_rolling_back() {
   // The sentinel plant and probes must not be mistaken for the
   // activation itself.
   let runs = transport.run_calls.lock().expect("lock").clone();
-  assert!(runs.iter().any(|cmd| cmd.script.contains(rollback::SENTINEL_PATH)));
+  assert!(
+    runs
+      .iter()
+      .any(|cmd| cmd.script.contains(rollback::SENTINEL_PATH))
+  );
 }

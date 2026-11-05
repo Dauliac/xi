@@ -945,8 +945,7 @@ fn a_second_prestage_does_not_duplicate_the_generic_receipt_entry() {
       .filter(|e| e.action == WRITE_XI_CONF_ACTION)
       .count(),
     1,
-    "the generic receipt must record the action once, not once per run: \
-     {:?}",
+    "the generic receipt must record the action once, not once per run: {:?}",
     receipt.entries
   );
 }
@@ -978,8 +977,8 @@ fn a_kill_before_commit_leaves_an_abandoned_transaction_naming_cache_prestage()
     .expect("sentinel present");
   assert_eq!(
     sentinel.actor, "cache-prestage",
-    "cache prestage must open its transaction under the cache-prestage \
-     actor name"
+    "cache prestage must open its transaction under the cache-prestage actor \
+     name"
   );
   sentinel.pid = 0x7FFF_FFFF; // Above any real pid: stands in for "gone".
   fs::write(

@@ -28,7 +28,7 @@
 //! "tick in flight" and it calling `on_request`. The result would be a
 //! `pause` caller told `Pausing` with nobody left to ever send it the
 //! deferred `Paused` - wedged until the next tick happens to run. Folding
-//! `tick_in_flight` itself into [`Inner`], set by
+//! `tick_in_flight` itself into `Inner`, set by
 //! [`ControlServer::begin_tick`]/[`ControlServer::end_tick`] under the same
 //! lock a connection reads it through, closes that window: every transition
 //! a connection can observe and every transition the tick loop makes happen

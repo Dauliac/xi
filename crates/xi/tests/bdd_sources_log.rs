@@ -28,6 +28,9 @@ fn fixture() -> tempfile::TempDir {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let logs = tmp.path().join("xi").join("logs");
   std::fs::create_dir_all(&logs).expect("mkdir");
+  // rustfmt's nightly string-literal formatting corrupts this escaped
+  // multi-line JSON literal into invalid syntax; keep it hand-formatted.
+  #[rustfmt::skip]
   std::fs::write(
     logs.join("sources-daemon.log"),
     "{\"timestamp\":\"2026-11-03T09:00:00Z\",\"level\":\"INFO\",\"message\":\"fetch \
@@ -59,7 +62,8 @@ fn run(xdg_state_home: &std::path::Path, args: &[&str]) -> (String, bool) {
 fn log_tail_is_mounted_under_sources_for_every_scope_verb() {
   let tmp = fixture();
   for verb in ["home", "system", "nixos", "darwin"] {
-    let (out, ok) = run(tmp.path(), &[verb, "sources", "log", "tail", "--help"]);
+    let (out, ok) =
+      run(tmp.path(), &[verb, "sources", "log", "tail", "--help"]);
     assert!(ok, "`xi {verb} sources log tail --help` failed: {out}");
     assert!(out.contains("--follow"), "{verb}: {out}");
     assert!(out.contains("--since"), "{verb}: {out}");
@@ -90,8 +94,9 @@ fn user_scope_tail_reads_the_xdg_log_path() {
 #[test]
 fn user_scope_tail_filters_by_level() {
   let tmp = fixture();
-  let (out, ok) =
-    run(tmp.path(), &["home", "sources", "log", "tail", "--level", "warn"]);
+  let (out, ok) = run(tmp.path(), &[
+    "home", "sources", "log", "tail", "--level", "warn",
+  ]);
   assert!(ok, "tail failed: {out}");
   assert!(!out.contains("fetch ok"), "got: {out}");
   assert!(out.contains("degraded"), "got: {out}");
@@ -131,8 +136,9 @@ fn an_invalid_since_value_is_rejected_with_a_clear_message() {
 #[test]
 fn an_invalid_level_value_is_rejected_with_a_clear_message() {
   let tmp = fixture();
-  let (out, ok) =
-    run(tmp.path(), &["home", "sources", "log", "tail", "--level", "chatty"]);
+  let (out, ok) = run(tmp.path(), &[
+    "home", "sources", "log", "tail", "--level", "chatty",
+  ]);
   assert!(!ok, "a malformed --level must be rejected");
   assert!(out.contains("--level"), "got: {out}");
   assert!(out.contains("chatty"), "got: {out}");

@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt::Write as _, io};
 
 use anstyle::Style;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::Styles};
@@ -67,21 +67,9 @@ pub struct Main {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(
-  disable_help_subcommand = true,
-  subcommand_help_heading = "Commands",
-  after_help = "\x1b[1mCommand groups:\x1b[0m
-  Config mgmt:  os, home, darwin, system
-  Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
-                doctor
-  Deployment:   deploy, push
-  Development:  develop, search
-  Agent:        agent
-  Auth:         auth
-  Maintenance:  cache, clean, nix, completions"
-)]
+#[command(disable_help_subcommand = true)]
 pub enum XiCommand {
-  // -- Configuration Management --
+  // -- Config mgmt --
   // `nixos` is the spelling the xi-sources-model scope table uses;
   // `os` stays the primary name.
   #[command(alias = "nixos")]
@@ -93,7 +81,7 @@ pub enum XiCommand {
   #[command(hide = true)]
   Switch,
 
-  // -- Flake Operations --
+  // -- Flake ops --
   Build(xi_flake::args::BuildArgs),
   Check(xi_flake::args::CheckArgs),
   Run(xi_flake::args::RunArgs),
@@ -115,18 +103,103 @@ pub enum XiCommand {
   Develop(xi_develop::args::DevelopArgs),
   Search(xi_search::args::SearchArgs),
 
-  // -- Agent context --
+  // -- Agentic --
   Agent(xi_agent::args::AgentArgs),
-
-  // -- Auth --
   Auth(xi_auth::args::AuthArgs),
 
-  // -- Maintenance --
+  // -- Other --
   Cache(crate::cache::args::CacheProxy),
   Clean(crate::clean::args::CleanProxy),
   Nix(crate::proxy::NixProxyArgs),
   /// Generate shell completions for xi
   Completions(CompletionsArgs),
+}
+
+/// Bounded-context groups for the top-level command list, in display order.
+///
+/// clap has no native concept of subcommand groups (only a single
+/// app-wide `subcommand_help_heading`), so [`grouped_help`] renders
+/// clap's own help text and splices these headings into the `Commands:`
+/// section by matching each line's command name against this table. Keep
+/// it in sync with the `// -- Group --` comments on [`XiCommand`] above  -
+/// those comments are what a human reads when adding a command; this
+/// table is what the renderer reads.
+const COMMAND_GROUPS: &[(&str, &[&str])] = &[
+  ("Config mgmt", &["os", "home", "darwin", "system"]),
+  ("Flake ops", &[
+    "build",
+    "check",
+    "run",
+    "fmt",
+    "show",
+    "init",
+    "update",
+    "ci",
+    "lib",
+    "test",
+    "doctor",
+  ]),
+  ("Deployment", &["deploy", "push"]),
+  ("Development", &["develop", "search"]),
+  ("Agentic", &["agent", "auth"]),
+  ("Other", &["cache", "clean", "nix", "completions"]),
+];
+
+/// Render the top-level `xi` help with its `Commands:` section grouped by
+/// bounded context, instead of the flat alphabetical-by-declaration list
+/// clap renders by default.
+///
+/// Delegates all formatting (column alignment, wrapping, color styling)
+/// to clap's own renderer and only splices group headings into the
+/// `Commands:` block, so this stays correct as commands are added,
+/// renamed, or re-described without any hand-maintained duplicate text.
+#[must_use]
+pub fn grouped_help() -> String {
+  let mut cmd = <Main as CommandFactory>::command();
+  let rendered = cmd.render_long_help().to_string();
+  splice_command_groups(&rendered)
+}
+
+fn splice_command_groups(help: &str) -> String {
+  let Some(commands_start) = help.find("Commands:") else {
+    return help.to_owned();
+  };
+  let section_start = commands_start + "Commands:".len();
+  let Some(options_rel) = help[section_start..].find("Options:") else {
+    return help.to_owned();
+  };
+  let options_start = section_start + options_rel;
+
+  let mut heading_before: std::collections::HashMap<&str, &str> =
+    std::collections::HashMap::new();
+  for (group, names) in COMMAND_GROUPS {
+    if let Some(&first) = names.first() {
+      heading_before.insert(first, group);
+    }
+  }
+
+  let mut body = String::new();
+  for line in help[section_start..options_start].lines() {
+    if line.trim().is_empty() {
+      continue;
+    }
+    let name = line.split_whitespace().next().unwrap_or("");
+    if let Some(group) = heading_before.get(name) {
+      if !body.is_empty() {
+        body.push('\n');
+      }
+      let _ = writeln!(body, "  \x1b[1m[{group}]\x1b[0m");
+    }
+    body.push_str("  ");
+    body.push_str(line);
+    body.push('\n');
+  }
+
+  format!(
+    "{}Commands:\n\n{body}\n{}",
+    &help[..commands_start],
+    &help[options_start..]
+  )
 }
 
 #[derive(Parser, Debug)]

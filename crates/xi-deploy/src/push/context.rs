@@ -47,7 +47,10 @@ pub fn resolve_context(scope: Scope) -> Result<SourcesContext> {
 /// parallel test can do safely (the same reason `ConfPaths::resolve_with`
 /// and `ScopePaths::resolve_with` elsewhere in `xi-core` take a lookup
 /// closure rather than reading `std::env` directly).
-fn resolve_context_at(scope: Scope, paths: &ScopePaths) -> Result<SourcesContext> {
+fn resolve_context_at(
+  scope: Scope,
+  paths: &ScopePaths,
+) -> Result<SourcesContext> {
   let resolved = resolve_layers(SourcesConfig::default(), paths)?;
 
   let remote = match resolved.remote {
@@ -69,13 +72,15 @@ fn resolve_context_at(scope: Scope, paths: &ScopePaths) -> Result<SourcesContext
   {
     let hints = configure_with
       .iter()
-      .map(|hint| format!("  - {} ({:?}): {}", hint.name, hint.kind, hint.detail))
+      .map(|hint| {
+        format!("  - {} ({:?}): {}", hint.name, hint.kind, hint.detail)
+      })
       .collect::<Vec<_>>()
       .join("\n");
     bail!(
       "no sources configured for the {scope} scope; `xi push` deploys from \
-       the sources model, so there is nothing to push yet. Configure one of:\n\
-       {hints}"
+       the sources model, so there is nothing to push yet. Configure one \
+       of:\n{hints}"
     );
   }
 
@@ -115,8 +120,8 @@ mod tests {
   /// instead of `$XDG_STATE_HOME` et al, so no test here has to mutate
   /// process-global env vars (unsafe under parallel `cargo test`).
   struct Machine {
-    _root:       TempDir,
-    paths:       ScopePaths,
+    _root: TempDir,
+    paths: ScopePaths,
   }
 
   impl Machine {
@@ -199,9 +204,6 @@ mod tests {
 
     let context = resolve_context_at(Scope::System, &machine.paths)
       .expect("resolves via the state-dir fallback");
-    assert_eq!(
-      context.sources_id.canonical_url,
-      "https://example/adopted"
-    );
+    assert_eq!(context.sources_id.canonical_url, "https://example/adopted");
   }
 }

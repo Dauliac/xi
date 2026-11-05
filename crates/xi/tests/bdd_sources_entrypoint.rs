@@ -552,8 +552,8 @@ fn a_contended_switch_reports_the_holder_and_gives_up() {
   assert!(!ok, "a switch must not take a held lock: {out}");
   assert!(
     !m.sources_dir().join(".git").is_dir(),
-    "the lock is taken before the clone, so a lost race must not have \
-     cloned anything: {out}"
+    "the lock is taken before the clone, so a lost race must not have cloned \
+     anything: {out}"
   );
   assert!(
     m.recorded_remote().is_none(),
@@ -576,8 +576,8 @@ fn a_contended_switch_reports_the_holder_and_gives_up() {
   // time it is waiting.
   assert!(
     out.contains("waiting for the sources lock"),
-    "a contended wait must print progress, not stay silent until it gives \
-     up: {out}"
+    "a contended wait must print progress, not stay silent until it gives up: \
+     {out}"
   );
 
   held.release().expect("release the test process's lock");
@@ -597,7 +597,10 @@ fn a_sync_takes_the_sources_lock() {
   let m = Machine::new();
   let remote = fixture_repo(&m.tmp.path().join("upstream"), "synced");
   m.switch(&[&remote]);
-  assert!(m.sources_dir().join(".git").is_dir(), "adoption must have cloned");
+  assert!(
+    m.sources_dir().join(".git").is_dir(),
+    "adoption must have cloned"
+  );
 
   // A second clone of the same remote stands in for the operator's
   // editable working dir: `sync` only needs something with the remote's

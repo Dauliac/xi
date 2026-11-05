@@ -180,5 +180,8 @@ fn a_failing_reversal_leaves_the_receipt_for_a_retry() {
 
   let (out, ok) = run(&["system", "uninstall"], &state_dir);
   assert!(!ok, "a failing reversal must surface as a failure: {out}");
-  assert!(receipt.is_file(), "the receipt must survive a failed reversal");
+  assert!(
+    receipt.is_file(),
+    "the receipt must survive a failed reversal"
+  );
 }

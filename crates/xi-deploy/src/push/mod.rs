@@ -18,9 +18,9 @@
 //! - [`engine`]  -  the two side-effecting traits ([`engine::Nix`],
 //!   [`engine::Transport`]) that every mutation goes through, so the
 //!   orchestration above is testable without real hosts.
-//! - [`rollback`]  -  the magic-rollback canary loop: plant a sentinel
-//!   and an escape hatch after activation, poll over SSH, and trigger
-//!   the escape hatch if the sentinel goes missing within the window.
+//! - [`rollback`]  -  the magic-rollback canary loop: plant a sentinel and an
+//!   escape hatch after activation, poll over SSH, and trigger the escape hatch
+//!   if the sentinel goes missing within the window.
 //! - [`mode_sources`]  -  `--mode sources`: rsync the sources dir to the
 //!   target's scope-resolved path instead of shipping a built closure.
 //! - [`orchestrate`]  -  ties every module above into the `xi push` verb:

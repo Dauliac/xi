@@ -15,11 +15,12 @@
 //!
 //! [`tracing_journald::Layer`] has no `on_close` hook: unlike
 //! [`crate::subscriber`]'s `fmt` layer (which could synthesize a "close"
-//! event from [`FmtSpan::CLOSE`](tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-//! and feed it to *itself*, never to a sibling layer - see
-//! `tracing-subscriber`'s `fmt_layer.rs`, `on_close`), journald only
-//! ever logs a real [`tracing::Event`]. It *does* attach a span's
-//! recorded fields (including ones recorded after the span opened, such
+//! event from
+//! [`FmtSpan::CLOSE`](tracing_subscriber::fmt::format::FmtSpan::CLOSE) and feed
+//! it to *itself*, never to a sibling layer - see `tracing-subscriber`'s
+//! `fmt_layer.rs`, `on_close`), journald only ever logs a real
+//! [`tracing::Event`]. It *does* attach a span's recorded fields (including
+//! ones recorded after the span opened, such
 //! as [`crate::fields::PhaseSpan::finish`]'s `outcome` and
 //! `duration_ms`) to any event logged while that span is still entered,
 //! because `on_record` mutates the span's field buffer in place.
@@ -88,8 +89,7 @@ pub struct Guard(
 pub fn init(level: LogLevel) -> io::Result<Guard> {
   use tracing_subscriber::layer::SubscriberExt as _;
 
-  let subscriber =
-    tracing_subscriber::Registry::default().with(layer(level)?);
+  let subscriber = tracing_subscriber::Registry::default().with(layer(level)?);
   Ok(Guard(tracing::subscriber::set_default(subscriber)))
 }
 
@@ -138,7 +138,10 @@ mod tests {
       return;
     }
     let guard = init(LogLevel::Info).expect("journald socket is present");
-    tracing::info!(sources_id = "user:x", "xi-sources-observability journald smoke test");
+    tracing::info!(
+      sources_id = "user:x",
+      "xi-sources-observability journald smoke test"
+    );
     drop(guard);
   }
 
@@ -205,8 +208,8 @@ mod tests {
     };
 
     let writer = CaptureWriter::new();
-    let subscriber =
-      tracing_subscriber::Registry::default().with(ndjson_layer(writer.clone()));
+    let subscriber = tracing_subscriber::Registry::default()
+      .with(ndjson_layer(writer.clone()));
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let phase = PhaseSpan::start(Phase::Verify);

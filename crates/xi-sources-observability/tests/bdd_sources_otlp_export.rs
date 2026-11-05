@@ -56,8 +56,9 @@ fn a_failed_export_is_logged_and_counted() {
   let subscriber = tracing_subscriber::Registry::default()
     .with(trace.layer())
     .with(failure_layer);
-  tracing::subscriber::set_global_default(subscriber)
-    .expect("this is the only test in this process installing a global default");
+  tracing::subscriber::set_global_default(subscriber).expect(
+    "this is the only test in this process installing a global default",
+  );
 
   {
     let span = tracing::info_span!("xi.sources.tick", sources_id = "user:x");
@@ -81,7 +82,7 @@ fn a_failed_export_is_logged_and_counted() {
   let encoded = metrics.encode().expect("must encode");
   assert!(
     encoded.contains(&format!("{} 1", names::OTLP_EXPORT_FAILURES_TOTAL)),
-    "the OTLP export-failure counter must have been incremented exactly \
-     once by a shutdown against an unreachable collector:\n{encoded}"
+    "the OTLP export-failure counter must have been incremented exactly once \
+     by a shutdown against an unreachable collector:\n{encoded}"
   );
 }

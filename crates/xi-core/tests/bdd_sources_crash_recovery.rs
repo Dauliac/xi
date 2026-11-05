@@ -870,8 +870,8 @@ fn a_sync_that_fails_mid_copy_leaves_a_real_abandoned_sync_finding() {
 
   assert!(
     m.state_dir().join(SYNC_SENTINEL_NAME).exists(),
-    "sync must have published its own sentinel before the blocked write, \
-     not relied on a test to plant one"
+    "sync must have published its own sentinel before the blocked write, not \
+     relied on a test to plant one"
   );
 
   let findings = m.plan();
@@ -884,8 +884,8 @@ fn a_sync_that_fails_mid_copy_leaves_a_real_abandoned_sync_finding() {
   assert_eq!(
     recorded_working_dir,
     Some(Some(working.clone())),
-    "repair must be able to name the real working dir sync was mid-copy \
-     into, not just that a sync was abandoned: {findings:?}"
+    "repair must be able to name the real working dir sync was mid-copy into, \
+     not just that a sync was abandoned: {findings:?}"
   );
 
   let report = m.repair();

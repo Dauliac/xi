@@ -13,8 +13,8 @@
 #![expect(
   clippy::expect_used,
   clippy::unreachable,
-  reason = "Fine in tests; the unreachable! calls are unimplemented \
-            Transport methods this scenario never exercises"
+  reason = "Fine in tests; the unreachable! calls are unimplemented Transport \
+            methods this scenario never exercises"
 )]
 
 use std::{collections::BTreeMap, process::Command, sync::Mutex};
@@ -101,7 +101,7 @@ impl Nix for FixtureNix {
 #[derive(Default)]
 struct FixtureTransport {
   copy_calls: Mutex<Vec<(String, String)>>,
-  run_calls: Mutex<Vec<RemoteCommand>>,
+  run_calls:  Mutex<Vec<RemoteCommand>>,
 }
 
 impl Transport for FixtureTransport {
@@ -163,19 +163,19 @@ impl Transport for FixtureTransport {
 
 fn push_args() -> PushArgs {
   PushArgs {
-    targets: vec!["web1".to_owned()],
-    on: None,
-    backend: PushBackend::Auto,
-    phase: "activate".to_owned(),
-    mode: Some(PushMode::Closure),
-    remote_build: None,
-    magic_rollback: 0,
-    parallel: 1,
+    targets:          vec!["web1".to_owned()],
+    on:               None,
+    backend:          PushBackend::Auto,
+    phase:            "activate".to_owned(),
+    mode:             Some(PushMode::Closure),
+    remote_build:     None,
+    magic_rollback:   0,
+    parallel:         1,
     interactive_sudo: false,
-    copy_via: CopyVia::Local,
-    fail_fast: false,
-    force_dirty: false,
-    scope: PushScope::System,
+    copy_via:         CopyVia::Local,
+    fail_fast:        false,
+    force_dirty:      false,
+    scope:            PushScope::System,
   }
 }
 

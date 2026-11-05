@@ -2,16 +2,16 @@
 //!
 //! `xi-sources-observability` task 7.1 asks for two guarantees:
 //!
-//! 1. [`Secret`] refuses `Serialize`, so no serde-backed sink can encode
-//!    one. That half is a compile-time fact, already proven by
-//!    `xi_core::sources::credentials` own unit tests - a credential's
-//!    `Debug` impl prints `<redacted>` because there is no other impl for
-//!    a log call's `?` formatter to reach.
+//! 1. [`Secret`] refuses `Serialize`, so no serde-backed sink can encode one.
+//!    That half is a compile-time fact, already proven by
+//!    `xi_core::sources::credentials` own unit tests - a credential's `Debug`
+//!    impl prints `<redacted>` because there is no other impl for a log call's
+//!    `?` formatter to reach.
 //! 2. The *pipeline* a daemon actually runs - the real `tracing_subscriber`
 //!    stack from [`subscriber`], not a bare `format!("{credential:?}")` -
 //!    carries that guarantee through unbroken, and free text that leaks a
-//!    secret's bytes some other way (a git error echoing a URL with
-//!    userinfo) is scrubbed before it reaches the sink.
+//!    secret's bytes some other way (a git error echoing a URL with userinfo)
+//!    is scrubbed before it reaches the sink.
 //!
 //! This file proves (2): it is the "through the real pipeline" counterpart
 //! to `redact`'s unit tests, which prove the type alone.
@@ -61,8 +61,9 @@ fn free_text_carrying_a_secret_is_scrubbed_before_it_reaches_the_pipeline() {
   let mut scrubber = Scrubber::new();
   scrubber.register(&credential);
 
-  let git_error =
-    format!("remote: fatal: bad credentials for https://{SECRET}@host/repo.git");
+  let git_error = format!(
+    "remote: fatal: bad credentials for https://{SECRET}@host/repo.git"
+  );
   let scrubbed = scrubber.scrub(&git_error);
   info!(detail = %scrubbed, "fetch failed");
 
