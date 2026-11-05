@@ -8,6 +8,7 @@
 
 pub mod args;
 pub mod backend;
+pub mod fleet_digest;
 pub mod push;
 pub mod scope;
 pub mod target;
