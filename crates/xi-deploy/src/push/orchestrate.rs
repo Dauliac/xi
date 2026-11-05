@@ -493,6 +493,7 @@ fn push_one(
           transport,
           target,
           args.sources_scope(),
+          origin_host,
           args.interactive_sudo,
         )
       }) {
@@ -1024,8 +1025,11 @@ mod tests {
       "got: {switch_call}"
     );
     assert!(
-      switch_call
-        .ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
+      switch_call.contains("XI_APPLIED_ORIGIN=push:"),
+      "got: {switch_call}"
+    );
+    assert!(
+      switch_call.ends_with("xi system switch /etc/xi/sources#web1"),
       "got: {switch_call}"
     );
   }
