@@ -241,12 +241,23 @@ pub fn resolve_ladder<T>(
 
 /// Resolve the build-location ladder for one target: `--remote-build` >
 /// `.xi.toml [push]` (a per-host `[[push.hosts]]` override first, then
-/// the table-level default) > the Nix-module-provided default > `false`.
+/// the table-level default) > the Nix-module-provided default > the
+/// compiled-in floor.
 ///
-/// `false` (closure: build here, copy the closure in) is the compiled-in
-/// floor every rung can override; `true` is `--mode sources`. The
-/// caller still has the final word through an explicit `--mode` flag -
-/// see [`super::args::PushArgs::effective_mode`] - which this function
+/// Every `xi push` target is, by construction, some other machine (see
+/// this module's own doc comment), so the floor always answers for a
+/// genuinely remote target - there is no local-machine case to special
+/// case here.
+///
+/// The floor is `false` (closure: build here, copy the closure in)
+/// unless [`build_floor_remote_opt_in`] is active, in which case it is
+/// `true` (`--mode sources`: the target builds itself) - the
+/// build-location floor flip, staged behind a one-release opt-in because
+/// it is the one user-visible default change in this effort. Every
+/// higher rung still overrides the floor unchanged either way.
+///
+/// The caller still has the final word through an explicit `--mode` flag
+/// - see [`super::args::PushArgs::effective_mode`] - which this function
 /// does not know about: it only resolves what the *ladder itself* says,
 /// not whether something further up overrides the ladder outright.
 #[must_use]
@@ -256,12 +267,13 @@ pub fn resolve_remote_build(
   toml_config: &PushConfig,
   nix_module_remote_build: Option<bool>,
 ) -> bool {
+  let floor = build_floor_remote_opt_in();
   resolve_ladder(
     cli,
     toml_config.host(host_name).and_then(|host| host.remote_build),
     toml_config.remote_build,
     nix_module_remote_build,
-    false,
+    floor,
   )
 }
 
@@ -522,6 +534,32 @@ mod tests {
   #[test]
   fn with_every_rung_silent_the_floor_is_false() {
     let toml = PushConfig::default();
+    assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  // -- resolve_remote_build: the floor flip, behind its opt-in -----------
+
+  #[test]
+  #[serial]
+  fn with_the_opt_in_off_an_unconfigured_target_still_floors_to_false() {
+    let _guard = EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV);
+    let toml = PushConfig::default();
+    assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  #[test]
+  #[serial]
+  fn with_the_opt_in_on_an_unconfigured_target_floors_to_remote_build() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    let toml = PushConfig::default();
+    assert!(resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  #[test]
+  #[serial]
+  fn with_the_opt_in_on_a_table_level_override_still_wins_over_the_floor() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    let toml = toml_config("[push]\nremote-build = false\n");
     assert!(!resolve_remote_build(None, "web1", &toml, None));
   }
 
