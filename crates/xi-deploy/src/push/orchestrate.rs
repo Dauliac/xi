@@ -33,7 +33,6 @@ use xi_core::sources::{
   SourcesContext,
   conflict::inspect_working_tree,
   secrets::{SecretSpec, UploadAt},
-  shadow,
 };
 
 use super::{
@@ -43,10 +42,7 @@ use super::{
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources,
-  mode_target_pull,
-  preflight,
-  rollback,
+  mode_sources, preflight, rollback,
 };
 use crate::{fleet_digest::FleetDigestInput, target::ProfileKind};
 
@@ -61,7 +57,7 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name:    String,
+  pub name: String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
@@ -74,9 +70,9 @@ pub struct TargetResult {
 #[derive(Debug)]
 pub struct PushReport {
   /// Per-target results, in selection order.
-  pub results:        Vec<TargetResult>,
+  pub results: Vec<TargetResult>,
   /// The backend this run dispatched to.
-  pub backend:        ResolvedBackend,
+  pub backend: ResolvedBackend,
   /// The resolved build-location decision (`--mode`'s effective value),
   /// as a `fleet-digest` hash input.
   pub build_location: String,
@@ -186,8 +182,8 @@ pub fn run(args: &PushArgs) -> Result<()> {
 /// to grant.
 fn cache_fleet_digest(xi_toml_path: &Path, report: &PushReport) {
   let input = FleetDigestInput {
-    targets:        report.results.iter().map(|r| r.name.clone()).collect(),
-    backend:        report.backend.as_str().to_owned(),
+    targets: report.results.iter().map(|r| r.name.clone()).collect(),
+    backend: report.backend.as_str().to_owned(),
     build_location: report.build_location.clone(),
   };
   if let Err(err) = crate::fleet_digest::store(xi_toml_path, &input) {
@@ -275,11 +271,9 @@ pub fn execute(
     let report = PushReport {
       results: targets
         .iter()
-        .map(|target| {
-          TargetResult {
-            name:    target.addr.name.clone(),
-            outcome: Ok(()),
-          }
+        .map(|target| TargetResult {
+          name: target.addr.name.clone(),
+          outcome: Ok(()),
         })
         .collect(),
       backend,
@@ -364,21 +358,21 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref:         Some(flake_ref.to_owned()),
-    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on:                None,
-    backend:           Some(backend.as_str().to_owned()),
-    dry:               false,
-    no_nom:            false,
-    skip_checks:       false,
+    flake_ref: Some(flake_ref.to_owned()),
+    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on: None,
+    backend: Some(backend.as_str().to_owned()),
+    dry: false,
+    no_nom: false,
+    skip_checks: false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout:   if args.magic_rollback > 0 {
+    confirm_timeout: if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace:        false,
-    extra_args:        Vec::new(),
+    show_trace: false,
+    extra_args: Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
@@ -426,12 +420,7 @@ fn push_one(
     inventory,
     nix_module_remote_build,
   );
-  let sources_transport = config::resolve_sources_transport(
-    args.sources_transport,
-    &target.addr.name,
-    inventory,
-  );
-  let mode = args.effective_mode(remote_build, sources_transport);
+  let mode = args.effective_mode(remote_build);
   if mode == PushMode::Sources && args.copy_via == super::args::CopyVia::Target
   {
     bail!(
@@ -483,27 +472,6 @@ fn push_one(
           args.interactive_sudo,
         )
       }) {
-        if args.fail_fast {
-          aborted.store(true, Ordering::SeqCst);
-        }
-        return Err(e);
-      }
-    },
-    PushMode::TargetPull => {
-      let _permit = limits.apply.acquire();
-      check_aborted()?;
-      let to_sha = shadow::head_sha(&context.sources_dir).map_err(|e| {
-        eyre!(
-          "resolving the sources dir HEAD for target-pull on {}: {e}",
-          target.addr.name
-        )
-      })?;
-      if let Err(e) = mode_target_pull::advance(
-        transport,
-        &target.addr,
-        args.sources_scope(),
-        to_sha,
-      ) {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
         }
@@ -648,27 +616,26 @@ mod tests {
 
   use tempfile::TempDir;
   use xi_core::sources::{Scope, SourcesId};
-  use xi_sources_daemon::control::{AdvanceNow, AdvanceReply};
 
   use super::*;
   use crate::push::{
-    args::{CopyVia as PushCopyVia, PushBackend, SourcesTransport},
+    args::{CopyVia as PushCopyVia, PushBackend},
     engine::{Outcome, TargetAddr},
   };
 
   /// Answers flake evaluation from a fixture table keyed by attr, the
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
-    outputs:     Vec<(&'static str, serde_json::Value)>,
-    built:       Mutex<Vec<String>>,
+    outputs: Vec<(&'static str, serde_json::Value)>,
+    built: Mutex<Vec<String>>,
     build_fails: bool,
   }
 
   impl FixtureNix {
     fn single_nixos_host(name: &'static str) -> Self {
       Self {
-        outputs:     vec![(".#nixosConfigurations", serde_json::json!([name]))],
-        built:       Mutex::new(Vec::new()),
+        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
+        built: Mutex::new(Vec::new()),
         build_fails: false,
       }
     }
@@ -706,11 +673,10 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls:        Mutex<Vec<RemoteCommand>>,
-    copy_calls:       Mutex<Vec<(String, String)>>,
-    secret_calls:     Mutex<Vec<String>>,
-    sync_calls:       Mutex<Vec<String>>,
-    advance_calls:    Mutex<Vec<String>>,
+    run_calls: Mutex<Vec<RemoteCommand>>,
+    copy_calls: Mutex<Vec<(String, String)>>,
+    secret_calls: Mutex<Vec<String>>,
+    sync_calls: Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -791,86 +757,6 @@ mod tests {
         .push(format!("{}->{remote}", local.display()));
       Ok(())
     }
-
-    fn advance_now(
-      &self,
-      target: &TargetAddr,
-      _scope: Scope,
-      request: &AdvanceNow,
-    ) -> Result<AdvanceReply> {
-      self
-        .advance_calls
-        .lock()
-        .expect("advance_calls lock")
-        .push(target.name.clone());
-      Ok(AdvanceReply::Advanced {
-        new_head: request.to_sha.clone(),
-      })
-    }
-  }
-
-  /// Wraps a [`FixtureTransport`] so `advance_now` fails the way
-  /// [`super::engine::SshTransport::advance_now`] does when nothing is
-  /// listening on the target's control socket: the local `ssh` spawns
-  /// fine but the daemon side refuses the connection, which
-  /// `SshTransport` reports as a [`super::engine::TargetPullUnreachable`]
-  /// naming `--sources-transport operator-copy` as the fallback.
-  /// Everything else delegates to the wrapped fixture so preflight and
-  /// secret upload still succeed, isolating the failure to the
-  /// target-pull request itself.
-  struct ConnectionRefusedAdvanceNow(FixtureTransport);
-
-  impl Transport for ConnectionRefusedAdvanceNow {
-    fn run(&self, target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
-      self.0.run(target, cmd)
-    }
-
-    fn copy_closure(
-      &self,
-      target: &TargetAddr,
-      store_path: &str,
-      via: PushCopyVia,
-    ) -> Result<()> {
-      self.0.copy_closure(target, store_path, via)
-    }
-
-    fn upload_secret(
-      &self,
-      target: &TargetAddr,
-      local: &std::path::Path,
-      spec: &SecretSpec,
-      interactive_sudo: bool,
-    ) -> Result<()> {
-      self.0.upload_secret(target, local, spec, interactive_sudo)
-    }
-
-    fn sync_dir(
-      &self,
-      target: &TargetAddr,
-      local: &std::path::Path,
-      remote: &str,
-      excludes: &[&str],
-      interactive_sudo: bool,
-    ) -> Result<()> {
-      self
-        .0
-        .sync_dir(target, local, remote, excludes, interactive_sudo)
-    }
-
-    fn advance_now(
-      &self,
-      target: &TargetAddr,
-      _scope: Scope,
-      _request: &AdvanceNow,
-    ) -> Result<AdvanceReply> {
-      Err(eyre!(
-        "target-pull on {} is unreachable (ctl relay exited with exit \
-         status: 255: ssh: connect to host {} port 22: Connection \
-         refused); fall back to --sources-transport operator-copy",
-        target.name,
-        target.ssh_host,
-      ))
-    }
   }
 
   /// Wraps a [`FixtureTransport`] to fail the rebuild-tool preflight
@@ -936,24 +822,6 @@ mod tests {
     (root, context)
   }
 
-  /// Like [`fixture_context`], but `sources_dir` is a real `git init`'d
-  /// repo with one commit, so [`xi_core::sources::shadow::head_sha`]
-  /// (what `--mode target-pull` resolves `to_sha` from) has a real `HEAD`
-  /// to read instead of erroring out on "not a repository".
-  fn fixture_context_with_git_sources() -> (TempDir, SourcesContext) {
-    let root = TempDir::new().expect("tempdir");
-    let sources_dir = root.path().join("sources");
-    std::fs::create_dir_all(&sources_dir).expect("sources dir");
-    git_repo(&sources_dir);
-    let context = SourcesContext::load(
-      SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir,
-      root.path().join("state"),
-    )
-    .expect("load context");
-    (root, context)
-  }
-
   fn args(mode: PushMode) -> PushArgs {
     PushArgs {
       mode: Some(mode),
@@ -969,7 +837,6 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
-      sources_transport: None,
       magic_rollback: 0,
       parallel: 1,
       interactive_sudo: false,
@@ -984,7 +851,7 @@ mod tests {
   fn a_single_host_closure_push_builds_copies_and_activates() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -994,6 +861,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1021,7 +889,7 @@ mod tests {
   fn an_unreachable_target_never_mutates() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = NoRebuildTool(FixtureTransport::default());
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1031,6 +899,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1044,7 +913,7 @@ mod tests {
   fn mode_sources_syncs_and_switches_without_a_local_build() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1054,6 +923,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1079,7 +949,7 @@ mod tests {
     // module that builds the string.
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1089,6 +959,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1118,11 +989,10 @@ mod tests {
   fn with_no_mode_flag_a_toml_remote_build_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      sources_transport: None,
       hosts: Vec::new(),
     };
 
@@ -1133,6 +1003,7 @@ mod tests {
       &secrets,
       &inventory,
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1148,166 +1019,13 @@ mod tests {
   }
 
   #[test]
-  fn a_toml_sources_transport_default_of_target_pull_skips_copy_closure_and_sync_dir()
-   {
-    let nix = FixtureNix::single_nixos_host("web1");
-    let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context_with_git_sources();
-    let secrets = BTreeMap::new();
-    let inventory = PushConfig {
-      sources_transport: Some(SourcesTransport::TargetPull),
-      ..PushConfig::default()
-    };
-
-    let report = execute(
-      &args_with_mode(None),
-      &context,
-      ".",
-      &secrets,
-      &inventory,
-      None,
-      &nix,
-      &transport,
-    )
-    .expect("executes");
-
-    assert!(report.ok(), "{:?}", report.results);
-    assert_eq!(transport.advance_calls.lock().expect("lock").len(), 1);
-    assert_eq!(transport.copy_calls.lock().expect("lock").len(), 0);
-    assert_eq!(transport.sync_calls.lock().expect("lock").len(), 0);
-    assert!(nix.built.lock().expect("lock").is_empty());
-  }
-
-  #[test]
-  fn a_target_pull_with_no_daemon_listening_refuses_rather_than_switching_to_operator_copy()
-   {
-    let nix = FixtureNix::single_nixos_host("web1");
-    let transport = ConnectionRefusedAdvanceNow(FixtureTransport::default());
-    let (_root, context) = fixture_context_with_git_sources();
-    let secrets = BTreeMap::new();
-    let inventory = PushConfig {
-      sources_transport: Some(SourcesTransport::TargetPull),
-      ..PushConfig::default()
-    };
-
-    let report = execute(
-      &args_with_mode(None),
-      &context,
-      ".",
-      &secrets,
-      &inventory,
-      None,
-      &nix,
-      &transport,
-    )
-    .expect("execute reports a per-target failure rather than erroring itself");
-
-    assert!(!report.ok(), "{:?}", report.results);
-    let failures = report.failures();
-    assert_eq!(failures.len(), 1);
-    let message = failures[0]
-      .outcome
-      .as_ref()
-      .expect_err("target-pull must fail when the control socket refuses the connection")
-      .to_string();
-    assert!(
-      message.contains("target-pull on web1 is unreachable"),
-      "got: {message}"
-    );
-    assert!(
-      message.contains("Connection refused"),
-      "the connection-refused cause must not be swallowed; got: {message}"
-    );
-    assert!(
-      message.contains("--sources-transport operator-copy"),
-      "the error must name the fallback for the operator to retry with; got: {message}"
-    );
-    assert_eq!(
-      transport.0.copy_calls.lock().expect("lock").len(),
-      0,
-      "an unreachable target-pull must not silently fall back to copy_closure"
-    );
-    assert_eq!(
-      transport.0.sync_calls.lock().expect("lock").len(),
-      0,
-      "an unreachable target-pull must not silently fall back to sync_dir"
-    );
-  }
-
-  #[test]
-  fn a_per_host_sources_transport_override_outranks_the_table_default() {
-    let nix = FixtureNix::single_nixos_host("web1");
-    let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context_with_git_sources();
-    let secrets = BTreeMap::new();
-    let inventory = PushConfig {
-      sources_transport: Some(SourcesTransport::OperatorCopy),
-      hosts:             vec![super::super::config::PushHost {
-        name:              "web1".to_owned(),
-        ssh:               "web1".to_owned(),
-        remote_build:      None,
-        sources_transport: Some(SourcesTransport::TargetPull),
-      }],
-      ..PushConfig::default()
-    };
-
-    let report = execute(
-      &args_with_mode(None),
-      &context,
-      ".",
-      &secrets,
-      &inventory,
-      None,
-      &nix,
-      &transport,
-    )
-    .expect("executes");
-
-    assert!(report.ok(), "{:?}", report.results);
-    assert_eq!(transport.advance_calls.lock().expect("lock").len(), 1);
-  }
-
-  #[test]
-  fn an_explicit_mode_flag_overrides_the_toml_sources_transport_default() {
-    let nix = FixtureNix::single_nixos_host("web1");
-    let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
-    let secrets = BTreeMap::new();
-    let inventory = PushConfig {
-      sources_transport: Some(SourcesTransport::TargetPull),
-      ..PushConfig::default()
-    };
-
-    let report = execute(
-      &args(PushMode::Closure),
-      &context,
-      ".",
-      &secrets,
-      &inventory,
-      None,
-      &nix,
-      &transport,
-    )
-    .expect("executes");
-
-    assert!(report.ok(), "{:?}", report.results);
-    assert_eq!(
-      transport.advance_calls.lock().expect("lock").len(),
-      0,
-      "--mode closure must win over the ladder's sources-transport=target-pull"
-    );
-    assert_eq!(nix.built.lock().expect("lock").len(), 1);
-  }
-
-  #[test]
   fn an_explicit_mode_flag_overrides_the_toml_remote_build_default() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      sources_transport: None,
       hosts: Vec::new(),
     };
 
@@ -1318,6 +1036,7 @@ mod tests {
       &secrets,
       &inventory,
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1336,7 +1055,7 @@ mod tests {
   fn with_no_mode_flag_the_nix_module_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1346,6 +1065,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       Some(true),
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1359,17 +1079,20 @@ mod tests {
   fn pre_activate_secrets_land_before_the_activation_script_runs() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let mut secrets = BTreeMap::new();
-    secrets.insert("ssh-key".to_owned(), SecretSpec {
-      name:        "ssh-key".to_owned(),
-      source:      std::path::PathBuf::from("./ssh-key"),
-      destination: std::path::PathBuf::from("/run/keys/ssh"),
-      owner:       "root".to_owned(),
-      group:       None,
-      mode:        "0600".to_owned(),
-      upload_at:   UploadAt::PreActivate,
-    });
+    secrets.insert(
+      "ssh-key".to_owned(),
+      SecretSpec {
+        name: "ssh-key".to_owned(),
+        source: std::path::PathBuf::from("./ssh-key"),
+        destination: std::path::PathBuf::from("/run/keys/ssh"),
+        owner: "root".to_owned(),
+        group: None,
+        mode: "0600".to_owned(),
+        upload_at: UploadAt::PreActivate,
+      },
+    );
 
     let report = execute(
       &args(PushMode::Closure),
@@ -1378,6 +1101,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1392,18 +1116,18 @@ mod tests {
   #[test]
   fn a_failed_activation_is_reported_but_other_targets_still_run() {
     let nix = FixtureNix {
-      outputs:     vec![(
+      outputs: vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built:       Mutex::new(Vec::new()),
+      built: Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
       activation_fails: true,
       ..FixtureTransport::default()
     };
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
@@ -1415,6 +1139,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1428,18 +1153,18 @@ mod tests {
   #[test]
   fn fail_fast_skips_targets_queued_after_the_first_failure() {
     let nix = FixtureNix {
-      outputs:     vec![(
+      outputs: vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built:       Mutex::new(Vec::new()),
+      built: Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
       activation_fails: true,
       ..FixtureTransport::default()
     };
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
@@ -1453,6 +1178,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1496,17 +1222,11 @@ mod tests {
     working_dir: std::path::PathBuf,
   ) -> SourcesContext {
     SourcesContext {
-      sources_id:          SourcesId::new(
-        Scope::System,
-        "https://example/repo",
-      ),
-      sources_dir:         working_dir
-        .parent()
-        .expect("parent")
-        .join("sources"),
-      state_dir:           working_dir.parent().expect("parent").join("state"),
-      working_dir:         Some(working_dir),
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: working_dir.parent().expect("parent").join("sources"),
+      state_dir: working_dir.parent().expect("parent").join("state"),
+      working_dir: Some(working_dir),
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -1546,14 +1266,11 @@ mod tests {
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id:          SourcesId::new(
-        Scope::System,
-        "https://example/repo",
-      ),
-      sources_dir:         root.path().join("sources"),
-      state_dir:           root.path().join("state"),
-      working_dir:         None,
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: root.path().join("sources"),
+      state_dir: root.path().join("state"),
+      working_dir: None,
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
