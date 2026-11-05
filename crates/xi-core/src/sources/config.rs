@@ -19,7 +19,7 @@
 //! parsing config itself.
 
 use std::{
-  collections::BTreeMap,
+  collections::{BTreeMap, BTreeSet},
   fmt,
   path::{Path, PathBuf},
   time::Duration,
@@ -2057,4 +2057,67 @@ pub fn classify_positional(raw: &str) -> PositionalKind {
   }
 
   PositionalKind::Installable
+}
+
+// ---------------------------------------------------------------------------
+// Target vs. remote vs. installable  -  what a bare `xi deploy` positional
+// means once a fleet target set exists
+// ---------------------------------------------------------------------------
+
+/// How a single `xi deploy` positional resolved.
+///
+/// Layered on top of [`PositionalKind`] rather than folded into it:
+/// `classify_positional` has no notion of a fleet target, and `xi deploy`
+/// is the only caller that needs one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployPositionalKind {
+  /// A discovered or inventory fleet target name.
+  Target,
+  /// Exactly what `classify_positional` already reads this shape as.
+  Positional(PositionalKind),
+}
+
+/// Disambiguate a single `xi deploy` positional between a fleet target
+/// name and whatever `classify_positional` already reads it as.
+///
+/// The rule, from `xi-deploy-unified-verb`'s spec: anything already shaped
+/// like a path, a URL, an scp spec, or a flake reference keeps exactly the
+/// meaning `classify_positional` already gives it; a bare word with none
+/// of those shapes is checked against `targets` first, falling through to
+/// `classify_positional` unchanged when no target matches.
+///
+/// This is a new function called *before* `classify_positional` rather
+/// than a modification to it, so `classify_positional`'s existing caller
+/// (`switch`) and its test cases are unaffected.
+#[must_use]
+pub fn classify_deploy_positional(
+  raw: &str,
+  targets: &BTreeSet<String>,
+) -> DeployPositionalKind {
+  if is_bare_word(raw) && targets.contains(raw.trim()) {
+    return DeployPositionalKind::Target;
+  }
+  DeployPositionalKind::Positional(classify_positional(raw))
+}
+
+/// Whether `raw` has none of the shapes `classify_positional` already
+/// treats as a path, URL, scp spec, or flake reference  -  the only
+/// positionals the target-name check in [`classify_deploy_positional`] is
+/// allowed to touch.
+fn is_bare_word(raw: &str) -> bool {
+  let arg = raw.trim();
+
+  if arg.is_empty() || arg.contains('#') || arg.contains("://") {
+    return false;
+  }
+  if arg.starts_with('.') || arg.starts_with('/') {
+    return false;
+  }
+  if let Some((prefix, _)) = arg.split_once(':')
+    && INSTALLABLE_SCHEMES.contains(&prefix.to_ascii_lowercase().as_str())
+  {
+    return false;
+  }
+
+  scp_separator(arg).is_none()
 }

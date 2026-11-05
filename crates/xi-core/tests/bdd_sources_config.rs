@@ -773,6 +773,132 @@ fn classification_does_not_depend_on_what_exists_on_disk() {
   );
 }
 
+// -- Requirement: a positional is disambiguated without breaking existing
+// meanings (xi-deploy-unified-verb) --------------------------------------
+
+/// Every shape `classify_positional` already resolves keeps that exact
+/// reading from `classify_deploy_positional` when no target matches -
+/// confirming the new function is layered on top rather than a
+/// modification of the existing one.
+#[test]
+fn deploy_positional_falls_through_to_classify_positional_when_no_target_matches()
+ {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    classify_deploy_positional,
+  };
+
+  let no_targets = BTreeSet::new();
+
+  let remotes = [
+    "git@github.com:you/cfg.git",
+    "git@git.example.org:cfg",
+    "https://git.example/owner/repo.git",
+    "https://git.example/dotfiles",
+    "http://git.example/dotfiles",
+    "ssh://git@example.org/cfg",
+  ];
+  for arg in remotes {
+    assert_eq!(
+      classify_deploy_positional(arg, &no_targets),
+      DeployPositionalKind::Positional(PositionalKind::ConfigRemote),
+      "`{arg}` should keep its config-remote reading"
+    );
+  }
+
+  let installables = [
+    ".",
+    "./cfg",
+    "/abs/path",
+    "/nix/store/abc-foo",
+    "github:owner/repo",
+    "gitlab:owner/repo",
+    "sourcehut:~owner/repo",
+    "git+https://git.example/repo",
+    "git+ssh://git@example.org/cfg",
+    "path:/abs/path",
+    "flake:nixpkgs",
+    "nixpkgs",
+    "",
+  ];
+  for arg in installables {
+    assert_eq!(
+      classify_deploy_positional(arg, &no_targets),
+      DeployPositionalKind::Positional(PositionalKind::Installable),
+      "`{arg}` should keep its installable reading"
+    );
+  }
+}
+
+/// A bare word with none of `classify_positional`'s recognised shapes
+/// resolves as a fleet target when it is in the discovered/inventory set.
+#[test]
+fn deploy_positional_resolves_a_bare_word_target_first() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned(), "db1".to_owned()].into();
+
+  assert_eq!(
+    classify_deploy_positional("web1", &targets),
+    DeployPositionalKind::Target
+  );
+}
+
+/// A bare word matching no target still falls through to
+/// `classify_positional`'s default installable reading.
+#[test]
+fn deploy_positional_falls_through_when_bare_word_matches_no_target() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+
+  assert_eq!(
+    classify_deploy_positional("nope", &targets),
+    DeployPositionalKind::Positional(PositionalKind::Installable)
+  );
+}
+
+/// Anything already shaped like a path, URL, scp spec, or flake
+/// reference keeps that reading even when its text happens to equal a
+/// target name - the target check only ever applies to bare words.
+#[test]
+fn deploy_positional_shaped_args_never_read_as_a_target() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+
+  assert_eq!(
+    classify_deploy_positional("./web1", &targets),
+    DeployPositionalKind::Positional(PositionalKind::Installable),
+    "a path-shaped positional is never read as a target"
+  );
+  assert_eq!(
+    classify_deploy_positional("github:web1", &targets),
+    DeployPositionalKind::Positional(PositionalKind::Installable),
+    "a flake-ref-shaped positional is never read as a target"
+  );
+}
+
 // -- Requirement: Switch is the sources entrypoint, status half -----------
 
 /// The status a fresh adopt reports, decided on bead xi-4p3h.
