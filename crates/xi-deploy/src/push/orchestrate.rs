@@ -42,9 +42,7 @@ use super::{
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources,
-  preflight,
-  rollback,
+  mode_sources, preflight, rollback,
 };
 use crate::{fleet_digest::FleetDigestInput, target::ProfileKind};
 
@@ -59,7 +57,7 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name:    String,
+  pub name: String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
@@ -72,9 +70,9 @@ pub struct TargetResult {
 #[derive(Debug)]
 pub struct PushReport {
   /// Per-target results, in selection order.
-  pub results:        Vec<TargetResult>,
+  pub results: Vec<TargetResult>,
   /// The backend this run dispatched to.
-  pub backend:        ResolvedBackend,
+  pub backend: ResolvedBackend,
   /// The resolved build-location decision (`--mode`'s effective value),
   /// as a `fleet-digest` hash input.
   pub build_location: String,
@@ -184,8 +182,8 @@ pub fn run(args: &PushArgs) -> Result<()> {
 /// to grant.
 fn cache_fleet_digest(xi_toml_path: &Path, report: &PushReport) {
   let input = FleetDigestInput {
-    targets:        report.results.iter().map(|r| r.name.clone()).collect(),
-    backend:        report.backend.as_str().to_owned(),
+    targets: report.results.iter().map(|r| r.name.clone()).collect(),
+    backend: report.backend.as_str().to_owned(),
     build_location: report.build_location.clone(),
   };
   if let Err(err) = crate::fleet_digest::store(xi_toml_path, &input) {
@@ -273,11 +271,9 @@ pub fn execute(
     let report = PushReport {
       results: targets
         .iter()
-        .map(|target| {
-          TargetResult {
-            name:    target.addr.name.clone(),
-            outcome: Ok(()),
-          }
+        .map(|target| TargetResult {
+          name: target.addr.name.clone(),
+          outcome: Ok(()),
         })
         .collect(),
       backend,
@@ -362,21 +358,21 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref:         Some(flake_ref.to_owned()),
-    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on:                None,
-    backend:           Some(backend.as_str().to_owned()),
-    dry:               false,
-    no_nom:            false,
-    skip_checks:       false,
+    flake_ref: Some(flake_ref.to_owned()),
+    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on: None,
+    backend: Some(backend.as_str().to_owned()),
+    dry: false,
+    no_nom: false,
+    skip_checks: false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout:   if args.magic_rollback > 0 {
+    confirm_timeout: if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace:        false,
-    extra_args:        Vec::new(),
+    show_trace: false,
+    extra_args: Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
@@ -630,16 +626,16 @@ mod tests {
   /// Answers flake evaluation from a fixture table keyed by attr, the
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
-    outputs:     Vec<(&'static str, serde_json::Value)>,
-    built:       Mutex<Vec<String>>,
+    outputs: Vec<(&'static str, serde_json::Value)>,
+    built: Mutex<Vec<String>>,
     build_fails: bool,
   }
 
   impl FixtureNix {
     fn single_nixos_host(name: &'static str) -> Self {
       Self {
-        outputs:     vec![(".#nixosConfigurations", serde_json::json!([name]))],
-        built:       Mutex::new(Vec::new()),
+        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
+        built: Mutex::new(Vec::new()),
         build_fails: false,
       }
     }
@@ -677,10 +673,10 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls:        Mutex<Vec<RemoteCommand>>,
-    copy_calls:       Mutex<Vec<(String, String)>>,
-    secret_calls:     Mutex<Vec<String>>,
-    sync_calls:       Mutex<Vec<String>>,
+    run_calls: Mutex<Vec<RemoteCommand>>,
+    copy_calls: Mutex<Vec<(String, String)>>,
+    secret_calls: Mutex<Vec<String>>,
+    sync_calls: Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -855,7 +851,7 @@ mod tests {
   fn a_single_host_closure_push_builds_copies_and_activates() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -865,6 +861,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -892,7 +889,7 @@ mod tests {
   fn an_unreachable_target_never_mutates() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = NoRebuildTool(FixtureTransport::default());
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -902,6 +899,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -915,7 +913,7 @@ mod tests {
   fn mode_sources_syncs_and_switches_without_a_local_build() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -925,6 +923,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -950,7 +949,7 @@ mod tests {
     // module that builds the string.
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -960,6 +959,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -989,11 +989,11 @@ mod tests {
   fn with_no_mode_flag_a_toml_remote_build_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      hosts: Vec::new(),
     };
 
     let report = execute(
@@ -1003,6 +1003,7 @@ mod tests {
       &secrets,
       &inventory,
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1021,11 +1022,11 @@ mod tests {
   fn an_explicit_mode_flag_overrides_the_toml_remote_build_default() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      hosts: Vec::new(),
     };
 
     let report = execute(
@@ -1035,6 +1036,7 @@ mod tests {
       &secrets,
       &inventory,
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1053,7 +1055,7 @@ mod tests {
   fn with_no_mode_flag_the_nix_module_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
 
     let report = execute(
@@ -1063,6 +1065,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       Some(true),
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1076,17 +1079,20 @@ mod tests {
   fn pre_activate_secrets_land_before_the_activation_script_runs() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let mut secrets = BTreeMap::new();
-    secrets.insert("ssh-key".to_owned(), SecretSpec {
-      name:        "ssh-key".to_owned(),
-      source:      std::path::PathBuf::from("./ssh-key"),
-      destination: std::path::PathBuf::from("/run/keys/ssh"),
-      owner:       "root".to_owned(),
-      group:       None,
-      mode:        "0600".to_owned(),
-      upload_at:   UploadAt::PreActivate,
-    });
+    secrets.insert(
+      "ssh-key".to_owned(),
+      SecretSpec {
+        name: "ssh-key".to_owned(),
+        source: std::path::PathBuf::from("./ssh-key"),
+        destination: std::path::PathBuf::from("/run/keys/ssh"),
+        owner: "root".to_owned(),
+        group: None,
+        mode: "0600".to_owned(),
+        upload_at: UploadAt::PreActivate,
+      },
+    );
 
     let report = execute(
       &args(PushMode::Closure),
@@ -1095,6 +1101,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1109,18 +1116,18 @@ mod tests {
   #[test]
   fn a_failed_activation_is_reported_but_other_targets_still_run() {
     let nix = FixtureNix {
-      outputs:     vec![(
+      outputs: vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built:       Mutex::new(Vec::new()),
+      built: Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
       activation_fails: true,
       ..FixtureTransport::default()
     };
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
@@ -1132,6 +1139,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1145,18 +1153,18 @@ mod tests {
   #[test]
   fn fail_fast_skips_targets_queued_after_the_first_failure() {
     let nix = FixtureNix {
-      outputs:     vec![(
+      outputs: vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built:       Mutex::new(Vec::new()),
+      built: Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
       activation_fails: true,
       ..FixtureTransport::default()
     };
-    let (_root, context) = fixture_context();
+    let (root, context) = fixture_context();
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Closure);
     push_args.targets = Vec::new();
@@ -1170,6 +1178,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -1213,17 +1222,11 @@ mod tests {
     working_dir: std::path::PathBuf,
   ) -> SourcesContext {
     SourcesContext {
-      sources_id:          SourcesId::new(
-        Scope::System,
-        "https://example/repo",
-      ),
-      sources_dir:         working_dir
-        .parent()
-        .expect("parent")
-        .join("sources"),
-      state_dir:           working_dir.parent().expect("parent").join("state"),
-      working_dir:         Some(working_dir),
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: working_dir.parent().expect("parent").join("sources"),
+      state_dir: working_dir.parent().expect("parent").join("state"),
+      working_dir: Some(working_dir),
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -1263,14 +1266,11 @@ mod tests {
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id:          SourcesId::new(
-        Scope::System,
-        "https://example/repo",
-      ),
-      sources_dir:         root.path().join("sources"),
-      state_dir:           root.path().join("state"),
-      working_dir:         None,
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: root.path().join("sources"),
+      state_dir: root.path().join("state"),
+      working_dir: None,
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
