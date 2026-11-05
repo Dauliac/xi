@@ -22,6 +22,7 @@
 use std::sync::Mutex;
 
 use color_eyre::Result;
+use xi_core::sources::Scope;
 use xi_deploy::push::{
   args::{CopyVia, PushBackend},
   discover::{self, PushTarget, ResolvedBackend},
@@ -156,15 +157,22 @@ impl Transport for FixtureTransport {
   }
 }
 
-/// The activation script the `builtin` backend's legacy implementation
-/// already uses (`crates/xi-deploy/src/backend/builtin.rs`): register
-/// the store path in the target's profile, then run
-/// `switch-to-configuration switch`.
-fn activation_script(target: &PushTarget, store_path: &str) -> String {
+/// The activation script `xi-deploy-unify-activation` gives the
+/// `builtin` backend's closure-mode push: a remote `xi <scope> switch
+/// <store_path>` invocation, tagged with
+/// `XI_APPLIED_ORIGIN=push:<origin_host>` so the target's
+/// `record_activation_at` can tell this activation apart from a local
+/// interactive switch or a gitops-daemon tick
+/// (`crates/xi-deploy/src/push/orchestrate.rs::activation_script`).
+fn activation_script(
+  _target: &PushTarget,
+  store_path: &str,
+  scope: Scope,
+  origin_host: &str,
+) -> String {
   format!(
-    "nix-env --profile {} --set {store_path} && \
-     {store_path}/bin/switch-to-configuration switch",
-    target.profile_path
+    "XI_APPLIED_ORIGIN=push:{origin_host} xi {} switch {store_path}",
+    scope.sources_verb()
   )
 }
 
@@ -239,7 +247,8 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
     .copy_closure(&target.addr, &store_path, CopyVia::Local)
     .expect("copies the closure");
 
-  let activation = activation_script(target, &store_path);
+  let activation =
+    activation_script(target, &store_path, Scope::System, "operator-host");
   let outcome = transport
     .run(
       &target.addr,

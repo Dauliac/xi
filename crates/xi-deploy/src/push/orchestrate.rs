@@ -30,6 +30,7 @@ use color_eyre::{
 };
 use tracing::{info, warn};
 use xi_core::sources::{
+  Scope,
   SourcesContext,
   conflict::inspect_working_tree,
   secrets::{SecretSpec, UploadAt},
@@ -251,6 +252,11 @@ pub fn execute(
     config::apply_inventory(selected.into_iter().cloned().collect(), inventory);
 
   let colmena_present = discover::has_colmena_hive(nix, flake_ref)?;
+  // The one precedence table (deploy stanza > colmenaHive output >
+  // builtin): `crate::detect_and_deploy`'s own auto-detection, used by
+  // the standalone `xi deploy` verb, is a thin wrapper over this same
+  // function as of xi-jhh4.5.1, so this and that entrypoint can never
+  // disagree on the same flake (SC-UA-005).
   let backend =
     discover::detect_backend(args.backend, &targets, colmena_present);
 
@@ -285,6 +291,10 @@ pub fn execute(
 
   let limits = PhaseLimits::new(args.parallel);
   let aborted = AtomicBool::new(false);
+  // The activation step tags itself with the operator's own hostname,
+  // not the target's, so it is resolved once here rather than inside
+  // each per-target `xi <scope> switch` invocation.
+  let origin_host = xi_core::util::get_hostname(None)?;
 
   let results: Vec<TargetResult> = std::thread::scope(|scope| {
     let handles: Vec<_> = targets
@@ -292,6 +302,7 @@ pub fn execute(
       .map(|target| {
         let limits = &limits;
         let aborted = &aborted;
+        let origin_host = &origin_host;
         let name = target.addr.name.clone();
         let handle = scope.spawn(move || {
           push_one(
@@ -304,6 +315,7 @@ pub fn execute(
             secrets,
             inventory,
             nix_module_remote_build,
+            origin_host,
             aborted,
           )
         });
@@ -341,6 +353,17 @@ pub fn execute(
 
 /// Delegate to the already-tested `deploy-rs` / `colmena` backend `xi
 /// deploy` uses, restricted to the targets this push already selected.
+///
+/// `backend` is passed through as an explicit [`crate::args::DeployArgs`]
+/// override rather than left for [`crate::detect_and_deploy`] to
+/// auto-detect: it was already resolved by [`discover::detect_backend`]
+/// against this push's own filtered target list, and re-detecting from
+/// bare `flake_ref` inside `detect_and_deploy` would discover the
+/// flake's *full* target set instead. `push::orchestrate` and
+/// `crate::detect_and_deploy` share the one `discover::detect_backend`
+/// precedence table either way (xi-jhh4.5.1/5.2) - this is the one place
+/// that table is *called* with push's own targets rather than
+/// rediscovered ones.
 ///
 /// `on` is left unset on the constructed [`crate::args::DeployArgs`]:
 /// [`discover::select`] already applied `--on` against the taxonomy
@@ -398,6 +421,7 @@ fn push_one(
   secrets: &BTreeMap<String, SecretSpec>,
   inventory: &PushConfig,
   nix_module_remote_build: Option<bool>,
+  origin_host: &str,
   aborted: &AtomicBool,
 ) -> Result<()> {
   // Checked again just after every `apply` permit acquisition below: a
@@ -495,7 +519,12 @@ fn push_one(
         return Err(e);
       }
 
-      let script = activation_script(target, &store_path);
+      let script = activation_script(
+        target,
+        &store_path,
+        args.sources_scope(),
+        origin_host,
+      );
       let outcome = transport.run(
         &target.addr,
         &RemoteCommand::elevated(script, args.interactive_sudo),
@@ -582,30 +611,46 @@ fn upload_secrets(
   Ok(())
 }
 
-/// The activation command for `--mode closure`: register `store_path` in
-/// the target's profile, then run the activation the target's kind
-/// needs.
+/// The activation command for `--mode closure`: for a NixOS, Darwin or
+/// Home Manager target, a remote `xi <scope> switch <store_path>`
+/// invocation, tagged with `XI_APPLIED_ORIGIN=push:<origin_host>` so
+/// `record_activation_at` can tell this activation apart from a local
+/// interactive switch or a gitops-daemon tick.
 ///
-/// There is no flake on the target under this mode, so this cannot shell
-/// out to `nixos-rebuild`/`darwin-rebuild switch` the way
-/// [`mode_sources::switch_script`] does - it runs the lower-level
-/// commands those tools themselves run, which is also exactly what
-/// deploy-rs does for the same reason.
+/// `store_path` is already a built, realized store path, so this costs
+/// `xi <scope> switch` nothing it was not already going to do - the
+/// target's own switch command resolves a store path positional as an
+/// installable that needs no further evaluation, then runs the exact
+/// register-and-activate sequence it would for an interactive switch.
+/// `Scope::sources_verb` picks `system` over naming `nixos`/`darwin`
+/// explicitly, which is what lets one push target either kind without
+/// this orchestrator needing to know which OS it runs.
+///
+/// [`ProfileKind::Custom`] and [`ProfileKind::Noop`] have no
+/// corresponding `xi` entrypoint and keep the lower-level commands they
+/// always have: a user-supplied script, or a bare profile registration
+/// with no activation at all.
 #[must_use]
-fn activation_script(target: &PushTarget, store_path: &str) -> String {
-  let register = format!(
-    "nix-env --profile {} --set {store_path}",
-    target.profile_path
-  );
+fn activation_script(
+  target: &PushTarget,
+  store_path: &str,
+  scope: Scope,
+  origin_host: &str,
+) -> String {
   match &target.kind {
-    ProfileKind::NixOS => {
-      format!("{register} && {store_path}/bin/switch-to-configuration switch")
-    },
-    ProfileKind::Darwin | ProfileKind::HomeManager => {
-      format!("{register} && {store_path}/activate")
+    ProfileKind::NixOS | ProfileKind::Darwin | ProfileKind::HomeManager => {
+      format!(
+        "XI_APPLIED_ORIGIN=push:{origin_host} xi {} switch {store_path}",
+        scope.sources_verb()
+      )
     },
     ProfileKind::Custom { activate_command } => activate_command.clone(),
-    ProfileKind::Noop => register,
+    ProfileKind::Noop => {
+      format!(
+        "nix-env --profile {} --set {store_path}",
+        target.profile_path
+      )
+    },
   }
 }
 
@@ -705,9 +750,7 @@ mod tests {
       if cmd.script.starts_with("command -v") {
         return Ok(Outcome::ok(""));
       }
-      if cmd.script.contains("switch-to-configuration switch")
-        && self.activation_fails
-      {
+      if cmd.script.contains("xi system switch") && self.activation_fails {
         return Ok(Outcome::failed("switch-to-configuration failed"));
       }
       Ok(Outcome::ok(""))
@@ -879,9 +922,11 @@ mod tests {
       .expect("ran something")
       .script
       .clone();
+    assert!(last.contains("XI_APPLIED_ORIGIN=push:"), "got: {last}");
+    assert!(last.contains("xi system switch"), "got: {last}");
     assert!(
-      last.contains("switch-to-configuration switch"),
-      "got: {last}"
+      last.contains("/nix/store/fake-"),
+      "activation must point at the copied closure, not a flake ref: {last}"
     );
   }
 
@@ -1259,6 +1304,90 @@ mod tests {
     assert!(
       refuse_if_dirty(&context, true).is_ok(),
       "--force-dirty must override the refusal"
+    );
+  }
+
+  fn push_target(kind: ProfileKind) -> PushTarget {
+    PushTarget {
+      addr: TargetAddr {
+        name:     "web1".to_owned(),
+        ssh_host: "web1".to_owned(),
+        ssh_opts: Vec::new(),
+      },
+      source: crate::push::discover::TargetSource::NixosConfigurations,
+      tags: Vec::new(),
+      installable: String::new(),
+      kind,
+      profile_path: "/nix/var/nix/profiles/system".to_owned(),
+      rebuild_tool: "nixos-rebuild",
+    }
+  }
+
+  #[test]
+  fn nixos_darwin_and_home_manager_activate_via_the_remote_switch_entrypoint() {
+    for kind in [
+      ProfileKind::NixOS,
+      ProfileKind::Darwin,
+      ProfileKind::HomeManager,
+    ] {
+      let target = push_target(kind);
+      let script = activation_script(
+        &target,
+        "/nix/store/fake-web1",
+        Scope::System,
+        "operator-host",
+      );
+      assert_eq!(
+        script,
+        "XI_APPLIED_ORIGIN=push:operator-host xi system switch \
+         /nix/store/fake-web1"
+      );
+    }
+  }
+
+  #[test]
+  fn the_user_scope_resolves_to_the_home_switch_verb() {
+    let target = push_target(ProfileKind::HomeManager);
+    let script = activation_script(
+      &target,
+      "/nix/store/fake-web1",
+      Scope::User,
+      "operator-host",
+    );
+    assert_eq!(
+      script,
+      "XI_APPLIED_ORIGIN=push:operator-host xi home switch \
+       /nix/store/fake-web1"
+    );
+  }
+
+  #[test]
+  fn a_custom_profile_kind_keeps_its_own_activate_command() {
+    let target = push_target(ProfileKind::Custom {
+      activate_command: "/run/current-system/activate".to_owned(),
+    });
+    let script = activation_script(
+      &target,
+      "/nix/store/fake-web1",
+      Scope::System,
+      "operator-host",
+    );
+    assert_eq!(script, "/run/current-system/activate");
+  }
+
+  #[test]
+  fn a_noop_profile_kind_only_registers_the_profile() {
+    let target = push_target(ProfileKind::Noop);
+    let script = activation_script(
+      &target,
+      "/nix/store/fake-web1",
+      Scope::System,
+      "operator-host",
+    );
+    assert_eq!(
+      script,
+      "nix-env --profile /nix/var/nix/profiles/system --set \
+       /nix/store/fake-web1"
     );
   }
 
