@@ -285,6 +285,87 @@ pub fn execute(
   Ok(PushReport { results })
 }
 
+/// Build every selected `PushMode::Closure` target in an upfront phase,
+/// bounded by the same `limits.eval` semaphore `push_one` builds under.
+///
+/// Targets whose resolved mode is [`PushMode::Sources`] are skipped: a
+/// batched build has nothing to build for them, since they ship by
+/// syncing a sources dir rather than a store path. Mode is resolved the
+/// same way `push_one` resolves it, through the build-location ladder
+/// (`config::resolve_remote_build`) rather than `args.mode` alone, so a
+/// target the ladder sends to `--mode sources` is excluded even when no
+/// `--mode` flag was given.
+///
+/// # Errors
+///
+/// Returns the first build failure, naming the target it came from. A
+/// batched build is all-or-nothing: a manifest missing even one target's
+/// store path cannot be used to ship that target later.
+pub fn build_batch(
+  nix: &dyn Nix,
+  targets: &[PushTarget],
+  args: &PushArgs,
+  inventory: &PushConfig,
+  nix_module_remote_build: Option<bool>,
+  limits: &PhaseLimits,
+) -> Result<BTreeMap<String, String>> {
+  let closure_targets: Vec<&PushTarget> = targets
+    .iter()
+    .filter(|target| {
+      let remote_build = config::resolve_remote_build(
+        args.remote_build,
+        &target.addr.name,
+        inventory,
+        nix_module_remote_build,
+      );
+      args.effective_mode(remote_build) == PushMode::Closure
+    })
+    .collect();
+
+  let built: Vec<(String, Result<String>)> = std::thread::scope(|scope| {
+    // Collecting into `handles` first is load-bearing, not needless: every
+    // `scope.spawn` below must run before the first `.join()` blocks, or
+    // the builds serialise one at a time instead of racing concurrently
+    // under `limits.eval`.
+    #[expect(
+      clippy::needless_collect,
+      reason = "forces eager spawn before join"
+    )]
+    let handles: Vec<_> = closure_targets
+      .iter()
+      .map(|target| {
+        let name = target.addr.name.clone();
+        let handle = scope.spawn(move || {
+          let _permit = limits.eval.acquire();
+          nix.build(&target.installable)
+        });
+        (name, handle)
+      })
+      .collect();
+
+    handles
+      .into_iter()
+      .map(|(name, handle)| {
+        let outcome = handle
+          .join()
+          .unwrap_or_else(|_| Err(eyre!("build worker for {name} panicked")));
+        (name, outcome)
+      })
+      .collect()
+  });
+
+  let mut manifest = BTreeMap::new();
+  for (name, outcome) in built {
+    match outcome {
+      Ok(store_path) => {
+        manifest.insert(name, store_path);
+      },
+      Err(e) => return Err(eyre!("batched build failed on {name}: {e}")),
+    }
+  }
+  Ok(manifest)
+}
+
 /// Delegate to the already-tested `deploy-rs` / `colmena` backend `xi
 /// deploy` uses, restricted to the targets this push already selected.
 ///
@@ -1217,5 +1298,108 @@ mod tests {
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
+  }
+
+  // -- build_batch: the upfront build phase a batched strategy runs ----
+
+  /// A `PushMode::Closure`-shaped target, built directly rather than
+  /// through `discover::discover`, since `build_batch` takes a
+  /// `&[PushTarget]` slice rather than a flake to evaluate.
+  fn closure_target(name: &str) -> PushTarget {
+    PushTarget {
+      addr:         TargetAddr {
+        name:     name.to_owned(),
+        ssh_host: name.to_owned(),
+        ssh_opts: Vec::new(),
+      },
+      source:       discover::TargetSource::NixosConfigurations,
+      tags:         Vec::new(),
+      installable:  format!(".#nixosConfigurations.{name}"),
+      kind:         ProfileKind::NixOS,
+      profile_path: "/nix/var/nix/profiles/system".to_owned(),
+      rebuild_tool: "nixos-rebuild",
+    }
+  }
+
+  #[test]
+  fn build_batch_builds_every_closure_target_before_returning() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let targets = vec![closure_target("web1"), closure_target("web2")];
+    let limits = PhaseLimits::new(2);
+
+    let manifest = build_batch(
+      &nix,
+      &targets,
+      &args(PushMode::Closure),
+      &PushConfig::default(),
+      None,
+      &limits,
+    )
+    .expect("batched build succeeds");
+
+    assert_eq!(manifest.len(), 2);
+    assert_eq!(
+      manifest["web1"],
+      format!("/nix/store/fake-{}", targets[0].installable)
+    );
+    assert_eq!(
+      manifest["web2"],
+      format!("/nix/store/fake-{}", targets[1].installable)
+    );
+    assert_eq!(nix.built.lock().expect("built lock").len(), 2);
+  }
+
+  #[test]
+  fn build_batch_skips_targets_the_ladder_resolves_to_sources_mode() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let targets = vec![closure_target("web1"), closure_target("web2")];
+    let limits = PhaseLimits::new(2);
+    // No `--mode` flag: each target's mode comes from the build-location
+    // ladder. `web2`'s per-host override sends it to `--mode sources`,
+    // so only `web1` should end up in the manifest.
+    let inventory = PushConfig {
+      remote_build: None,
+      hosts:        vec![config::PushHost {
+        name:         "web2".to_owned(),
+        ssh:          "web2".to_owned(),
+        remote_build: Some(true),
+      }],
+    };
+
+    let manifest = build_batch(
+      &nix,
+      &targets,
+      &args_with_mode(None),
+      &inventory,
+      None,
+      &limits,
+    )
+    .expect("batched build succeeds");
+
+    assert_eq!(manifest.len(), 1);
+    assert!(manifest.contains_key("web1"));
+    assert_eq!(nix.built.lock().expect("built lock").len(), 1);
+  }
+
+  #[test]
+  fn build_batch_fails_on_the_first_build_failure() {
+    let nix = FixtureNix {
+      outputs:     Vec::new(),
+      built:       Mutex::new(Vec::new()),
+      build_fails: true,
+    };
+    let targets = vec![closure_target("web1")];
+    let limits = PhaseLimits::new(1);
+
+    let err = build_batch(
+      &nix,
+      &targets,
+      &args(PushMode::Closure),
+      &PushConfig::default(),
+      None,
+      &limits,
+    )
+    .expect_err("a failing build must fail the whole batch");
+    assert!(format!("{err}").contains("web1"), "got: {err}");
   }
 }

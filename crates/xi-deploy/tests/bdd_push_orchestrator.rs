@@ -24,7 +24,13 @@ use tempfile::TempDir;
 use xi_core::sources::{Scope, SourcesContext, SourcesId};
 use xi_deploy::push::{
   args::{
-    BuildStrategy, CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope,
+    BuildStrategy,
+    CopyVia,
+    Phase,
+    PushArgs,
+    PushBackend,
+    PushMode,
+    PushScope,
   },
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
