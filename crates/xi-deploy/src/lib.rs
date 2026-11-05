@@ -8,10 +8,12 @@
 
 pub mod args;
 pub mod backend;
+pub mod decision;
 pub mod fleet_digest;
 pub mod push;
 pub mod scope;
 pub mod target;
+pub mod unified_args;
 
 use color_eyre::{Result, eyre::bail};
 // Re-exports for convenience.
