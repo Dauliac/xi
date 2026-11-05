@@ -7,7 +7,7 @@
 //! `xi-core` (for [`crate::sources::config::ConfigError`]), so the
 //! reverse dependency would be a cycle. The schema this restates is
 //! small and has a `PRAGMA user_version` of its own to catch drift at
-//! runtime; [`tests::reading_matches_the_observability_crate_s_schema`]
+//! runtime; `tests::reading_matches_the_observability_crate_s_schema`
 //! is the compile-time tripwire that would catch drift in the table
 //! shape itself.
 //!
@@ -53,8 +53,15 @@ pub enum EventKind {
 
 impl EventKind {
   /// Every spelling, in the order error messages list them.
-  pub const ALL: &'static [&'static str] =
-    &["fetch", "advance", "verify", "build", "activate", "hook", "lock-wait"];
+  pub const ALL: &'static [&'static str] = &[
+    "fetch",
+    "advance",
+    "verify",
+    "build",
+    "activate",
+    "hook",
+    "lock-wait",
+  ];
 
   /// Parse a `--kind` value.
   ///
@@ -172,13 +179,14 @@ pub fn query_events(
     return Ok(Vec::new());
   }
 
-  let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-    .map_err(|source| {
-      EventsReadError::Open {
-        path: path.to_path_buf(),
-        source,
-      }
-    })?;
+  let conn =
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+      .map_err(|source| {
+        EventsReadError::Open {
+          path: path.to_path_buf(),
+          source,
+        }
+      })?;
 
   let mut sql = String::from(
     "SELECT ts, kind, sources_id, remote, outcome, old_sha, new_sha, \
@@ -411,7 +419,10 @@ mod tests {
   #[test]
   fn response_envelope_carries_the_sources_schema_version() {
     let response = EventsResponse::new(vec![]);
-    assert_eq!(response.schema_version, super::super::SOURCES_SCHEMA_VERSION);
+    assert_eq!(
+      response.schema_version,
+      super::super::SOURCES_SCHEMA_VERSION
+    );
   }
 
   /// Pins this module's restated schema against the real one
@@ -444,11 +455,9 @@ mod tests {
       .unwrap();
     conn
       .execute(
-        "INSERT INTO events \
-         (ts, kind, sources_id, remote, outcome, old_sha, new_sha, \
-          duration_ms, message) \
-         VALUES ('2026-11-03T09:00:00Z', 'advance', 'user:x', 'origin', \
-         'ok', 'aaa', 'bbb', 120, 'advanced')",
+        "INSERT INTO events (ts, kind, sources_id, remote, outcome, old_sha, \
+         new_sha, duration_ms, message) VALUES ('2026-11-03T09:00:00Z', \
+         'advance', 'user:x', 'origin', 'ok', 'aaa', 'bbb', 120, 'advanced')",
         [],
       )
       .unwrap();

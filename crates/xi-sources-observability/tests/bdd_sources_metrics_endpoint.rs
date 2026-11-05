@@ -41,7 +41,9 @@ fn get(addr: std::net::SocketAddr, path: &str) -> (u16, String) {
   write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n")
     .expect("write the request");
   let mut response = String::new();
-  stream.read_to_string(&mut response).expect("read the response");
+  stream
+    .read_to_string(&mut response)
+    .expect("read the response");
 
   let status_line = response.lines().next().expect("a status line");
   let code: u16 = status_line
@@ -63,7 +65,10 @@ fn metrics_endpoint_reachable_lists_every_spec_metric_name() {
 
   let handle = std::thread::spawn(move || server.serve_one(&metrics));
   let (status, body) = get(addr, "/metrics");
-  handle.join().expect("the server thread").expect("serve_one");
+  handle
+    .join()
+    .expect("the server thread")
+    .expect("serve_one");
 
   assert_eq!(status, 200, "GET /metrics must succeed: {body}");
   assert!(!body.is_empty(), "the metrics response must not be empty");
@@ -78,7 +83,8 @@ fn metrics_endpoint_reachable_lists_every_spec_metric_name() {
 /// A fresh registry (no ticks have run yet) still answers - a scraper
 /// that connects before the first tick must see every metric name at
 /// zero, not an empty or missing response (spec's Prometheus exporter
-/// requirement; see `metrics::tests::a_fresh_registry_still_exposes_every_metric_name_with_zero_values`
+/// requirement; see
+/// `metrics::tests::a_fresh_registry_still_exposes_every_metric_name_with_zero_values`
 /// for the registry-level half of this proof).
 #[test]
 fn an_untouched_registry_is_still_reachable_and_non_empty() {
@@ -89,7 +95,10 @@ fn an_untouched_registry_is_still_reachable_and_non_empty() {
 
   let handle = std::thread::spawn(move || server.serve_one(&metrics));
   let (status, body) = get(addr, "/metrics");
-  handle.join().expect("the server thread").expect("serve_one");
+  handle
+    .join()
+    .expect("the server thread")
+    .expect("serve_one");
 
   assert_eq!(status, 200);
   assert!(!body.is_empty());

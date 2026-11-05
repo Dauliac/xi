@@ -41,8 +41,8 @@ use crate::config::LogLevel;
 /// Span life cycle only ever surfaces at `CLOSE`: an "open" line would
 /// double the volume of every tick for no benefit, because
 /// [`crate::fields::TickSpan`] and [`crate::fields::PhaseSpan`] declare
-/// their fields as [`tracing::field::Empty`] until the phase is actually done, so an
-/// open-time line would carry half the field set anyway.
+/// their fields as [`tracing::field::Empty`] until the phase is actually done,
+/// so an open-time line would carry half the field set anyway.
 pub fn ndjson_layer<W>(
   writer: W,
 ) -> impl tracing_subscriber::Layer<Registry> + Send + Sync + 'static
@@ -80,14 +80,17 @@ where
 
 /// RAII handle for a subscriber installed as the *thread-local* default.
 ///
-/// Thread-local rather than global ([`tracing::subscriber::set_global_default`])
-/// on purpose: a test that calls [`init_with_writer`] must not leak its
-/// subscriber into a sibling test running on another thread of the same
-/// `cargo test` binary. A real daemon process installs exactly one
-/// subscriber for its own lifetime, so the distinction does not matter
-/// there - the guard simply outlives `main`.
+/// Thread-local rather than global
+/// ([`tracing::subscriber::set_global_default`]) on purpose: a test that calls
+/// [`init_with_writer`] must not leak its subscriber into a sibling test
+/// running on another thread of the same `cargo test` binary. A real daemon
+/// process installs exactly one subscriber for its own lifetime, so the
+/// distinction does not matter there - the guard simply outlives `main`.
 #[derive(Debug)]
-pub struct Guard(#[expect(dead_code, reason = "held for its Drop")] tracing::subscriber::DefaultGuard);
+pub struct Guard(
+  #[expect(dead_code, reason = "held for its Drop")]
+  tracing::subscriber::DefaultGuard,
+);
 
 /// Install the ndjson subscriber for `writer` as this thread's default.
 ///
@@ -132,7 +135,10 @@ pub mod capture {
     /// caller gets exactly one string per ndjson record.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
-      let guard = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+      let guard = self
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
       String::from_utf8_lossy(&guard)
         .lines()
         .map(ToOwned::to_owned)
@@ -145,8 +151,14 @@ pub mod capture {
     ///
     /// Returns the first parse error, which would mean the layer under
     /// test stopped emitting ndjson.
-    pub fn json_lines(&self) -> Result<Vec<serde_json::Value>, serde_json::Error> {
-      self.lines().iter().map(|line| serde_json::from_str(line)).collect()
+    pub fn json_lines(
+      &self,
+    ) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+      self
+        .lines()
+        .iter()
+        .map(|line| serde_json::from_str(line))
+        .collect()
     }
   }
 

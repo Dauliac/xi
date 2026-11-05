@@ -56,22 +56,24 @@ Start here if you are new to xi.
 
 Jump to the guide that matches your task.
 
-| Guide                                                                   | Goal                                                                   |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| [NixOS](guides/nixos.md)                                                | Switch, boot, test, build, rollback NixOS systems                      |
-| [Home Manager](guides/home-manager.md)                                  | Switch and build Home Manager configurations                           |
-| [Darwin](guides/darwin.md)                                              | Switch and build nix-darwin configurations                             |
-| [Run and locate](guides/run-and-locate.md)                              | Run flake apps and locate nixpkgs commands (comma-style)               |
-| [Deploy](guides/deploy.md)                                              | Deploy configurations to remote machines (deploy-rs, colmena, builtin) |
-| [Search](guides/search.md)                                              | Search packages, options, PRs, and issues                              |
-| [Clean](guides/clean.md)                                                | Garbage-collect the Nix store with fine-grained control                |
-| [Remote Build](guides/remote-build.md)                                  | Build on remote hosts and activate over SSH                            |
-| [Module Setup](guides/module-setup.md)                                  | Configure NixOS, Home Manager, or flake-parts modules                  |
-| [Nix Proxy](guides/nix-proxy.md)                                        | Use xi as a transparent replacement for the nix CLI                    |
-| [Multi-flake Development](guides/multi-flake-development.md)            | Build against a local clone of a flake input                           |
-| [Binary Cache](guides/binary-cache.md)                                  | Push build results to S3, SSH, or Cachix                               |
-| [CI and Materialization](guides/ci.md)                                  | Validate and build a flake in CI, with materialised outputs            |
-| [Formatting, Testing, and Inspection](guides/formatting-and-testing.md) | Format code, run tests, inspect outputs, evaluate libs                 |
+| Guide                                                                      | Goal                                                                        |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| [Bootstrap Directly from the OS](guides/bootstrap-direct.md)               | Adopt a config repo and switch on a laptop or workstation you're sitting at |
+| [Push to a Server and Hand Off to GitOps](guides/bootstrap-push-gitops.md) | Push once to a lab or server, then let its own daemon keep it in sync       |
+| [Iterate Without a Push Round-Trip](guides/local-iteration.md)             | Point xi at a local checkout so switches pick up commits with no push       |
+| [NixOS](guides/nixos.md)                                                   | Switch, boot, test, build, rollback NixOS systems                           |
+| [Home Manager](guides/home-manager.md)                                     | Switch and build Home Manager configurations                                |
+| [Darwin](guides/darwin.md)                                                 | Switch and build nix-darwin configurations                                  |
+| [Run and locate](guides/run-and-locate.md)                                 | Run flake apps and locate nixpkgs commands (comma-style)                    |
+| [Deploy](guides/deploy.md)                                                 | Deploy configurations to remote machines (deploy-rs, colmena, builtin)      |
+| [Search](guides/search.md)                                                 | Search packages, options, PRs, and issues                                   |
+| [Clean](guides/clean.md)                                                   | Garbage-collect the Nix store with fine-grained control                     |
+| [Remote Build](guides/remote-build.md)                                     | Build on remote hosts and activate over SSH                                 |
+| [Module Setup](guides/module-setup.md)                                     | Configure NixOS, Home Manager, or flake-parts modules                       |
+| [Nix Proxy](guides/nix-proxy.md)                                           | Use xi as a transparent replacement for the nix CLI                         |
+| [Binary Cache](guides/binary-cache.md)                                     | Push build results to S3, SSH, or Cachix                                    |
+| [CI and Materialization](guides/ci.md)                                     | Validate and build a flake in CI, with materialised outputs                 |
+| [Formatting, Testing, and Inspection](guides/formatting-and-testing.md)    | Format code, run tests, inspect outputs, evaluate libs                      |
 
 ### Reference — look up facts
 
@@ -88,10 +90,9 @@ Precise, complete specifications for every knob xi exposes.
 
 Read these when you want to understand _why_ xi works the way it does.
 
-| Document                                                      | Topic                                                               |
-| ------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [Architecture](explanation/architecture.md)                   | Design philosophy and how xi works under the hood                   |
-| [Community and Heritage](explanation/community.md)            | nh lineage, borrowed patterns, and acknowledgments                  |
-| [The Xi Specification](explanation/xi-spec.md)                | Conventions and guarantees: naming, cascades, elevation             |
-| [Flake Input Overrides](explanation/flake-input-overrides.md) | Why --override-input is the only mechanism, and the traps it leaves |
-| [The Develop Model](explanation/develop-model.md)             | Daemon, shell integration, trust, and live reload                   |
+| Document                                           | Topic                                                   |
+| -------------------------------------------------- | ------------------------------------------------------- |
+| [Architecture](explanation/architecture.md)        | Design philosophy and how xi works under the hood       |
+| [Community and Heritage](explanation/community.md) | nh lineage, borrowed patterns, and acknowledgments      |
+| [The Xi Specification](explanation/xi-spec.md)     | Conventions and guarantees: naming, cascades, elevation |
+| [The Develop Model](explanation/develop-model.md)  | Daemon, shell integration, trust, and live reload       |

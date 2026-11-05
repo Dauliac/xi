@@ -3,7 +3,8 @@
 //! This is the piece [`super`]'s module doc named as missing: the glue
 //! that resolves a push's sources context, discovers and selects its
 //! targets, picks a backend, and dispatches each target through
-//! [`preflight`], [`engine`] (or [`mode_sources`] under `--mode sources`)
+//! [`preflight`], [`engine`](super::engine) (or [`mode_sources`] under
+//! `--mode sources`)
 //! and, if asked, [`rollback`]'s confirmation window.
 //!
 //! `deploy-rs` and `colmena` targets are not reimplemented here: those
@@ -40,7 +41,9 @@ use super::{
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources, preflight, rollback,
+  mode_sources,
+  preflight,
+  rollback,
 };
 use crate::target::ProfileKind;
 
@@ -55,7 +58,7 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name: String,
+  pub name:    String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
@@ -172,7 +175,8 @@ pub fn run(args: &PushArgs) -> Result<()> {
 /// # Errors
 ///
 /// Propagates a git-invocation failure from [`inspect_working_tree`], or
-/// refuses naming the dirty paths per [`xi_core::sources::conflict::DirtyTree::refusal`].
+/// refuses naming the dirty paths per
+/// [`xi_core::sources::conflict::DirtyTree::refusal`].
 fn refuse_if_dirty(context: &SourcesContext, force_dirty: bool) -> Result<()> {
   if force_dirty {
     return Ok(());
@@ -223,9 +227,11 @@ pub fn execute(
     return Ok(PushReport {
       results: targets
         .iter()
-        .map(|target| TargetResult {
-          name: target.addr.name.clone(),
-          outcome: Ok(()),
+        .map(|target| {
+          TargetResult {
+            name:    target.addr.name.clone(),
+            outcome: Ok(()),
+          }
         })
         .collect(),
     });
@@ -298,21 +304,21 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref: Some(flake_ref.to_owned()),
-    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on: None,
-    backend: Some(backend.as_str().to_owned()),
-    dry: false,
-    no_nom: false,
-    skip_checks: false,
+    flake_ref:         Some(flake_ref.to_owned()),
+    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on:                None,
+    backend:           Some(backend.as_str().to_owned()),
+    dry:               false,
+    no_nom:            false,
+    skip_checks:       false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout: if args.magic_rollback > 0 {
+    confirm_timeout:   if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace: false,
-    extra_args: Vec::new(),
+    show_trace:        false,
+    extra_args:        Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
@@ -365,8 +371,8 @@ fn push_one(
   {
     bail!(
       "the build-location ladder resolved {} to --mode sources, which never \
-       copies a closure from this machine, so --copy-via target has \
-       nothing to choose",
+       copies a closure from this machine, so --copy-via target has nothing \
+       to choose",
       target.addr.name
     );
   }
@@ -566,16 +572,16 @@ mod tests {
   /// Answers flake evaluation from a fixture table keyed by attr, the
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
-    outputs: Vec<(&'static str, serde_json::Value)>,
-    built: Mutex<Vec<String>>,
+    outputs:     Vec<(&'static str, serde_json::Value)>,
+    built:       Mutex<Vec<String>>,
     build_fails: bool,
   }
 
   impl FixtureNix {
     fn single_nixos_host(name: &'static str) -> Self {
       Self {
-        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
-        built: Mutex::new(Vec::new()),
+        outputs:     vec![(".#nixosConfigurations", serde_json::json!([name]))],
+        built:       Mutex::new(Vec::new()),
         build_fails: false,
       }
     }
@@ -613,10 +619,10 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls: Mutex<Vec<RemoteCommand>>,
-    copy_calls: Mutex<Vec<(String, String)>>,
-    secret_calls: Mutex<Vec<String>>,
-    sync_calls: Mutex<Vec<String>>,
+    run_calls:        Mutex<Vec<RemoteCommand>>,
+    copy_calls:       Mutex<Vec<(String, String)>>,
+    secret_calls:     Mutex<Vec<String>>,
+    sync_calls:       Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -915,7 +921,8 @@ mod tests {
       "got: {switch_call}"
     );
     assert!(
-      switch_call.ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
+      switch_call
+        .ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
       "got: {switch_call}"
     );
   }
@@ -928,7 +935,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts: Vec::new(),
+      hosts:        Vec::new(),
     };
 
     let report = execute(
@@ -946,8 +953,8 @@ mod tests {
     assert!(report.ok(), "{:?}", report.results);
     assert!(
       nix.built.lock().expect("lock").is_empty(),
-      "the ladder resolved remote-build=true, so this must behave as \
-       --mode sources and never build locally"
+      "the ladder resolved remote-build=true, so this must behave as --mode \
+       sources and never build locally"
     );
     assert_eq!(transport.sync_calls.lock().expect("lock").len(), 1);
   }
@@ -960,7 +967,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts: Vec::new(),
+      hosts:        Vec::new(),
     };
 
     let report = execute(
@@ -1013,18 +1020,15 @@ mod tests {
     let transport = FixtureTransport::default();
     let (_root, context) = fixture_context();
     let mut secrets = BTreeMap::new();
-    secrets.insert(
-      "ssh-key".to_owned(),
-      SecretSpec {
-        name: "ssh-key".to_owned(),
-        source: std::path::PathBuf::from("./ssh-key"),
-        destination: std::path::PathBuf::from("/run/keys/ssh"),
-        owner: "root".to_owned(),
-        group: None,
-        mode: "0600".to_owned(),
-        upload_at: UploadAt::PreActivate,
-      },
-    );
+    secrets.insert("ssh-key".to_owned(), SecretSpec {
+      name:        "ssh-key".to_owned(),
+      source:      std::path::PathBuf::from("./ssh-key"),
+      destination: std::path::PathBuf::from("/run/keys/ssh"),
+      owner:       "root".to_owned(),
+      group:       None,
+      mode:        "0600".to_owned(),
+      upload_at:   UploadAt::PreActivate,
+    });
 
     let report = execute(
       &args(PushMode::Closure),
@@ -1047,11 +1051,11 @@ mod tests {
   #[test]
   fn a_failed_activation_is_reported_but_other_targets_still_run() {
     let nix = FixtureNix {
-      outputs: vec![(
+      outputs:     vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built: Mutex::new(Vec::new()),
+      built:       Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
@@ -1083,11 +1087,11 @@ mod tests {
   #[test]
   fn fail_fast_skips_targets_queued_after_the_first_failure() {
     let nix = FixtureNix {
-      outputs: vec![(
+      outputs:     vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built: Mutex::new(Vec::new()),
+      built:       Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
@@ -1119,7 +1123,8 @@ mod tests {
         format!("{}", r.outcome.as_ref().expect_err("a fail-fast failure"))
           .contains("skipped")
       }),
-      "with --parallel 1 the second target must observe the first's failure: {:?}",
+      "with --parallel 1 the second target must observe the first's failure: \
+       {:?}",
       report.results
     );
   }
@@ -1150,11 +1155,17 @@ mod tests {
     working_dir: std::path::PathBuf,
   ) -> SourcesContext {
     SourcesContext {
-      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir: working_dir.parent().expect("parent").join("sources"),
-      state_dir: working_dir.parent().expect("parent").join("state"),
-      working_dir: Some(working_dir),
-      refs: xi_core::sources::RefLineage::default(),
+      sources_id:          SourcesId::new(
+        Scope::System,
+        "https://example/repo",
+      ),
+      sources_dir:         working_dir
+        .parent()
+        .expect("parent")
+        .join("sources"),
+      state_dir:           working_dir.parent().expect("parent").join("state"),
+      working_dir:         Some(working_dir),
+      refs:                xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -1194,11 +1205,14 @@ mod tests {
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir: root.path().join("sources"),
-      state_dir: root.path().join("state"),
-      working_dir: None,
-      refs: xi_core::sources::RefLineage::default(),
+      sources_id:          SourcesId::new(
+        Scope::System,
+        "https://example/repo",
+      ),
+      sources_dir:         root.path().join("sources"),
+      state_dir:           root.path().join("state"),
+      working_dir:         None,
+      refs:                xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());

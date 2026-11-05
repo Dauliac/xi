@@ -9,7 +9,7 @@
 //! and stable - a path, a line-level ndjson shape, a level ordering - so
 //! it is restated here rather than restructuring the dependency graph to
 //! share it. If that restatement ever drifts from the sink's actual
-//! output, [`tests::a_real_rotating_log_line_round_trips`] (exercised
+//! output, `tests::a_real_rotating_log_line_round_trips` (exercised
 //! against a hand-written fixture matching `tracing_subscriber`'s real
 //! JSON shape) is the test that would catch it.
 //!
@@ -216,13 +216,17 @@ fn passes(line: &str, filter: &TailFilter) -> bool {
   };
 
   if let Some(threshold) = filter.level {
-    let line_level = parsed["level"]
-      .as_str()
-      .and_then(|raw| {
-        [Level::Trace, Level::Debug, Level::Info, Level::Warn, Level::Error]
-          .into_iter()
-          .find(|level| level.as_json_str() == raw)
-      });
+    let line_level = parsed["level"].as_str().and_then(|raw| {
+      [
+        Level::Trace,
+        Level::Debug,
+        Level::Info,
+        Level::Warn,
+        Level::Error,
+      ]
+      .into_iter()
+      .find(|level| level.as_json_str() == raw)
+    });
     if let Some(line_level) = line_level
       && !threshold.admits(line_level)
     {
@@ -284,8 +288,12 @@ pub fn journalctl_args(request: &TailRequest) -> Vec<String> {
 ///
 /// Returns an I/O error if `journalctl` cannot be spawned (not present,
 /// no permission), or the wait error if it cannot be waited on.
-pub fn run_journalctl(request: &TailRequest) -> io::Result<std::process::ExitStatus> {
-  Command::new("journalctl").args(journalctl_args(request)).status()
+pub fn run_journalctl(
+  request: &TailRequest,
+) -> io::Result<std::process::ExitStatus> {
+  Command::new("journalctl")
+    .args(journalctl_args(request))
+    .status()
 }
 
 /// Dispatch `xi <scope> sources log tail` for the resolved scope and
@@ -443,13 +451,16 @@ mod tests {
   #[test]
   fn follow_picks_up_lines_appended_after_the_initial_read() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = write_fixture(&tmp, &line("INFO", "2026-11-03T09:00:00Z", "first"));
+    let path =
+      write_fixture(&tmp, &line("INFO", "2026-11-03T09:00:00Z", "first"));
 
     let appended = path.clone();
     let writer = thread::spawn(move || {
       thread::sleep(Duration::from_millis(50));
-      let mut file =
-        std::fs::OpenOptions::new().append(true).open(&appended).unwrap();
+      let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&appended)
+        .unwrap();
       writeln!(file, "{}", line("INFO", "2026-11-03T09:00:01Z", "second"))
         .unwrap();
     });

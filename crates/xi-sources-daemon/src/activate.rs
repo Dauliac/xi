@@ -26,7 +26,7 @@
 //! installable through the exact same `xi <verb> build`/`switch`
 //! machinery (no second flake-attribute convention is invented here),
 //! and Nix's own store cache makes the second invocation a lookup rather
-//! than a rebuild. [`probe_build`] runs `xi <verb> build --out-link
+//! than a rebuild. `probe_build` runs `xi <verb> build --out-link
 //! <path>` - the existing, already-public `build` subcommand, which
 //! resolves an adopted scope's installable exactly like `switch` does
 //! but stops short of activating - and returns the realised store path.
@@ -37,7 +37,7 @@
 //! once the pending generation exists on disk, for the same reason the
 //! `machineId` guard needs the probe: a NixOS closure's kernel is a real
 //! symlink inside it (`<store_path>/kernel`), not something evaluable
-//! ahead of a build. [`requires_reboot`] compares that symlink's target
+//! ahead of a build. `requires_reboot` compares that symlink's target
 //! against the currently booted kernel (`/run/booted-system/kernel`);
 //! platforms with no such path (darwin, system-manager, home-manager -
 //! none of which this crate models a reboot concept for) always compare
@@ -170,7 +170,7 @@ pub struct ActivateInputs<'a> {
   /// The daemon's own named profile to register the result on.
   pub profile_path:       &'a Path,
   /// `--out-link` target for the build-only probe
-  /// ([`probe_build`]) that [`run`] consults the pre-activation gates
+  /// (`probe_build`) that [`run`] consults the pre-activation gates
   /// against. Owned by the caller so a test can pre-populate it with a
   /// fixture closure without a real `nix build` ever running.
   pub probe_out_link:     &'a Path,
@@ -223,7 +223,7 @@ pub enum ActivateOutcome {
 /// Probe, gate, exec `xi <verb> switch`, and - on success - register
 /// what it activated.
 ///
-/// The probe ([`probe_build`]), the `machineId` guard, and the
+/// The probe (`probe_build`), the `machineId` guard, and the
 /// reboot-window gate all run before any attempt to exec the real
 /// switch: a `machineId` mismatch refuses, a reboot-requiring
 /// generation outside `reboot_window` defers, and either way the real

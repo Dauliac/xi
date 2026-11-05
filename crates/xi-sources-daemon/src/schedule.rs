@@ -1,6 +1,6 @@
 //! Independent per-remote scheduling.
 //!
-//! [`crate::main`]'s loop used to tick every configured remote on every
+//! `crate::main`'s loop used to tick every configured remote on every
 //! pass, sleeping for the *shortest* configured `poll_interval` in
 //! between - which meant a remote configured with a long interval (a
 //! quiet mirror, polled hourly to be a good citizen) was ticked just as
@@ -13,7 +13,7 @@
 //! the same order as the resolved remote list) and answers two
 //! questions: which remotes are due *now* ([`Scheduler::due`]), and how
 //! long until the next one becomes due ([`Scheduler::sleep_duration`]).
-//! It does not run anything itself - [`crate::main`] still funnels every
+//! It does not run anything itself - `crate::main` still funnels every
 //! due remote's tick through the one [`crate::singleton::Singleton`]
 //! gate, which is what gives the set its "shared `sources_head` writer
 //! with a mutex" property: two remotes becoming due in the same instant
@@ -107,10 +107,8 @@ mod tests {
   #[test]
   fn a_fresh_scheduler_has_every_remote_due_immediately() {
     let now = Instant::now();
-    let scheduler = Scheduler::new(now, &[
-      Duration::from_secs(30),
-      Duration::from_mins(5),
-    ]);
+    let scheduler =
+      Scheduler::new(now, &[Duration::from_secs(30), Duration::from_mins(5)]);
     assert_eq!(scheduler.due(now), vec![0, 1]);
   }
 
@@ -175,7 +173,8 @@ mod tests {
   /// its own interval would read as immediately due again and starve
   /// every other remote behind the singleton gate.
   #[test]
-  fn mark_ticked_measures_the_next_interval_from_completion_not_from_due_time() {
+  fn mark_ticked_measures_the_next_interval_from_completion_not_from_due_time()
+  {
     let now = Instant::now();
     let mut scheduler = Scheduler::new(now, &[Duration::from_secs(30)]);
 
@@ -187,10 +186,9 @@ mod tests {
       scheduler.due(completed_at).is_empty(),
       "must not read as immediately due again right after completing"
     );
-    assert_eq!(
-      scheduler.due(completed_at + Duration::from_secs(30)),
-      vec![0]
-    );
+    assert_eq!(scheduler.due(completed_at + Duration::from_secs(30)), vec![
+      0
+    ]);
   }
 
   /// `sleep_duration` is what the daemon's loop actually sleeps on

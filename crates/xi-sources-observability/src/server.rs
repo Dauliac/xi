@@ -19,7 +19,7 @@
 //! pays for `reqwest` as an HTTP *client*) depends on an HTTP stack, and
 //! this socket only ever has to answer a `GET` with no body: a dependency
 //! that would pull in an async runtime for that is not proportionate.
-//! [`handle_one`] reads a request line and discards headers until the
+//! `handle_one` reads a request line and discards headers until the
 //! blank line that ends them, which is the whole protocol surface this
 //! server needs.
 
@@ -80,7 +80,8 @@ impl Server {
   /// loopback address, or [`BindError::Io`] if the address is loopback
   /// but the socket cannot be opened.
   pub fn bind(config: &PrometheusConfig) -> Result<Self, BindError> {
-    let ip = config::validate_bind(&config.bind).map_err(BindError::NonLoopback)?;
+    let ip =
+      config::validate_bind(&config.bind).map_err(BindError::NonLoopback)?;
     let addr = SocketAddr::new(ip, config.port);
     let listener = TcpListener::bind(addr)
       .map_err(|source| BindError::Io { addr, source })?;
@@ -177,8 +178,8 @@ fn respond(
 ) -> io::Result<()> {
   write!(
     stream,
-    "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: \
-     {}\r\nConnection: close\r\n\r\n{body}",
+    "HTTP/1.1 {code} {reason}\r\nContent-Type: \
+     {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
     body.len()
   )?;
   stream.flush()
@@ -234,7 +235,8 @@ mod tests {
       port: 9321,
       bind: "0.0.0.0".to_owned(),
     };
-    let err = Server::bind(&config).expect_err("must refuse a non-loopback bind");
+    let err =
+      Server::bind(&config).expect_err("must refuse a non-loopback bind");
     let BindError::NonLoopback(message) = err else {
       panic!("expected NonLoopback, got {err:?}")
     };
@@ -248,7 +250,10 @@ mod tests {
       port: 9321,
       bind: "not-an-address".to_owned(),
     };
-    assert!(matches!(Server::bind(&config), Err(BindError::NonLoopback(_))));
+    assert!(matches!(
+      Server::bind(&config),
+      Err(BindError::NonLoopback(_))
+    ));
   }
 
   #[test]

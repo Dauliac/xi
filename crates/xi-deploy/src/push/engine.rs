@@ -494,8 +494,8 @@ pub(crate) fn install_secret_script(spec: &SecretSpec, staged: &str) -> String {
     .map_or_else(String::new, |g| format!("-g {}", shell_quote(g)));
   let destination = spec.destination.display().to_string();
   format!(
-    "set -e; mkdir -p {parent}; install -o {owner} {group} -m {mode} \
-     {staged} {dest}; rm -f {staged}",
+    "set -e; mkdir -p {parent}; install -o {owner} {group} -m {mode} {staged} \
+     {dest}; rm -f {staged}",
     parent = shell_quote(
       spec
         .destination

@@ -102,13 +102,12 @@ pub fn switch_script(target: &PushTarget, scope: Scope) -> String {
 /// way instead of as a bare foreground SSH command.
 ///
 /// The three flags each earn their place:
-/// - `--wait` blocks until the unit finishes and propagates its exit
-///   code, so [`switch`] still sees a real success/failure.
-/// - `--pipe` connects the unit's stdio to this invocation's, so the
-///   rebuild's own output still reaches the operator instead of only
-///   journald.
-/// - `--collect` unloads the unit (success or failure) once it exits,
-///   so `--mode sources` never leaves a transient unit file behind.
+/// - `--wait` blocks until the unit finishes and propagates its exit code, so
+///   [`switch`] still sees a real success/failure.
+/// - `--pipe` connects the unit's stdio to this invocation's, so the rebuild's
+///   own output still reaches the operator instead of only journald.
+/// - `--collect` unloads the unit (success or failure) once it exits, so
+///   `--mode sources` never leaves a transient unit file behind.
 ///
 /// Together these survive an SSH hiccup (the unit keeps running on the
 /// target even if the SSH session drops), get journald logging on the
@@ -142,8 +141,10 @@ pub fn switch(
   interactive_sudo: bool,
 ) -> Result<()> {
   let script = wrap_in_systemd_run(&switch_script(target, scope));
-  let outcome = transport
-    .run(&target.addr, &RemoteCommand::elevated(script, interactive_sudo))?;
+  let outcome = transport.run(
+    &target.addr,
+    &RemoteCommand::elevated(script, interactive_sudo),
+  )?;
   if !outcome.success {
     bail!(
       "remote rebuild on {} failed: {}",
@@ -158,8 +159,8 @@ pub fn switch(
 #[expect(
   clippy::expect_used,
   clippy::unreachable,
-  reason = "Fine in tests; the unreachable! calls are unimplemented \
-            Transport methods this module's tests never exercise"
+  reason = "Fine in tests; the unreachable! calls are unimplemented Transport \
+            methods this module's tests never exercise"
 )]
 mod tests {
   use std::sync::Mutex;
@@ -185,10 +186,10 @@ mod tests {
 
   #[derive(Debug, Clone, PartialEq, Eq)]
   struct SyncCall {
-    local:             String,
-    remote:            String,
-    excludes:          Vec<String>,
-    interactive_sudo:  bool,
+    local:            String,
+    remote:           String,
+    excludes:         Vec<String>,
+    interactive_sudo: bool,
   }
 
   impl RecordingTransport {
@@ -225,9 +226,17 @@ mod tests {
       _target: &TargetAddr,
       cmd: &RemoteCommand,
     ) -> Result<crate::push::engine::Outcome> {
-      self.run_calls.lock().expect("run_calls lock").push(cmd.clone());
+      self
+        .run_calls
+        .lock()
+        .expect("run_calls lock")
+        .push(cmd.clone());
       let mut outcomes = self.run_outcomes.lock().expect("run_outcomes lock");
-      let success = if outcomes.is_empty() { true } else { outcomes.remove(0) };
+      let success = if outcomes.is_empty() {
+        true
+      } else {
+        outcomes.remove(0)
+      };
       Ok(if success {
         crate::push::engine::Outcome::ok("")
       } else {
@@ -269,7 +278,11 @@ mod tests {
         interactive_sudo,
       });
       let mut outcomes = self.outcomes.lock().expect("outcomes lock");
-      let success = if outcomes.is_empty() { true } else { outcomes.remove(0) };
+      let success = if outcomes.is_empty() {
+        true
+      } else {
+        outcomes.remove(0)
+      };
       if success {
         Ok(())
       } else {
@@ -293,10 +306,10 @@ mod tests {
         ssh_host: name.to_owned(),
         ssh_opts: Vec::new(),
       },
-      source:       TargetSource::NixosConfigurations,
-      tags:         Vec::new(),
-      installable:  String::new(),
-      kind:         crate::target::ProfileKind::NixOS,
+      source: TargetSource::NixosConfigurations,
+      tags: Vec::new(),
+      installable: String::new(),
+      kind: crate::target::ProfileKind::NixOS,
       profile_path: String::new(),
       rebuild_tool,
     }
@@ -350,10 +363,12 @@ mod tests {
     )
     .expect("syncs");
     let calls = transport.calls();
-    assert_eq!(
-      calls[0].excludes,
-      vec![".git/", ".direnv/", "result*", ".envrc.local"]
-    );
+    assert_eq!(calls[0].excludes, vec![
+      ".git/",
+      ".direnv/",
+      "result*",
+      ".envrc.local"
+    ]);
   }
 
   #[test]
@@ -417,7 +432,8 @@ mod tests {
 
   #[test]
   fn the_wrapped_command_carries_every_required_flag_in_order() {
-    let wrapped = wrap_in_systemd_run("nixos-rebuild switch --flake /etc/xi/sources#web1");
+    let wrapped =
+      wrap_in_systemd_run("nixos-rebuild switch --flake /etc/xi/sources#web1");
     assert_eq!(
       wrapped,
       "systemd-run --wait --pipe --collect -- nixos-rebuild switch --flake \
@@ -443,7 +459,8 @@ mod tests {
   #[test]
   fn the_command_is_appended_verbatim_after_the_double_dash_separator() {
     let wrapped = wrap_in_systemd_run("echo hello");
-    let (flags, command) = wrapped.split_once(" -- ").expect("has a -- separator");
+    let (flags, command) =
+      wrapped.split_once(" -- ").expect("has a -- separator");
     assert_eq!(flags, "systemd-run --wait --pipe --collect");
     assert_eq!(command, "echo hello");
   }

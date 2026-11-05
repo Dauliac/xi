@@ -16,8 +16,8 @@
 #![expect(
   clippy::expect_used,
   clippy::unreachable,
-  reason = "Fine in tests; the unreachable! calls are unimplemented \
-            Transport methods this scenario never exercises"
+  reason = "Fine in tests; the unreachable! calls are unimplemented Transport \
+            methods this scenario never exercises"
 )]
 
 use std::{
@@ -113,7 +113,11 @@ impl Transport for FixtureTransport {
     self.apply_peak.enter();
     thread::sleep(Duration::from_millis(30));
     self.apply_peak.leave();
-    self.activated.lock().expect("activated lock").push(target.name.clone());
+    self
+      .activated
+      .lock()
+      .expect("activated lock")
+      .push(target.name.clone());
     Ok(Outcome::ok(""))
   }
 
@@ -221,7 +225,10 @@ fn parallel_two_caps_concurrent_activations_across_five_hosts() {
   );
 
   let peak = transport.apply_peak.peak.load(Ordering::SeqCst);
-  assert!(peak <= 2, "peak concurrent activations {peak} exceeded --parallel 2");
+  assert!(
+    peak <= 2,
+    "peak concurrent activations {peak} exceeded --parallel 2"
+  );
   // With five targets, a 30ms hold per activation, and a cap of 2, the
   // cap must actually have been saturated at least once - otherwise
   // this assertion would pass even if `--parallel` were silently
@@ -249,5 +256,7 @@ fn a_single_target_never_needs_more_than_one_permit_of_either_kind() {
 
   push_one(&nix, &transport, &limits, &target);
 
-  assert_eq!(transport.activated.lock().expect("lock").as_slice(), ["web1"]);
+  assert_eq!(transport.activated.lock().expect("lock").as_slice(), [
+    "web1"
+  ]);
 }

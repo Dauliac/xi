@@ -58,9 +58,7 @@
         # the built-in default still answers and the provenance map says
         # `default` rather than `nix-module`.
         set =
-          lib.filterAttrs (_: v: v != null) (
-            lib.mapAttrs (_: v: if lib.isPath v then toString v else v) keys
-          )
+          lib.filterAttrs (_: v: v != null) (lib.mapAttrs (_: v: if lib.isPath v then toString v else v) keys)
           // lib.optionalAttrs (credentials != { }) { inherit credentials; };
 
         # The build-location ladder's Nix-module rung: a sibling

@@ -264,10 +264,9 @@ impl EventStore {
     self
       .conn
       .execute(
-        "INSERT INTO events \
-         (ts, kind, sources_id, remote, outcome, old_sha, new_sha, \
-          duration_ms, message) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO events (ts, kind, sources_id, remote, outcome, old_sha, \
+         new_sha, duration_ms, message) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
+         ?8, ?9)",
         params![
           event.ts.to_rfc3339(),
           event.kind.as_str(),
@@ -479,7 +478,9 @@ mod tests {
   fn query_filters_by_since() {
     let store = EventStore::open_in_memory().unwrap();
     let now = Utc::now();
-    store.record(&event(EventKind::Fetch, now - ChronoDuration::hours(2))).unwrap();
+    store
+      .record(&event(EventKind::Fetch, now - ChronoDuration::hours(2)))
+      .unwrap();
     store.record(&event(EventKind::Fetch, now)).unwrap();
 
     let events = store
@@ -497,7 +498,10 @@ mod tests {
     let now = Utc::now();
     for offset in 0..5 {
       store
-        .record(&event(EventKind::Fetch, now - ChronoDuration::minutes(offset)))
+        .record(&event(
+          EventKind::Fetch,
+          now - ChronoDuration::minutes(offset),
+        ))
         .unwrap();
     }
 

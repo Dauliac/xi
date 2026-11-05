@@ -692,8 +692,7 @@ fn grant_next(waiters_dir: &Path, exclude: u32) -> io::Result<Option<u32>> {
 pub fn wait_override_from(
   lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Option<Duration>, String> {
-  let Some(raw) = lookup(LOCK_WAIT_ENV).filter(|v| !v.trim().is_empty())
-  else {
+  let Some(raw) = lookup(LOCK_WAIT_ENV).filter(|v| !v.trim().is_empty()) else {
     return Ok(None);
   };
   humantime::parse_duration(raw.trim())
@@ -769,7 +768,7 @@ impl LockOptions {
   }
 
   /// Print a status line naming the holder while this acquisition blocks,
-  /// repeating every [`PROGRESS_INTERVAL`] until it succeeds or gives up.
+  /// repeating every `PROGRESS_INTERVAL` until it succeeds or gives up.
   ///
   /// For a foreground command an operator is waiting on, e.g. `switch` or
   /// `sources sync`: without this a contended lock blocks silently for up
@@ -1192,8 +1191,8 @@ fn report_wait(
   match read_record(lock_path) {
     Ok(Some(holder)) => {
       eprintln!(
-        "xi: waiting for the sources lock - held by {} (pid {}) since {}: \
-         {} [{elapsed} elapsed]",
+        "xi: waiting for the sources lock - held by {} (pid {}) since {}: {} \
+         [{elapsed} elapsed]",
         holder.actor_name, holder.pid, holder.started_at, holder.intent
       );
     },

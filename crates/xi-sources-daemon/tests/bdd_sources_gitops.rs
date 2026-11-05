@@ -255,8 +255,8 @@ fn the_daemon_binary_sweeps_a_dangling_shadow_fetch_on_startup() {
   );
   assert!(
     !incoming.exists(),
-    "startup repair must have swept the dangling shadow fetch before \
-     the tick loop ran: stderr={}",
+    "startup repair must have swept the dangling shadow fetch before the tick \
+     loop ran: stderr={}",
     String::from_utf8_lossy(&output.stderr)
   );
 }

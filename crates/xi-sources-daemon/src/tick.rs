@@ -81,10 +81,10 @@ pub struct TickInputs<'a> {
 ///    [`xi_core::sources::conflict::post_advance`] and report it on the
 ///    outcome. The tick itself never copies anything into a working dir -
 ///    `QueueSync` is carried out by the next interactive command via
-///    `conflict::apply_auto_sync`, and `Announce` is carried out by `xi
-///    sources status` computing `sync_available` live. This step only
-///    makes the decision observable (so `never` can be logged) and leaves
-///    acting on it to the right owner.
+///    `conflict::apply_auto_sync`, and `Announce` is carried out by `xi sources
+///    status` computing `sync_available` live. This step only makes the
+///    decision observable (so `never` can be logged) and leaves acting on it to
+///    the right owner.
 #[must_use]
 pub fn run(exec: &dyn Exec, inputs: &TickInputs<'_>) -> TickOutcome {
   if let Err(reason) = assert_writable(inputs.sources_dir, inputs.sources_id) {

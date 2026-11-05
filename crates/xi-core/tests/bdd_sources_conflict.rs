@@ -831,14 +831,15 @@ fn xi_5ytq_a_synced_tree_is_not_dirty_to_the_next_switch() {
       assert!(
         !dirty_source,
         "a sync's own residue is not operator dirt, so this switch is \
-         reproducible from sources_head and must not be marked \
-         dirty-source"
+         reproducible from sources_head and must not be marked dirty-source"
       );
     },
-    other => panic!(
-      "a synced working dir must evaluate clean, got {other:?} (raw git \
-       status: {porcelain:?})"
-    ),
+    other => {
+      panic!(
+        "a synced working dir must evaluate clean, got {other:?} (raw git \
+         status: {porcelain:?})"
+      )
+    },
   }
 }
 
@@ -873,10 +874,12 @@ fn xi_5ytq_auto_copy_sync_does_not_make_the_next_switch_refuse_itself() {
          triggered it"
       );
     },
-    other => panic!(
-      "the switch right after an auto-copy sync must not refuse, got \
-       {other:?}"
-    ),
+    other => {
+      panic!(
+        "the switch right after an auto-copy sync must not refuse, got \
+         {other:?}"
+      )
+    },
   }
 }
 

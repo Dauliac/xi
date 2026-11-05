@@ -34,9 +34,9 @@ pub const PUSH_HOST_KEYS: &[&str] = &["name", "ssh", "remote-build"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushHost {
   /// The name `xi push <name>` matches against.
-  pub name: String,
+  pub name:         String,
   /// `[user@]hostname[:port]` to connect to for this host.
-  pub ssh: String,
+  pub ssh:          String,
   /// Per-host override of the `remote-build` rung.
   pub remote_build: Option<bool>,
 }
@@ -49,7 +49,7 @@ pub struct PushConfig {
   /// build-location ladder.
   pub remote_build: Option<bool>,
   /// `[[push.hosts]]` entries, in file order.
-  pub hosts: Vec<PushHost>,
+  pub hosts:        Vec<PushHost>,
 }
 
 impl PushConfig {
@@ -94,12 +94,14 @@ impl PushConfig {
 
     let remote_build = match table.get("remote-build") {
       None => None,
-      Some(item) => Some(item.as_bool().ok_or_else(|| {
-        eyre!(
-          "{}: 'remote-build' in [push] must be a boolean",
-          path.display()
-        )
-      })?),
+      Some(item) => {
+        Some(item.as_bool().ok_or_else(|| {
+          eyre!(
+            "{}: 'remote-build' in [push] must be a boolean",
+            path.display()
+          )
+        })?)
+      },
     };
 
     let hosts = match table.get("hosts") {
@@ -174,13 +176,15 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     .to_owned();
   let remote_build = match entry.get("remote-build") {
     None => None,
-    Some(item) => Some(item.as_bool().ok_or_else(|| {
-      eyre!(
-        "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
+    Some(item) => {
+      Some(item.as_bool().ok_or_else(|| {
+        eyre!(
+          "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
            boolean",
-        path.display()
-      )
-    })?),
+          path.display()
+        )
+      })?)
+    },
   };
 
   Ok(PushHost {
@@ -294,9 +298,9 @@ mod tests {
   #[test]
   fn a_host_array_of_tables_parses_in_order() {
     let config = toml_config(
-      "[[push.hosts]]\nname = \"web1\"\nssh = \"deploy@10.0.0.1\"\n\n\
-       [[push.hosts]]\nname = \"web2\"\nssh = \"deploy@10.0.0.2:2222\"\n\
-       remote-build = true\n",
+      "[[push.hosts]]\nname = \"web1\"\nssh = \
+       \"deploy@10.0.0.1\"\n\n[[push.hosts]]\nname = \"web2\"\nssh = \
+       \"deploy@10.0.0.2:2222\"\nremote-build = true\n",
     );
     assert_eq!(config.hosts.len(), 2);
     assert_eq!(config.hosts[0].name, "web1");
@@ -340,15 +344,15 @@ mod tests {
 
   fn target(name: &str) -> super::super::discover::PushTarget {
     super::super::discover::PushTarget {
-      addr: TargetAddr {
-        name: name.to_owned(),
+      addr:         TargetAddr {
+        name:     name.to_owned(),
         ssh_host: name.to_owned(),
         ssh_opts: Vec::new(),
       },
-      source: TargetSource::NixosConfigurations,
-      tags: Vec::new(),
-      installable: String::new(),
-      kind: ProfileKind::NixOS,
+      source:       TargetSource::NixosConfigurations,
+      tags:         Vec::new(),
+      installable:  String::new(),
+      kind:         ProfileKind::NixOS,
       profile_path: String::new(),
       rebuild_tool: "nixos-rebuild",
     }
@@ -414,8 +418,8 @@ mod tests {
   #[test]
   fn a_per_host_override_outranks_the_table_level_default() {
     let toml = toml_config(
-      "[push]\nremote-build = false\n\n[[push.hosts]]\nname = \"web1\"\n\
-       ssh = \"deploy@web1\"\nremote-build = true\n",
+      "[push]\nremote-build = false\n\n[[push.hosts]]\nname = \"web1\"\nssh = \
+       \"deploy@web1\"\nremote-build = true\n",
     );
     assert!(resolve_remote_build(None, "web1", &toml, Some(false)));
     // A different host falls through to the table-level default.

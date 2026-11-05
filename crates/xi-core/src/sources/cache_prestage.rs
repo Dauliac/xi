@@ -1292,14 +1292,15 @@ impl Prestage<'_> {
       // unconditionally, and the generic receipt only needs to say
       // once that this action has happened, not carry one entry per
       // invocation of a capability that can legitimately re-run.
-      let already_recorded = super::receipt::Receipt::load(&self.lock_state_dir)
-        .map_err(|source| {
-          PrestageError::Io {
-            path: self.lock_state_dir.clone(),
-            source,
-          }
-        })?
-        .records(super::repair::WRITE_XI_CONF_ACTION);
+      let already_recorded =
+        super::receipt::Receipt::load(&self.lock_state_dir)
+          .map_err(|source| {
+            PrestageError::Io {
+              path: self.lock_state_dir.clone(),
+              source,
+            }
+          })?
+          .records(super::repair::WRITE_XI_CONF_ACTION);
       if !already_recorded {
         txn.stage_receipt(super::receipt::ReceiptEntry::new(
           super::repair::WRITE_XI_CONF_ACTION,

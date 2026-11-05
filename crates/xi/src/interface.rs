@@ -1,4 +1,4 @@
-use std::{fmt::Write as _, io, path::PathBuf};
+use std::{fmt::Write as _, io};
 
 use anstyle::Style;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::Styles};
@@ -67,21 +67,9 @@ pub struct Main {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(
-  disable_help_subcommand = true,
-  subcommand_help_heading = "Commands",
-  after_help = "\x1b[1mCommand groups:\x1b[0m
-  Config mgmt:  os, home, darwin, system
-  Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
-                doctor
-  Deployment:   deploy, push
-  Development:  develop, search
-  Agent:        agent
-  Auth:         auth
-  Maintenance:  cache, clean, nix, completions"
-)]
+#[command(disable_help_subcommand = true)]
 pub enum XiCommand {
-  // -- Configuration Management --
+  // -- Config mgmt --
   // `nixos` is the spelling the xi-sources-model scope table uses;
   // `os` stays the primary name.
   #[command(alias = "nixos")]
@@ -93,7 +81,7 @@ pub enum XiCommand {
   #[command(hide = true)]
   Switch,
 
-  // -- Flake Operations --
+  // -- Flake ops --
   Build(xi_flake::args::BuildArgs),
   Check(xi_flake::args::CheckArgs),
   Run(xi_flake::args::RunArgs),
@@ -114,16 +102,12 @@ pub enum XiCommand {
   // -- Development --
   Develop(xi_develop::args::DevelopArgs),
   Search(xi_search::args::SearchArgs),
-  Repl(xi_repl::args::ReplArgs),
-  Vm(xi_vm::args::VmArgs),
 
-  // -- Agent context --
+  // -- Agentic --
   Agent(xi_agent::args::AgentArgs),
-
-  // -- Auth --
   Auth(xi_auth::args::AuthArgs),
 
-  // -- Maintenance --
+  // -- Other --
   Cache(crate::cache::args::CacheProxy),
   Clean(crate::clean::args::CleanProxy),
   Nix(crate::proxy::NixProxyArgs),
@@ -137,13 +121,11 @@ pub enum XiCommand {
 /// app-wide `subcommand_help_heading`), so [`grouped_help`] renders
 /// clap's own help text and splices these headings into the `Commands:`
 /// section by matching each line's command name against this table. Keep
-/// it in sync with the `// -- Group --` comments on [`XiCommand`] above -
+/// it in sync with the `// -- Group --` comments on [`XiCommand`] above  -
 /// those comments are what a human reads when adding a command; this
 /// table is what the renderer reads.
 const COMMAND_GROUPS: &[(&str, &[&str])] = &[
-  ("Config mgmt", &[
-    "os", "home", "darwin", "system", "sources",
-  ]),
+  ("Config mgmt", &["os", "home", "darwin", "system"]),
   ("Flake ops", &[
     "build",
     "check",
@@ -156,10 +138,9 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
     "lib",
     "test",
     "doctor",
-    "materialize",
   ]),
-  ("Deployment", &["deploy"]),
-  ("Development", &["develop", "search", "repl", "vm"]),
+  ("Deployment", &["deploy", "push"]),
+  ("Development", &["develop", "search"]),
   ("Agentic", &["agent", "auth"]),
   ("Other", &["cache", "clean", "nix", "completions"]),
 ];
@@ -175,14 +156,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
 #[must_use]
 pub fn grouped_help() -> String {
   let mut cmd = <Main as CommandFactory>::command();
-  // `.ansi()` is required to keep the color/bold styling from
-  // `make_style()` in the rendered string: `StyledStr`'s plain
-  // `Display`/`to_string()` strips all styling unconditionally,
-  // regardless of whether the destination is a terminal - that
-  // decision belongs to whoever ultimately writes this string (see
-  // `main()`'s `anstream::AutoStream::auto` wrapping), not to the
-  // renderer.
-  let rendered = cmd.render_long_help().ansi().to_string();
+  let rendered = cmd.render_long_help().to_string();
   splice_command_groups(&rendered)
 }
 
@@ -209,13 +183,8 @@ fn splice_command_groups(help: &str) -> String {
     if line.trim().is_empty() {
       continue;
     }
-    // The styled command name token (e.g. `\x1b[1mos\x1b[0m`) still has
-    // no internal whitespace, so `split_whitespace` still isolates it
-    // correctly - it just needs stripping before matching against
-    // `COMMAND_GROUPS`'s plain names.
     let name = line.split_whitespace().next().unwrap_or("");
-    let plain_name = anstream::adapter::strip_str(name).to_string();
-    if let Some(group) = heading_before.get(plain_name.as_str()) {
+    if let Some(group) = heading_before.get(name) {
       if !body.is_empty() {
         body.push('\n');
       }
@@ -291,9 +260,7 @@ impl XiCommand {
       | Self::Test(..)
       | Self::Doctor(..)
       | Self::Deploy(..)
-      | Self::Repl(..)
       | Self::Push(..) => Box::new(xi_core::checks::FlakeFeatures),
-      Self::Vm(args) => args.get_feature_requirements(),
       Self::Agent(..)
       | Self::Switch
       | Self::Search(..)
@@ -437,139 +404,6 @@ impl XiCommand {
     }
   }
 
-  /// The nix command kind this xi command ends up invoking, plus the
-  /// `nix flake <sub>` subcommand when there is one.
-  ///
-  /// The subcommand matters because `CommandKind::Flake` is too coarse to
-  /// gate on: its single variant covers `update`, `lock`, `check`, `show`
-  /// and `metadata` alike.
-  const fn nix_command_shape(
-    &self,
-  ) -> Option<(nix_command::CommandKind, Option<&'static str>)> {
-    use nix_command::CommandKind as K;
-
-    match self {
-      Self::Build(_) | Self::Ci(_) | Self::Test(_) => Some((K::Build, None)),
-      Self::Check(_) => Some((K::Flake, Some("check"))),
-      Self::Run(_) => Some((K::Run, None)),
-      Self::Fmt(_) => Some((K::Fmt, None)),
-      Self::Develop(_) => Some((K::Develop, None)),
-      Self::FlakeShow(_) => Some((K::Flake, Some("show"))),
-      // Lock-writing: must never receive the flag.
-      Self::Update(_) => Some((K::Flake, Some("update"))),
-      _ => None,
-    }
-  }
-
-  /// Resolve `build.override_input` through the whole cascade and install
-  /// the result on whichever passthrough args this command carries.
-  ///
-  /// Config is the lowest priority: a `--override-input` flag still wins
-  /// per input name, resolved at emission time.
-  pub fn apply_override_input_config(
-    &mut self,
-    build_config: &crate::config::BuildConfig,
-  ) {
-    use xi_core::override_input as oi;
-
-    let Some((kind, flake_sub)) = self.nix_command_shape() else {
-      return;
-    };
-
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let flake_dir = oi::discover_flake_dir(&cwd);
-
-    // `.xi.toml` and `.xi.local.toml` live next to `flake.nix`.
-    let project = flake_dir
-      .as_deref()
-      .map_or_else(Vec::new, |dir| xi_flake::project_override_input(Some(dir)));
-
-    let env_raw = std::env::var("XI_OVERRIDE_INPUT").ok();
-
-    // The CLI pairs already on the struct, so a flag can replace a
-    // configured entry by name rather than being concatenated after it.
-    let cli_pairs = self.override_input_pairs().unwrap_or_default();
-
-    let ctx = oi::ResolveContext {
-      global: &build_config.override_input,
-      project: &project,
-      env_raw: env_raw.as_deref(),
-      cli_pairs: &cli_pairs,
-      flake_dir: flake_dir.as_deref(),
-      cwd: &cwd,
-      kind,
-      flake_subcommand: flake_sub,
-    };
-
-    let outcome = match oi::resolve_for_command(&ctx) {
-      Ok(outcome) => outcome,
-      Err(e) => {
-        // Loud, not silently skipped: a misconfigured override changes
-        // what gets built.
-        tracing::error!("{e}");
-        return;
-      },
-    };
-
-    oi::report(&outcome);
-
-    let resolved: std::collections::BTreeMap<String, String> = outcome
-      .resolved
-      .iter()
-      .map(|r| (r.name.clone(), r.flakeref.clone()))
-      .collect();
-
-    if resolved.is_empty() {
-      return;
-    }
-
-    self.install_override_input(&resolved);
-  }
-
-  /// The `--override-input` pairs already parsed from the command line.
-  fn override_input_pairs(&self) -> Option<Vec<String>> {
-    match self {
-      Self::Build(args) => Some(args.passthrough.override_input.clone()),
-      Self::Check(args) => Some(args.passthrough.override_input.clone()),
-      Self::Run(args) => Some(args.passthrough.override_input.clone()),
-      Self::Fmt(args) => Some(args.passthrough.override_input.clone()),
-      Self::Ci(args) => Some(args.passthrough.override_input.clone()),
-      Self::Test(args) => Some(args.passthrough.override_input.clone()),
-      Self::Develop(args) => Some(args.passthrough.override_input.clone()),
-      _ => None,
-    }
-  }
-
-  fn install_override_input(
-    &mut self,
-    resolved: &std::collections::BTreeMap<String, String>,
-  ) {
-    match self {
-      Self::Build(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      Self::Check(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      Self::Run(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      Self::Fmt(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      Self::Ci(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      Self::Test(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      Self::Develop(args) => {
-        args.passthrough.apply_override_input_defaults(resolved);
-      },
-      _ => {},
-    }
-  }
-
   /// Apply locate defaults from config.toml to the run command.
   /// Config values are lowest priority (CLI > env > config).
   pub const fn apply_locate_config(
@@ -580,19 +414,6 @@ impl XiCommand {
       && args.cache_level.is_none()
     {
       args.cache_level = Some(locate_config.cache_level);
-    }
-  }
-
-  /// Apply the repl theme default from config.toml to `xi repl`.
-  /// Config values are lowest priority (CLI > config).
-  pub const fn apply_repl_config(
-    &mut self,
-    repl_config: &crate::config::ReplConfig,
-  ) {
-    if let Self::Repl(args) = self
-      && args.theme.is_none()
-    {
-      args.theme = Some(repl_config.theme);
     }
   }
 
@@ -628,8 +449,6 @@ impl XiCommand {
       Self::Push(args) => xi_deploy::push::orchestrate::run(&args),
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
-      Self::Repl(args) => args.run(),
-      Self::Vm(args) => xi_vm::vm::run(args),
       Self::Auth(args) => xi_auth::run(&args),
       Self::Switch => crate::sources::verbless_switch(),
       Self::Cache(proxy) => proxy.run(),

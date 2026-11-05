@@ -4,15 +4,15 @@
 //!
 //! 1. [`xi_core::sources::credentials::Secret`] has no `Serialize` impl and
 //!    prints `<redacted>` in `Debug`. A field that tries to log one does not
-//!    compile, which is the only guarantee that survives a refactor. That
-//!    type lives in `xi-core` ([[xi-sources-credentials]] owns *which*
-//!    credentials exist and where they come from); earlier revisions of this
-//!    module defined a second, weaker newtype of its own
-//!    (`Credential`, `String`-backed, no `with_secret` closure) for the same
-//!    job. It is gone: `xi-sources-observability` already depends on
-//!    `xi-core`, so there is no cycle in depending on `Secret` directly, and
-//!    two opaque-credential types is how a future leak gets written against
-//!    the weaker one instead of the one that is actually enforced.
+//!    compile, which is the only guarantee that survives a refactor. That type
+//!    lives in `xi-core` ([[xi-sources-credentials]] owns *which* credentials
+//!    exist and where they come from); earlier revisions of this module defined
+//!    a second, weaker newtype of its own (`Credential`, `String`-backed, no
+//!    `with_secret` closure) for the same job. It is gone:
+//!    `xi-sources-observability` already depends on `xi-core`, so there is no
+//!    cycle in depending on `Secret` directly, and two opaque-credential types
+//!    is how a future leak gets written against the weaker one instead of the
+//!    one that is actually enforced.
 //! 2. [`Scrubber`] handles the text a credential *leaks into* rather than the
 //!    credential itself: a git error that echoes a URL with userinfo, a hook's
 //!    stderr tail. Compile-time typing cannot reach that text, so it is
@@ -113,9 +113,9 @@ impl Scrubber {
 pub mod lint {
   //! A source lint for log and metric calls that name a secret.
   //!
-  //! [`Credential`](super::Credential) stops the typed path. This stops
-  //! the untyped one: `info!(token = %cfg.token.expose())` type-checks
-  //! and would leak, so the key names themselves are banned.
+  //! [`Secret`](xi_core::sources::credentials::Secret) stops the typed path.
+  //! This stops the untyped one: `info!(token = %cfg.token.expose())`
+  //! type-checks and would leak, so the key names themselves are banned.
   //!
   //! It runs as a test rather than as a `rustc` lint because the
   //! alternative is a custom clippy driver, and a driver that only CI
