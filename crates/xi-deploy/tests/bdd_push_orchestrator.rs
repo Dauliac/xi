@@ -23,7 +23,9 @@ use color_eyre::Result;
 use tempfile::TempDir;
 use xi_core::sources::{Scope, SourcesContext, SourcesId};
 use xi_deploy::push::{
-  args::{CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope},
+  args::{
+    BuildStrategy, CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope,
+  },
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate,
@@ -175,6 +177,7 @@ fn push_args() -> PushArgs {
     copy_via:         CopyVia::Local,
     fail_fast:        false,
     force_dirty:      false,
+    build_strategy:   BuildStrategy::Interleaved,
     scope:            PushScope::System,
   }
 }

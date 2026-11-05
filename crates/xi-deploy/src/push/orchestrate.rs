@@ -789,6 +789,7 @@ mod tests {
       copy_via: PushCopyVia::Local,
       fail_fast: false,
       force_dirty: false,
+      build_strategy: super::super::args::BuildStrategy::Interleaved,
       scope: super::super::args::PushScope::System,
     }
   }
