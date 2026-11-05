@@ -194,6 +194,51 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
   })
 }
 
+/// Environment variable gating the build-location floor flip's
+/// one-release opt-in: unset (or anything but `1`/`true`), the floor
+/// keeps its pre-flip answer; set, the floor is free to resolve to its
+/// new, context-sensitive default. See
+/// [`build_floor_remote_opt_in`] and the "build-location floor flip"
+/// capability this stages.
+pub const BUILD_FLOOR_REMOTE_ENV: &str = "XI_BUILD_FLOOR_REMOTE";
+
+/// Whether the one-release opt-in for the build-location floor flip is
+/// active.
+///
+/// This only answers whether the flip is allowed to take effect yet -
+/// it does not itself decide what the floor resolves to. Follows the
+/// same boolean-env-var convention used elsewhere in the project (e.g.
+/// `XI_UNWRAP` in `xi::proxy`): `"1"` or `"true"` is on, anything else
+/// (including unset) is off.
+#[must_use]
+pub fn build_floor_remote_opt_in() -> bool {
+  std::env::var(BUILD_FLOOR_REMOTE_ENV)
+    .is_ok_and(|value| value == "1" || value == "true")
+}
+
+/// Resolve one value through the five-rung precedence shared by every
+/// declarative-first `[push]` setting: an explicit flag, a per-host
+/// override, a table-level default, a Nix-module-provided default, and
+/// finally a compiled-in floor.
+///
+/// This is the shape behind [`resolve_remote_build`] and, in a sibling
+/// ladder, backend selection - one generalized helper rather than a
+/// hand-rolled copy of the same precedence per setting.
+#[must_use]
+pub fn resolve_ladder<T>(
+  cli: Option<T>,
+  per_host: Option<T>,
+  table_default: Option<T>,
+  module_default: Option<T>,
+  floor: T,
+) -> T {
+  cli
+    .or(per_host)
+    .or(table_default)
+    .or(module_default)
+    .unwrap_or(floor)
+}
+
 /// Resolve the build-location ladder for one target: `--remote-build` >
 /// `.xi.toml [push]` (a per-host `[[push.hosts]]` override first, then
 /// the table-level default) > the Nix-module-provided default > `false`.
@@ -211,19 +256,13 @@ pub fn resolve_remote_build(
   toml_config: &PushConfig,
   nix_module_remote_build: Option<bool>,
 ) -> bool {
-  if let Some(flag) = cli {
-    return flag;
-  }
-  if let Some(per_host) = toml_config
-    .host(host_name)
-    .and_then(|host| host.remote_build)
-  {
-    return per_host;
-  }
-  if let Some(table_default) = toml_config.remote_build {
-    return table_default;
-  }
-  nix_module_remote_build.unwrap_or(false)
+  resolve_ladder(
+    cli,
+    toml_config.host(host_name).and_then(|host| host.remote_build),
+    toml_config.remote_build,
+    nix_module_remote_build,
+    false,
+  )
 }
 
 /// Rewrite `targets`' SSH address from a matching `[[push.hosts]]` entry.
@@ -249,6 +288,9 @@ pub fn apply_inventory(
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
+  use std::env;
+
+  use serial_test::serial;
   use tempfile::TempDir;
 
   use super::*;
@@ -256,6 +298,50 @@ mod tests {
     push::{discover::TargetSource, engine::TargetAddr},
     target::ProfileKind,
   };
+
+  /// Sets an environment variable for the lifetime of the guard,
+  /// restoring (or removing) it on drop - safe for `#[serial]` tests
+  /// that read process-global env vars.
+  struct EnvGuard {
+    key:   &'static str,
+    value: Option<std::ffi::OsString>,
+  }
+
+  impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+      let guard = Self {
+        key,
+        value: env::var_os(key),
+      };
+      unsafe {
+        env::set_var(key, value);
+      }
+      guard
+    }
+
+    fn remove(key: &'static str) -> Self {
+      let guard = Self {
+        key,
+        value: env::var_os(key),
+      };
+      unsafe {
+        env::remove_var(key);
+      }
+      guard
+    }
+  }
+
+  impl Drop for EnvGuard {
+    fn drop(&mut self) {
+      unsafe {
+        if let Some(value) = &self.value {
+          env::set_var(self.key, value);
+        } else {
+          env::remove_var(self.key);
+        }
+      }
+    }
+  }
 
   fn toml_config(body: &str) -> PushConfig {
     let dir = TempDir::new().expect("tempdir");
@@ -437,5 +523,35 @@ mod tests {
   fn with_every_rung_silent_the_floor_is_false() {
     let toml = PushConfig::default();
     assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  // -- build_floor_remote_opt_in: the floor flip's one-release gate ------
+
+  #[test]
+  #[serial]
+  fn unset_the_opt_in_is_off() {
+    let _guard = EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV);
+    assert!(!build_floor_remote_opt_in());
+  }
+
+  #[test]
+  #[serial]
+  fn set_to_1_the_opt_in_is_on() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    assert!(build_floor_remote_opt_in());
+  }
+
+  #[test]
+  #[serial]
+  fn set_to_true_the_opt_in_is_on() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "true");
+    assert!(build_floor_remote_opt_in());
+  }
+
+  #[test]
+  #[serial]
+  fn set_to_anything_else_the_opt_in_is_off() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "0");
+    assert!(!build_floor_remote_opt_in());
   }
 }
