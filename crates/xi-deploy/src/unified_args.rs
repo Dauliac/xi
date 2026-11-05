@@ -65,106 +65,135 @@ pub enum DeployMechanism {
 /// See the module docs for why this is a hand-assembled union rather
 /// than a flatten of `SwitchSourcesArgs`, `CommonRebuildArgs`, and
 /// `PushArgs` in one shot.
+///
+/// `--help` groups the surface into three headings: "Where"
+/// (target/scope/mechanism resolution, including `sources`'s
+/// `--branch`/`--adopt`/`--no-adopt` and their `--force`/`--force-dirty`
+/// overrides - all five answer "which source, at which location"), "How
+/// it builds" (backend, build strategy, and the Nix-level build knobs),
+/// and "Safety" (confirmation, preview, rollback, and failure handling).
+/// Every plain flag carries an explicit `help_heading` rather than
+/// leaning on clap's `next_help_heading` stickiness: `clap_derive`
+/// rejects `#[command(next_help_heading = ...)]` on a plain `#[arg]`
+/// field, accepting it only on `flatten`/`subcommand` fields, so a
+/// flattened sub-struct's own un-annotated fields (`sources`,
+/// `passthrough`, `cache`) pick up their heading from
+/// `next_help_heading` set on the flatten field itself instead.
 #[derive(Debug, Args)]
 pub struct DeployArgs {
   /// A fleet target name, a path/URL/scp-spec installable to adopt or
   /// build, or several target names (two or more positionals are
   /// always read as a target list).
-  #[arg(trailing_var_arg = true)]
+  #[arg(trailing_var_arg = true, help_heading = "Where")]
   pub targets: Vec<String>,
 
   /// Force every positional to be read as a fleet target name.
-  #[arg(long)]
+  #[arg(long, help_heading = "Where")]
   pub target: Vec<String>,
 
   /// Which half of the machine to deploy.
-  #[arg(long, value_enum)]
+  #[arg(long, value_enum, help_heading = "Where")]
   pub scope: Option<DeployScope>,
 
   /// Force a specific activation mechanism, bypassing host detection.
-  #[arg(long, value_enum)]
+  #[arg(long, value_enum, help_heading = "Where")]
   pub mechanism: Option<DeployMechanism>,
 
   /// Activate locally, bypassing the fleet-rollout branch of the
   /// decision tree.
-  #[arg(long, alias = "here")]
+  #[arg(long, alias = "here", help_heading = "Where")]
   pub local: bool,
 
   /// Force a whole-fleet rollout, bypassing the local-activation
   /// branches of the decision tree.
-  #[arg(long)]
+  #[arg(long, help_heading = "Where")]
   pub fleet: bool,
 
-  /// Only print the resolved plan, without building, copying, or
-  /// activating anything.
-  #[arg(long, short = 'n', alias = "dry-run")]
-  pub dry: bool,
+  /// Filter discovered targets by tag (`@tag`) or by regex.
+  #[arg(long, help_heading = "Where")]
+  pub on: Option<String>,
 
   /// Flags shared with every scope's `switch`: `--branch`, `--adopt`,
   /// `--no-adopt`, `--force`, `--force-dirty`.
-  #[command(flatten)]
+  #[command(flatten, next_help_heading = "Where")]
   pub sources: SwitchSourcesArgs,
 
-  /// Ask for confirmation.
-  #[arg(long, short)]
-  pub ask: bool,
-
   /// Whether to display a package diff.
-  #[arg(long, short, value_enum, default_value_t = DiffType::Auto, env = "XI_DIFF")]
+  #[arg(long, short, value_enum, default_value_t = DiffType::Auto, env = "XI_DIFF", help_heading = "How it builds")]
   pub diff: DiffType,
 
   /// Don't use nix-output-monitor for the build process.
-  #[arg(long, env = "XI_NO_NOM", value_parser = clap::builder::BoolishValueParser::new())]
+  #[arg(long, env = "XI_NO_NOM", value_parser = clap::builder::BoolishValueParser::new(), help_heading = "How it builds")]
   pub no_nom: bool,
 
   /// Path to save the result link, defaults to using a temporary directory.
-  #[arg(long, short)]
+  #[arg(long, short, help_heading = "How it builds")]
   pub out_link: Option<PathBuf>,
 
-  #[command(flatten)]
+  #[command(flatten, next_help_heading = "How it builds")]
   pub passthrough: NixBuildPassthroughArgs,
 
-  #[command(flatten)]
+  #[command(flatten, next_help_heading = "How it builds")]
   pub cache: CacheArgs,
 
-  /// Filter discovered targets by tag (`@tag`) or by regex.
-  #[arg(long)]
-  pub on: Option<String>,
-
   /// Force a specific deployment backend.
-  #[arg(long, value_enum, default_value_t = PushBackend::Auto)]
+  #[arg(long, value_enum, default_value_t = PushBackend::Auto, help_heading = "How it builds")]
   pub backend: PushBackend,
 
   /// Bring-up phases to run, comma separated.
-  #[arg(long, default_value = "activate", value_name = "CSV")]
+  #[arg(
+    long,
+    default_value = "activate",
+    value_name = "CSV",
+    help_heading = "How it builds"
+  )]
   pub phase: String,
 
   /// Evaluate locally and copy a closure, or sync the sources dir.
-  #[arg(long, value_enum)]
+  #[arg(long, value_enum, help_heading = "How it builds")]
   pub mode: Option<PushMode>,
 
   /// Build on the target instead of copying a closure in.
-  #[arg(long)]
+  #[arg(long, help_heading = "How it builds")]
   pub remote_build: Option<bool>,
 
-  /// Seconds to confirm the new generation in before rolling back (0 = off).
-  #[arg(long, default_value_t = 0, value_name = "SECONDS")]
-  pub magic_rollback: u64,
-
   /// Number of targets to activate concurrently.
-  #[arg(long, default_value_t = 1, value_name = "N")]
+  #[arg(
+    long,
+    default_value_t = 1,
+    value_name = "N",
+    help_heading = "How it builds"
+  )]
   pub parallel: usize,
 
-  /// Allocate a PTY so a remote sudo password prompt reaches the terminal.
-  #[arg(long)]
-  pub interactive_sudo: bool,
-
   /// Upload the closure from here, or let the target substitute it.
-  #[arg(long, value_enum, default_value_t = CopyVia::Local)]
+  #[arg(long, value_enum, default_value_t = CopyVia::Local, help_heading = "How it builds")]
   pub copy_via: CopyVia,
 
+  /// Allocate a PTY so a remote sudo password prompt reaches the terminal.
+  #[arg(long, help_heading = "How it builds")]
+  pub interactive_sudo: bool,
+
+  /// Only print the resolved plan, without building, copying, or
+  /// activating anything.
+  #[arg(long, short = 'n', alias = "dry-run", help_heading = "Safety")]
+  pub dry: bool,
+
+  /// Ask for confirmation.
+  #[arg(long, short, help_heading = "Safety")]
+  pub ask: bool,
+
+  /// Seconds to confirm the new generation in before rolling back (0 = off).
+  #[arg(
+    long,
+    default_value_t = 0,
+    value_name = "SECONDS",
+    help_heading = "Safety"
+  )]
+  pub magic_rollback: u64,
+
   /// Stop at the first failing target instead of finishing the rest.
-  #[arg(long)]
+  #[arg(long, help_heading = "Safety")]
   pub fail_fast: bool,
 }
 
@@ -385,11 +414,10 @@ mod tests {
   #[test]
   fn two_or_more_positionals_all_land_in_targets() {
     let args = parse(&["web1", "web2", "web3"]).expect("parses");
-    assert_eq!(args.targets, vec![
-      "web1".to_owned(),
-      "web2".to_owned(),
-      "web3".to_owned()
-    ]);
+    assert_eq!(
+      args.targets,
+      vec!["web1".to_owned(), "web2".to_owned(), "web3".to_owned()]
+    );
   }
 
   #[test]
@@ -399,5 +427,50 @@ mod tests {
     assert!(matches!(args.scope, Some(DeployScope::User)));
     assert!(args.dry);
     assert_eq!(args.targets, vec!["./dotfiles".to_owned()]);
+  }
+
+  // Task 3.2: the flag surface renders under three distinct `--help`
+  // headings instead of one undifferentiated `Options:` block.
+
+  #[test]
+  fn help_renders_where_how_it_builds_and_safety_as_distinct_sections() {
+    use clap::CommandFactory;
+
+    let help = TestCli::command().render_long_help().to_string();
+
+    let where_pos = help.find("Where:").expect("Where heading present");
+    let how_pos = help
+      .find("How it builds:")
+      .expect("How it builds heading present");
+    let safety_pos = help.find("Safety:").expect("Safety heading present");
+    assert!(
+      where_pos < how_pos && how_pos < safety_pos,
+      "expected headings in order Where, How it builds, Safety; got:\n{help}"
+    );
+
+    // Spot-check representative flags land under the heading they were
+    // grouped into, rather than bleeding into a neighboring section.
+    let where_section = &help[where_pos..how_pos];
+    let how_section = &help[how_pos..safety_pos];
+    let safety_section = &help[safety_pos..];
+
+    for flag in ["--scope", "--mechanism", "--fleet", "--on", "--adopt"] {
+      assert!(
+        where_section.contains(flag),
+        "expected {flag} under Where; got:\n{where_section}"
+      );
+    }
+    for flag in ["--backend", "--mode", "--copy-via", "--parallel"] {
+      assert!(
+        how_section.contains(flag),
+        "expected {flag} under How it builds; got:\n{how_section}"
+      );
+    }
+    for flag in ["--dry", "--ask", "--magic-rollback", "--fail-fast"] {
+      assert!(
+        safety_section.contains(flag),
+        "expected {flag} under Safety; got:\n{safety_section}"
+      );
+    }
   }
 }
