@@ -37,7 +37,7 @@ use super::{
   },
   lock::{ActorName, LockOptions, SourcesLock},
   read_state_file,
-  shadow::ShadowFetch,
+  shadow::{ShadowFetch, remove_if_present},
   transaction::Transaction,
   write_state_file,
 };
@@ -795,6 +795,21 @@ pub fn record_activation_at(
     .unwrap_or_else(|| applied_via.to_string());
   write_state_file(&paths.state_dir, "applied-origin", &applied_origin)?;
 
+  // `XI_INVENTORY_ROLE` carries this host's own `[[push.hosts]]` name,
+  // set only when the triggering push matched an inventory entry for
+  // it. A local switch or a daemon tick leaves it unset, and a push
+  // against a host with no inventory entry leaves it unset too - in
+  // both cases any `inventory-role` marker left by an earlier push is
+  // cleared, so a later non-matching activation does not keep
+  // reporting a role nothing just claimed.
+  match std::env::var("XI_INVENTORY_ROLE")
+    .ok()
+    .filter(|v| !v.is_empty())
+  {
+    Some(role) => write_state_file(&paths.state_dir, "inventory-role", &role)?,
+    None => remove_if_present(&paths.state_dir.join("inventory-role"))?,
+  }
+
   write_state_file(
     &paths.state_dir,
     "applied-at",
@@ -1471,16 +1486,18 @@ mod tests {
   }
 
   /// Saves, clears, and restores the env vars `record_activation_at`
-  /// reads for `applied-origin`, so the three cases below do not race
-  /// each other or leak into other tests in the same process.
+  /// reads for `applied-origin` and `inventory-role`, so the cases
+  /// below do not race each other or leak into other tests in the
+  /// same process.
   struct OriginEnvGuard {
-    saved: [(&'static str, Option<String>); 4],
+    saved: [(&'static str, Option<String>); 5],
   }
 
   impl OriginEnvGuard {
     fn clear() -> Self {
       let names = [
         "XI_APPLIED_ORIGIN",
+        "XI_INVENTORY_ROLE",
         "SSH_CONNECTION",
         "SSH_CLIENT",
         "SSH_TTY",
@@ -1490,6 +1507,7 @@ mod tests {
         (names[1], std::env::var(names[1]).ok()),
         (names[2], std::env::var(names[2]).ok()),
         (names[3], std::env::var(names[3]).ok()),
+        (names[4], std::env::var(names[4]).ok()),
       ];
       unsafe {
         for (name, _) in &saved {
@@ -1561,6 +1579,49 @@ mod tests {
         .expect("read")
         .as_deref(),
       Some("push:operator-host")
+    );
+
+    drop(guard);
+  }
+
+  #[test]
+  #[serial]
+  fn record_activation_at_writes_inventory_role_only_when_a_push_supplied_one()
+  {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = scope_paths(tmp.path());
+    create_private_dir(&paths.state_dir).expect("mkdir state");
+    let profile = tmp.path().join("profile");
+    fs::write(&profile, "generation").expect("write profile");
+
+    // Case 1: no `XI_INVENTORY_ROLE` -> no marker is written.
+    let guard = OriginEnvGuard::clear();
+    record_activation_at(&paths, &profile).expect("record without role");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "inventory-role").expect("read"),
+      None
+    );
+
+    // Case 2: an inbound push matched a `[[push.hosts]]` entry for
+    // this host and tagged its activation with that name.
+    guard.set("XI_INVENTORY_ROLE", "web1");
+    record_activation_at(&paths, &profile).expect("record with role");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "inventory-role")
+        .expect("read")
+        .as_deref(),
+      Some("web1")
+    );
+
+    // Case 3: a later activation with no role clears the stale marker
+    // rather than leaving `web1` for a local switch to keep reporting.
+    unsafe {
+      std::env::remove_var("XI_INVENTORY_ROLE");
+    }
+    record_activation_at(&paths, &profile).expect("record clears role");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "inventory-role").expect("read"),
+      None
     );
 
     drop(guard);
