@@ -305,6 +305,31 @@ impl HomeActivationMode {
       (false, false) => Self::None,
     }
   }
+
+  /// The `status` overlap-warning text, surfaced *before* an activation
+  /// decision is made rather than only after one: `Some` exactly when
+  /// both the embedded unit and a discoverable standalone output are
+  /// present, `None` for the other three combinations.
+  ///
+  /// Shares [`home_activation_overlap_warning_text`] with `status` rather
+  /// than a second copy of the wording, so the two surfaces cannot drift
+  /// apart.
+  #[must_use]
+  pub fn overlap_warning(self, username: &str) -> Option<String> {
+    (self == Self::Both)
+      .then(|| home_activation_overlap_warning_text(username))
+  }
+}
+
+/// The warning text shown when a user's home-manager activation is both
+/// embedded in a system-scope activation and backed by a discoverable
+/// standalone output: shared verbatim between `status`'s side note
+/// ([`print_human`]) and [`HomeActivationMode::overlap_warning`].
+fn home_activation_overlap_warning_text(username: &str) -> String {
+  format!(
+    "home-manager-{username}.service embeds this scope's activation; a \
+     standalone `xi home switch` here runs independently of it"
+  )
 }
 
 /// Whether this source's remote is a local filesystem path rather than
@@ -633,9 +658,9 @@ fn print_human(args: PrintHumanArgs<'_>) {
   );
   if scope == Scope::User && embedded_home_manager {
     println!(
-      "  {} home-manager-{username}.service embeds this scope's activation; a \
-       standalone `xi home switch` here runs independently of it",
-      Icon::Warn.render()
+      "  {} {}",
+      Icon::Warn.render(),
+      home_activation_overlap_warning_text(username)
     );
   }
 
@@ -789,7 +814,11 @@ mod detect_with_sources_tests {
 
 #[cfg(test)]
 mod home_activation_mode_tests {
-  use super::{HomeActivationMode, discover_standalone_home_output};
+  use super::{
+    HomeActivationMode,
+    discover_standalone_home_output,
+    home_activation_overlap_warning_text,
+  };
 
   #[test]
   fn resolves_embedded_only() {
@@ -848,6 +877,21 @@ mod home_activation_mode_tests {
       discover_standalone_home_output("alice", "host", available),
       None
     );
+  }
+
+  #[test]
+  fn both_overlap_warning_matches_status_text() {
+    assert_eq!(
+      HomeActivationMode::Both.overlap_warning("alice"),
+      Some(home_activation_overlap_warning_text("alice"))
+    );
+  }
+
+  #[test]
+  fn non_both_modes_have_no_overlap_warning() {
+    assert_eq!(HomeActivationMode::Embedded.overlap_warning("alice"), None);
+    assert_eq!(HomeActivationMode::Standalone.overlap_warning("alice"), None);
+    assert_eq!(HomeActivationMode::None.overlap_warning("alice"), None);
   }
 }
 
