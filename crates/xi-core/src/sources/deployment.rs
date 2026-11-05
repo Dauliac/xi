@@ -171,12 +171,16 @@ impl SystemDeploymentKind {
     match (nixos, system_manager) {
       (true, false) => Ok(Self::NixOs),
       (false, true) => Ok(Self::SystemManager),
-      (true, true) => Err(MechanismAmbiguity::Both {
-        hostname: hostname.to_owned(),
-      }),
-      (false, false) => Err(MechanismAmbiguity::Neither {
-        hostname: hostname.to_owned(),
-      }),
+      (true, true) => {
+        Err(MechanismAmbiguity::Both {
+          hostname: hostname.to_owned(),
+        })
+      },
+      (false, false) => {
+        Err(MechanismAmbiguity::Neither {
+          hostname: hostname.to_owned(),
+        })
+      },
     }
   }
 
@@ -200,7 +204,11 @@ impl SystemDeploymentKind {
 /// `resolve_toplevel` cannot fail for an empty starting attribute and an
 /// empty build path (the only way it is ever called here); the fallback
 /// formatter exists only so this stays total without an `expect`.
-fn mechanism_attr(flake_ref: &str, hostname: &str, output: FlakeOutput) -> String {
+fn mechanism_attr(
+  flake_ref: &str,
+  hostname: &str,
+  output: FlakeOutput,
+) -> String {
   let installable = resolve_toplevel(
     hostname,
     Installable::Flake {
@@ -210,9 +218,11 @@ fn mechanism_attr(flake_ref: &str, hostname: &str, output: FlakeOutput) -> Strin
     output,
     &[],
   )
-  .unwrap_or_else(|_| Installable::Flake {
-    reference: flake_ref.to_owned(),
-    attribute: vec![output.as_str().to_owned(), hostname.to_owned()],
+  .unwrap_or_else(|_| {
+    Installable::Flake {
+      reference: flake_ref.to_owned(),
+      attribute: vec![output.as_str().to_owned(), hostname.to_owned()],
+    }
   });
   installable.to_args().into_iter().next().unwrap_or_default()
 }
@@ -737,7 +747,10 @@ mod detect_with_sources_tests {
   /// A sources closure that fails the test if it is ever invoked, for
   /// asserting that host state short-circuits before any source lookup.
   fn unreachable_attribute_exists(_attribute: &str) -> bool {
-    panic!("sources must not be consulted when host state already resolved a mechanism")
+    panic!(
+      "sources must not be consulted when host state already resolved a \
+       mechanism"
+    )
   }
 
   #[test]
