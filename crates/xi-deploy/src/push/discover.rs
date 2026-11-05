@@ -69,7 +69,7 @@ impl TargetSource {
 
   /// What kind of activation a target from this source needs.
   #[must_use]
-  pub const fn profile_kind(self) -> ProfileKind {
+  pub fn profile_kind(self) -> ProfileKind {
     match self {
       // A deploy stanza or a colmena hive node is a NixOS system unless
       // its own per-profile metadata says otherwise, which is read
@@ -79,17 +79,45 @@ impl TargetSource {
       },
       Self::DarwinConfigurations => ProfileKind::Darwin,
       // system-manager has no `<tool> switch --flake <ref>#<name>`
-      // shape, so its activation is a bespoke command rather than one
-      // of the other named kinds. The command string itself is filled
-      // in by a later change; discovery only wires up the taxonomy.
+      // shape, so its activation is the same bespoke build-toplevel /
+      // profile-set / activate sequence `xi system switch` runs
+      // locally (`crates/xi/src/system/mod.rs`), rather than one of the
+      // other named kinds. The build-toplevel step already happened by
+      // the time this command runs (`--mode closure` builds and copies
+      // the closure before activating), so only the profile-set and
+      // activate steps remain; `{store_path}` is a literal placeholder
+      // `activation_script` substitutes once the real store path is
+      // known.
       Self::SystemConfigs => {
         ProfileKind::Custom {
-          activate_command: String::new(),
+          activate_command: system_configs_activate_command(),
         }
       },
       Self::HomeConfigurations => ProfileKind::HomeManager,
     }
   }
+}
+
+/// Literal placeholder a `ProfileKind::Custom` activate-command template
+/// carries in place of the real store path, which is not known until
+/// push time. [`crate::push::orchestrate`]'s `activation_script`
+/// substitutes it once the build has run.
+pub(crate) const STORE_PATH_PLACEHOLDER: &str = "{store_path}";
+
+/// The `ProfileKind::Custom` activate-command template a `SystemConfigs`
+/// target carries, mirroring `xi system switch`'s own register
+/// (`nix build --no-link --profile <path> <store-path>`) and activate
+/// (`<store-path>/bin/activate`) steps.
+///
+/// Carries [`STORE_PATH_PLACEHOLDER`] where the two other `ProfileKind`s'
+/// activation commands use the real `store_path`, since `Custom`'s
+/// command is a fixed string set at discovery time, before any build has
+/// run.
+fn system_configs_activate_command() -> String {
+  format!(
+    "nix build --no-link --profile {SYSTEM_MANAGER_PROFILE} \
+     {STORE_PATH_PLACEHOLDER} && {STORE_PATH_PLACEHOLDER}/bin/activate"
+  )
 }
 
 /// One target a push can address.
@@ -602,11 +630,34 @@ mod tests {
   fn system_configs_build_the_toplevel_directly() {
     let web3 = target("web3", TargetSource::SystemConfigs);
     assert_eq!(web3.installable, ".#systemConfigs.web3");
-    assert_eq!(web3.kind, ProfileKind::Custom {
-      activate_command: String::new(),
-    });
     assert_eq!(web3.rebuild_tool, "nix");
     assert_eq!(web3.profile_path, SYSTEM_MANAGER_PROFILE);
+  }
+
+  /// SC-MD-006 / xi-slej.3.2: the generated `activate_command` carries the
+  /// same build-toplevel / profile-set / activate sequence `xi system
+  /// switch` runs locally (`crates/xi/src/system/mod.rs`), not a
+  /// `nixos-rebuild`- or `darwin-rebuild`-shaped command. The
+  /// build-toplevel step already ran by the time this command executes
+  /// (`--mode closure` builds and copies the closure first), so only the
+  /// profile-set and activate steps are left in the template; `{store_path}`
+  /// is a literal placeholder substituted once the real store path is
+  /// known.
+  #[test]
+  fn system_configs_activate_command_runs_the_build_toplevel_sequence() {
+    let web3 = target("web3", TargetSource::SystemConfigs);
+    let ProfileKind::Custom { activate_command } = web3.kind else {
+      panic!("expected ProfileKind::Custom, got {:?}", web3.kind);
+    };
+    assert_eq!(
+      activate_command,
+      format!(
+        "nix build --no-link --profile {SYSTEM_MANAGER_PROFILE} \
+         {{store_path}} && {{store_path}}/bin/activate"
+      )
+    );
+    assert!(!activate_command.contains("nixos-rebuild"));
+    assert!(!activate_command.contains("darwin-rebuild"));
   }
 
   /// Answers only a `systemConfigs` output, mirroring SC-MD-006's fixture
