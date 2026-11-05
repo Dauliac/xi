@@ -9,6 +9,7 @@
 pub mod args;
 pub mod backend;
 pub mod push;
+pub mod scope;
 pub mod target;
 
 use color_eyre::{Result, eyre::bail};
