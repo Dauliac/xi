@@ -10,6 +10,7 @@ pub mod args;
 pub mod backend;
 pub mod decision;
 pub mod fleet_digest;
+pub mod plan;
 pub mod push;
 pub mod scope;
 pub mod target;
