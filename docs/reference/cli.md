@@ -9,7 +9,7 @@ not instruct. For task-oriented instructions, see the
 | Group            | Commands                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------------------ |
 | Configuration    | `os`, `home`, `darwin`, `system`                                                                       |
-| Flake operations | `build`, `check`, `run`, `fmt`, `show`, `init`, `update`, `ci`, `lib`, `test`, `doctor`, `materialize` |
+| Flake operations | `build`, `check`, `run`, `fmt`, `show`, `init`, `update`, `ci`, `lib`, `test`, `doctor` |
 | Deployment       | `deploy`                                                                                               |
 | Development      | `develop`, `search`, `vm`                                                                              |
 | Maintenance      | `cache`, `clean`, `nix`, `completions`                                                                 |
@@ -325,24 +325,6 @@ xi doctor [FLAKE_REF]
 
 Checks flake input freshness, nixpkgs branch age, IFD, and other health signals.
 Thresholds are configured in the `[doctor]` section of `.xi.toml`.
-
-### xi materialize — cache eval outputs
-
-Persist expensive evaluation outputs (e.g. Cargo hashes, prefetch results) under
-`nix/materialized/`, controlled by `.xi.toml`.
-
-```
-xi materialize [TARGETS...] [OPTIONS]
-```
-
-| Option       | Description                                    |
-| ------------ | ---------------------------------------------- |
-| `--commit`   | Write results with git skip-worktree lifecycle |
-| `--check`    | Verify freshness — exit non-zero if stale      |
-| `-l, --list` | Show targets and their staleness               |
-| `--force`    | Ignore cache, re-run every target              |
-| `--setup`    | Apply git `skip-worktree` and merge driver     |
-| `--clean`    | Remove the cache directory                     |
 
 ## Deployment
 

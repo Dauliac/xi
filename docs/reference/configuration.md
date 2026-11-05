@@ -268,42 +268,6 @@ args = ["--flake", ".#integrationTests"]
 | `exclude-outputs` | list of strings | `["legacyPackages"]` | Outputs to skip               |
 | `include-configs` | bool            | `true`               | Include system configurations |
 
-### `[materialize]` — materialization
-
-| Key                   | Type            | Default              | Description                                   |
-| --------------------- | --------------- | -------------------- | --------------------------------------------- |
-| `commit-path`         | string          | `"nix/materialized"` | Directory for committed files                 |
-| `check-in-ci`         | bool            | `false`              | Verify freshness during `xi ci`               |
-| `pre-build`           | bool            | `false`              | Run stale targets before build/CI             |
-| `git-hide`            | bool            | `true`               | Apply git skip-worktree                       |
-| `auto-stage`          | bool            | `false`              | Run `git add` after commit                    |
-| `auto-stage-branches` | list of strings | `[]`                 | Restrict auto-stage to branches (empty = all) |
-
-### `[[materialize.target]]` — materialization targets
-
-Each target is an array entry:
-
-| Key       | Type            | Required | Description                                  |
-| --------- | --------------- | -------- | -------------------------------------------- |
-| `name`    | string          | yes      | Human-readable identifier                    |
-| `command` | string          | yes      | Shell command (stdout captured)              |
-| `output`  | string          | yes      | Output path relative to commit-path          |
-| `sources` | list of strings | no       | Glob patterns for SHA-256 cache invalidation |
-
-```toml
-[[materialize.target]]
-name = "cargo-hash"
-command = "nix eval .#cargoHash --json"
-output = "cargo-hash.json"
-sources = ["Cargo.lock", "Cargo.toml"]
-
-[[materialize.target]]
-name = "generated-nix"
-command = "nix eval .#generateNix --json"
-output = "generated.nix"
-sources = ["src/**/*.rs"]
-```
-
 ### `[sources]` - config-repo sources
 
 Points xi at the git repo that holds your NixOS / home-manager / darwin
@@ -383,15 +347,4 @@ checks.filter = "test-*"
 name = "integration"
 command = "nix-unit"
 args = ["--flake", ".#integrationTests"]
-
-[materialize]
-check-in-ci = true
-pre-build = true
-auto-stage = true
-
-[[materialize.target]]
-name = "cargo-hash"
-command = "nix eval .#cargoHash --json"
-output = "cargo-hash.json"
-sources = ["Cargo.lock"]
 ```

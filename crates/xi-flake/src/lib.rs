@@ -3,7 +3,6 @@ pub mod ci;
 pub(crate) mod doctor;
 pub mod flake_lib;
 pub(crate) mod locate;
-pub(crate) mod materialize;
 pub(crate) mod project_config;
 pub(crate) mod show;
 pub(crate) mod test;
@@ -204,11 +203,6 @@ impl BuildArgs {
     }
 
     let local_dir = resolve_local_flake_dir_from_installable(&self.installable);
-
-    // Pre-build materialization (if configured in .xi.toml)
-    if let Some(ref dir) = local_dir {
-      materialize::run_pre_build_materialize(dir)?;
-    }
 
     ensure_flake_locked(local_dir)?;
 

@@ -317,59 +317,6 @@ fn step_eval_all_systems(
   )
 }
 
-/// Step: check materialization freshness (if check-in-ci is enabled).
-fn step_materialize_check(flake_dir: Option<&Path>) -> StepResult {
-  let start = Instant::now();
-
-  let Some(dir) = flake_dir else {
-    return StepResult {
-      name:     "Materialize",
-      status:   StepStatus::Skipped,
-      duration: start.elapsed(),
-      detail:   None,
-    };
-  };
-
-  match crate::materialize::check_materialize_freshness(dir) {
-    Ok(None) => {
-      StepResult {
-        name:     "Materialize",
-        status:   StepStatus::Skipped,
-        duration: start.elapsed(),
-        detail:   None,
-      }
-    },
-    Ok(Some((0, total))) => {
-      StepResult {
-        name:     "Materialize",
-        status:   StepStatus::Ok,
-        duration: start.elapsed(),
-        detail:   Some(format!("{total} target(s) fresh")),
-      }
-    },
-    Ok(Some((stale, total))) => {
-      StepResult {
-        name:     "Materialize",
-        status:   StepStatus::Fail(format!(
-          "{stale} of {total} target(s) are stale. Run `xi materialize`."
-        )),
-        duration: start.elapsed(),
-        detail:   None,
-      }
-    },
-    Err(e) => {
-      StepResult {
-        name:     "Materialize",
-        status:   StepStatus::Warn(format!(
-          "Could not check materialization: {e}"
-        )),
-        duration: start.elapsed(),
-        detail:   None,
-      }
-    },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Extra output discovery
 // ---------------------------------------------------------------------------
@@ -538,11 +485,6 @@ impl CiArgs {
     let all_systems = !self.current_system_only;
     let passthrough_args = self.passthrough.to_nix_args();
 
-    // Pre-build materialization (if configured in .xi.toml)
-    if let Some(ref dir) = local_dir {
-      crate::materialize::run_pre_build_materialize(dir)?;
-    }
-
     // Auto-create flake.lock if missing
     ensure_flake_locked(local_dir.clone())?;
 
@@ -626,12 +568,6 @@ impl CiArgs {
           Some(s.spawn(move || step_eval_lib(&ref_clone)))
         };
 
-        // Materialize freshness check (if check-in-ci = true)
-        let mat_handle = {
-          let local_clone = local_dir.clone();
-          Some(s.spawn(move || step_materialize_check(local_clone.as_deref())))
-        };
-
         // Collect results
         let lock_result = lock_handle.map(|h| {
           h.join().unwrap_or_else(|_| {
@@ -699,17 +635,6 @@ impl CiArgs {
           })
         });
 
-        let mat_result = mat_handle.map(|h| {
-          h.join().unwrap_or_else(|_| {
-            StepResult {
-              name:     "Materialize",
-              status:   StepStatus::Fail("Thread panicked".to_string()),
-              duration: std::time::Duration::ZERO,
-              detail:   None,
-            }
-          })
-        });
-
         (
           lock_result,
           eval_result,
@@ -717,7 +642,6 @@ impl CiArgs {
           health_result,
           test_result,
           lib_result,
-          mat_result,
         )
       })
     };
@@ -729,7 +653,6 @@ impl CiArgs {
       health_result,
       test_result,
       lib_result,
-      mat_result,
     ) = phase1_results;
 
     // Clear the spinner and print results sequentially
@@ -754,10 +677,6 @@ impl CiArgs {
       all_results.push(r);
     }
     if let Some(r) = lib_result {
-      print_step_result(&r);
-      all_results.push(r);
-    }
-    if let Some(r) = mat_result {
       print_step_result(&r);
       all_results.push(r);
     }

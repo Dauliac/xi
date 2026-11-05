@@ -155,19 +155,7 @@ Rendering rules:
 - Type annotations use the `:: type` syntax (e.g. `:: module`, `:: lib`)
 - Hidden outputs require `--all` to display
 
-## 9. Materialization
-
-Materialization caches expensive evaluations:
-
-- Runs shell commands, captures stdout, writes to cache
-- Uses SHA-256 hashes of source file contents for invalidation
-- Supports a git skip-worktree lifecycle for committed files
-- Integrates with `xi ci` (freshness check) and `xi build` (pre-build hook)
-
-Configuration lives in `.xi.toml` under `[materialize]` and
-`[[materialize.target]]`.
-
-## 10. Two configuration layers
+## 9. Two configuration layers
 
 | File          | Scope           | Controls                                                       |
 | ------------- | --------------- | -------------------------------------------------------------- |
@@ -178,7 +166,7 @@ Configuration lives in `.xi.toml` under `[materialize]` and
 `.xi.toml` lives at the flake root and is committed to version control. Both are
 optional.
 
-## 11. Platform support
+## 10. Platform support
 
 First-class targets:
 
@@ -188,6 +176,6 @@ First-class targets:
 
 `x86_64-darwin` is no longer supported, following Nixpkgs' decision.
 
-## 12. Versioning
+## 11. Versioning
 
 Xi uses semantic versioning. The license is EUPL-1.2.
