@@ -21,7 +21,15 @@ use color_eyre::{Result, eyre::bail};
 pub use target::{DeployProfile, DeployTarget, ProfileKind};
 use tracing::info;
 
-use crate::{args::DeployArgs, backend::DeployBackend};
+use crate::{
+  args::DeployArgs,
+  backend::DeployBackend,
+  push::{
+    args::PushBackend,
+    discover::{self, ResolvedBackend},
+    engine::CliNix,
+  },
+};
 
 /// Detect the deployment backend from the flake and run the deployment.
 ///
@@ -70,18 +78,35 @@ fn resolve_explicit_backend(
   }
 }
 
-/// Auto-detect backend by probing flake outputs.
+/// Auto-detect backend by discovering the flake's targets and applying
+/// the one precedence table `push::discover::detect_backend` owns, so
+/// this entrypoint and `xi push`'s never disagree on the same flake.
 fn detect_backend(flake_ref: &str) -> Box<dyn DeployBackend> {
-  // 1. deploy-rs: check for `deploy` output
-  if let Ok(backend) = backend::deploy_rs::DeployRsBackend::new(flake_ref) {
-    return Box::new(backend);
+  let nix = CliNix;
+  let targets = discover::discover(&nix, flake_ref).unwrap_or_default();
+  let colmena_hive_present =
+    discover::has_colmena_hive(&nix, flake_ref).unwrap_or(false);
+
+  match discover::detect_backend(
+    PushBackend::Auto,
+    &targets,
+    colmena_hive_present,
+  ) {
+    ResolvedBackend::DeployRs => {
+      if let Ok(backend) = backend::deploy_rs::DeployRsBackend::new(flake_ref) {
+        return Box::new(backend);
+      }
+    },
+    ResolvedBackend::Colmena => {
+      if let Ok(backend) = backend::colmena::ColmenaBackend::new() {
+        return Box::new(backend);
+      }
+    },
+    ResolvedBackend::Builtin => {},
   }
 
-  // 2. colmena: check for `colmenaHive` output
-  if let Ok(backend) = backend::colmena::ColmenaBackend::new() {
-    return Box::new(backend);
-  }
-
-  // 3. builtin: always available as fallback
+  // Always available as a fallback, including when the detected
+  // backend's own construction fails (e.g. a malformed `deploy`
+  // config, or `colmena` missing from `PATH`).
   Box::new(backend::builtin::BuiltinBackend)
 }
