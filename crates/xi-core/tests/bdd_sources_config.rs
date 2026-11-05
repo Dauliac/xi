@@ -933,6 +933,84 @@ fn deploy_positional_shaped_args_never_read_as_a_target() {
   );
 }
 
+// -- Requirement: `--target` resolves the rare genuine collision ----------
+
+/// `--target` forces the target reading even over a positional
+/// `classify_deploy_positional` would otherwise read as a path -  the
+/// collision the heuristic alone cannot resolve, since a path-shaped
+/// positional is never checked against the target set at all.
+#[test]
+fn target_override_forces_target_reading_over_a_path_shaped_positional() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    apply_target_override,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+  let classified = classify_deploy_positional("./web1", &targets);
+  assert_eq!(
+    classified,
+    DeployPositionalKind::Positional(PositionalKind::Installable),
+    "precondition: the heuristic alone reads a path-shaped positional as an \
+     installable, never a target"
+  );
+
+  assert_eq!(
+    apply_target_override(classified, true),
+    DeployPositionalKind::Target,
+    "--target must override the heuristic's reading"
+  );
+}
+
+/// `--target` forces the target reading even for a bare word that
+/// matches nothing in the discovered/inventory target set.
+#[test]
+fn target_override_forces_target_reading_even_with_no_matching_target() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    apply_target_override,
+    classify_deploy_positional,
+  };
+
+  let no_targets = BTreeSet::new();
+  let classified = classify_deploy_positional("anything", &no_targets);
+  assert_eq!(
+    classified,
+    DeployPositionalKind::Positional(PositionalKind::Installable)
+  );
+
+  assert_eq!(
+    apply_target_override(classified, true),
+    DeployPositionalKind::Target
+  );
+}
+
+/// Without `--target`, `apply_target_override` is a no-op: the
+/// heuristic's own reading passes through unchanged.
+#[test]
+fn target_override_is_a_noop_when_not_forced() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    apply_target_override,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+
+  for raw in ["web1", "./web1", "github:web1", "nope"] {
+    let classified = classify_deploy_positional(raw, &targets);
+    assert_eq!(apply_target_override(classified, false), classified);
+  }
+}
+
 // -- Requirement: Switch is the sources entrypoint, status half -----------
 
 /// The status a fresh adopt reports, decided on bead xi-4p3h.

@@ -2100,6 +2100,29 @@ pub fn classify_deploy_positional(
   DeployPositionalKind::Positional(classify_positional(raw))
 }
 
+/// Force a single `xi deploy` positional's reading to
+/// [`DeployPositionalKind::Target`] when the operator passed it via
+/// `--target` rather than leaving it to [`classify_deploy_positional`]'s
+/// heuristic.
+///
+/// Layered on top of `classify_deploy_positional` rather than folded into
+/// it, matching this change's layering elsewhere
+/// (`classify_deploy_positional` over `classify_positional`,
+/// `xi_deploy::decision::apply_override` over the decision tree itself):
+/// `--target`'s explicit reading always wins, even over a positional
+/// `classify_deploy_positional` would otherwise read as a path, URL, scp
+/// spec, or flake reference  -  the rare genuine collision the spec names.
+#[must_use]
+pub const fn apply_target_override(
+  classified: DeployPositionalKind,
+  forced: bool,
+) -> DeployPositionalKind {
+  if forced {
+    return DeployPositionalKind::Target;
+  }
+  classified
+}
+
 /// Whether `raw` has none of the shapes `classify_positional` already
 /// treats as a path, URL, scp spec, or flake reference  -  the only
 /// positionals the target-name check in [`classify_deploy_positional`] is
