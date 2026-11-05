@@ -812,6 +812,36 @@ mod detect_with_sources_tests {
   }
 }
 
+/// Host state silent, exactly one namespace declares the hostname: that
+/// namespace's mechanism resolves per the "A bare host resolves from
+/// sources alone" scenario, without guessing past a genuine ambiguity.
+#[cfg(test)]
+mod sources_fallback_single_match_tests {
+  use super::SystemDeploymentKind;
+
+  #[test]
+  fn host_state_silent_nixos_only_resolves_nixos() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|attribute: &str| attribute.contains("nixosConfigurations"),
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::NixOs));
+  }
+
+  #[test]
+  fn host_state_silent_system_manager_only_resolves_system_manager() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|attribute: &str| attribute.contains("systemConfigs"),
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::SystemManager));
+  }
+}
+
 #[cfg(test)]
 mod home_activation_mode_tests {
   use super::{
