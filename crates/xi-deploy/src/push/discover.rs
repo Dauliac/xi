@@ -2,7 +2,7 @@
 //!
 //! Discovery reads the flake output taxonomy
 //! ([`xi_core::flake_output::FlakeOutput`]) rather than a hardcoded list
-//! of attribute names, so a target declared any of the five ways the
+//! of attribute names, so a target declared any of the six ways the
 //! house taxonomy knows about is found by one pass.
 //!
 //! Detection is deliberately separate from discovery and takes the
@@ -37,6 +37,8 @@ pub enum TargetSource {
   NixosConfigurations,
   /// `darwinConfigurations.<n>`.
   DarwinConfigurations,
+  /// `systemConfigs.<n>` (system-manager).
+  SystemConfigs,
   /// `homeConfigurations.<n>`.
   HomeConfigurations,
 }
@@ -48,6 +50,7 @@ impl TargetSource {
     Self::ColmenaHive,
     Self::NixosConfigurations,
     Self::DarwinConfigurations,
+    Self::SystemConfigs,
     Self::HomeConfigurations,
   ];
 
@@ -59,13 +62,14 @@ impl TargetSource {
       Self::ColmenaHive => FlakeOutput::ColmenaHive,
       Self::NixosConfigurations => FlakeOutput::NixosConfigurations,
       Self::DarwinConfigurations => FlakeOutput::DarwinConfigurations,
+      Self::SystemConfigs => FlakeOutput::SystemConfigs,
       Self::HomeConfigurations => FlakeOutput::HomeConfigurations,
     }
   }
 
   /// What kind of activation a target from this source needs.
   #[must_use]
-  pub const fn profile_kind(self) -> ProfileKind {
+  pub fn profile_kind(self) -> ProfileKind {
     match self {
       // A deploy stanza or a colmena hive node is a NixOS system unless
       // its own per-profile metadata says otherwise, which is read
@@ -74,9 +78,46 @@ impl TargetSource {
         ProfileKind::NixOS
       },
       Self::DarwinConfigurations => ProfileKind::Darwin,
+      // system-manager has no `<tool> switch --flake <ref>#<name>`
+      // shape, so its activation is the same bespoke build-toplevel /
+      // profile-set / activate sequence `xi system switch` runs
+      // locally (`crates/xi/src/system/mod.rs`), rather than one of the
+      // other named kinds. The build-toplevel step already happened by
+      // the time this command runs (`--mode closure` builds and copies
+      // the closure before activating), so only the profile-set and
+      // activate steps remain; `{store_path}` is a literal placeholder
+      // `activation_script` substitutes once the real store path is
+      // known.
+      Self::SystemConfigs => {
+        ProfileKind::Custom {
+          activate_command: system_configs_activate_command(),
+        }
+      },
       Self::HomeConfigurations => ProfileKind::HomeManager,
     }
   }
+}
+
+/// Literal placeholder a `ProfileKind::Custom` activate-command template
+/// carries in place of the real store path, which is not known until
+/// push time. [`crate::push::orchestrate`]'s `activation_script`
+/// substitutes it once the build has run.
+pub(crate) const STORE_PATH_PLACEHOLDER: &str = "{store_path}";
+
+/// The `ProfileKind::Custom` activate-command template a `SystemConfigs`
+/// target carries, mirroring `xi system switch`'s own register
+/// (`nix build --no-link --profile <path> <store-path>`) and activate
+/// (`<store-path>/bin/activate`) steps.
+///
+/// Carries [`STORE_PATH_PLACEHOLDER`] where the two other `ProfileKind`s'
+/// activation commands use the real `store_path`, since `Custom`'s
+/// command is a fixed string set at discovery time, before any build has
+/// run.
+fn system_configs_activate_command() -> String {
+  format!(
+    "nix build --no-link --profile {SYSTEM_MANAGER_PROFILE} \
+     {STORE_PATH_PLACEHOLDER} && {STORE_PATH_PLACEHOLDER}/bin/activate"
+  )
 }
 
 /// One target a push can address.
@@ -122,6 +163,13 @@ impl PushTarget {
            toplevel"
         )
       },
+      // Unlike `nixosConfigurations`/`darwinConfigurations`, a
+      // `systemConfigs.<name>` entry evaluates directly to the toplevel
+      // derivation (mirrors `resolve_toplevel`'s `FlakeOutput::SystemConfigs`
+      // call in `xi system switch`, which passes an empty `build_path`).
+      TargetSource::SystemConfigs => {
+        format!("{flake_ref}#systemConfigs.{name}")
+      },
       TargetSource::ColmenaHive => {
         format!(
           "{flake_ref}#colmenaHive.nodes.{name}.config.system.build.toplevel"
@@ -150,21 +198,33 @@ impl PushTarget {
   }
 }
 
+/// System profile system-manager registers a host-wide generation in,
+/// parallel to [`SYSTEM_PROFILE`] (`crates/xi/src/system/mod.rs`'s own
+/// `SYSTEM_PROFILE` constant for the same path).
+pub const SYSTEM_MANAGER_PROFILE: &str =
+  "/nix/var/nix/profiles/system-manager-profiles/system-manager";
+
 /// The Nix profile a generation of this kind is registered in.
 #[must_use]
 pub const fn profile_for(kind: &ProfileKind) -> &'static str {
   match kind {
     ProfileKind::HomeManager => HOME_PROFILE,
+    ProfileKind::Custom { .. } => SYSTEM_MANAGER_PROFILE,
     _ => SYSTEM_PROFILE,
   }
 }
 
 /// The rebuild tool preflight expects on a target of this kind.
+///
+/// `ProfileKind::Custom` targets (system-manager today) have no
+/// `<tool> switch` CLI to probe for; `nix` itself is the one binary the
+/// build-toplevel/profile-set/activate sequence actually needs.
 #[must_use]
 pub const fn rebuild_tool_for(kind: &ProfileKind) -> &'static str {
   match kind {
     ProfileKind::Darwin => "darwin-rebuild",
     ProfileKind::HomeManager => "home-manager",
+    ProfileKind::Custom { .. } => "nix",
     _ => "nixos-rebuild",
   }
 }
@@ -281,6 +341,7 @@ fn discover_one(
 
     TargetSource::NixosConfigurations
     | TargetSource::DarwinConfigurations
+    | TargetSource::SystemConfigs
     | TargetSource::HomeConfigurations => {
       let Some(value) =
         nix.eval_json(&attr, Some("set: builtins.attrNames set"))?
@@ -563,6 +624,71 @@ mod tests {
     let darwin = target("mac", TargetSource::DarwinConfigurations);
     assert_eq!(darwin.rebuild_tool, "darwin-rebuild");
     assert_eq!(darwin.kind, ProfileKind::Darwin);
+  }
+
+  #[test]
+  fn system_configs_build_the_toplevel_directly() {
+    let web3 = target("web3", TargetSource::SystemConfigs);
+    assert_eq!(web3.installable, ".#systemConfigs.web3");
+    assert_eq!(web3.rebuild_tool, "nix");
+    assert_eq!(web3.profile_path, SYSTEM_MANAGER_PROFILE);
+  }
+
+  /// SC-MD-006 / xi-slej.3.2: the generated `activate_command` carries the
+  /// same build-toplevel / profile-set / activate sequence `xi system
+  /// switch` runs locally (`crates/xi/src/system/mod.rs`), not a
+  /// `nixos-rebuild`- or `darwin-rebuild`-shaped command. The
+  /// build-toplevel step already ran by the time this command executes
+  /// (`--mode closure` builds and copies the closure first), so only the
+  /// profile-set and activate steps are left in the template; `{store_path}`
+  /// is a literal placeholder substituted once the real store path is
+  /// known.
+  #[test]
+  fn system_configs_activate_command_runs_the_build_toplevel_sequence() {
+    let web3 = target("web3", TargetSource::SystemConfigs);
+    let ProfileKind::Custom { activate_command } = web3.kind else {
+      panic!("expected ProfileKind::Custom, got {:?}", web3.kind);
+    };
+    assert_eq!(
+      activate_command,
+      format!(
+        "nix build --no-link --profile {SYSTEM_MANAGER_PROFILE} \
+         {{store_path}} && {{store_path}}/bin/activate"
+      )
+    );
+    assert!(!activate_command.contains("nixos-rebuild"));
+    assert!(!activate_command.contains("darwin-rebuild"));
+  }
+
+  /// Answers only a `systemConfigs` output, mirroring SC-MD-006's fixture
+  /// flake declaring `systemConfigs.web3`.
+  struct SystemConfigsFixtureNix;
+
+  impl crate::push::engine::Nix for SystemConfigsFixtureNix {
+    fn eval_json(
+      &self,
+      installable: &str,
+      _apply: Option<&str>,
+    ) -> Result<Option<serde_json::Value>> {
+      if installable == ".#systemConfigs" {
+        Ok(Some(serde_json::json!(["web3"])))
+      } else {
+        Ok(None)
+      }
+    }
+
+    fn build(&self, installable: &str) -> Result<String> {
+      Ok(format!("/nix/store/fake-{installable}"))
+    }
+  }
+
+  #[test]
+  fn a_system_configs_output_is_discovered_as_a_push_target() {
+    let targets = discover(&SystemConfigsFixtureNix, ".").expect("discovers");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].addr.name, "web3");
+    assert_eq!(targets[0].source, TargetSource::SystemConfigs);
+    assert!(matches!(targets[0].kind, ProfileKind::Custom { .. }));
   }
 
   #[test]
