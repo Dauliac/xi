@@ -32,6 +32,7 @@ use xi_core::sources::{
   SourcesContext,
   conflict::inspect_working_tree,
   secrets::{SecretSpec, UploadAt},
+  shadow,
 };
 
 use super::{
@@ -42,6 +43,7 @@ use super::{
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
   mode_sources,
+  mode_target_pull,
   preflight,
   rollback,
 };
@@ -418,6 +420,27 @@ fn push_one(
           args.interactive_sudo,
         )
       }) {
+        if args.fail_fast {
+          aborted.store(true, Ordering::SeqCst);
+        }
+        return Err(e);
+      }
+    },
+    PushMode::TargetPull => {
+      let _permit = limits.apply.acquire();
+      check_aborted()?;
+      let to_sha = shadow::head_sha(&context.sources_dir).map_err(|e| {
+        eyre!(
+          "resolving the sources dir HEAD for target-pull on {}: {e}",
+          target.addr.name
+        )
+      })?;
+      if let Err(e) = mode_target_pull::advance(
+        transport,
+        &target.addr,
+        args.sources_scope(),
+        to_sha,
+      ) {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
         }

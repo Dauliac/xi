@@ -124,7 +124,19 @@ fn read_frame<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
   Ok(buf)
 }
 
-fn write_message<W: Write, T: Serialize>(
+/// Encode `msg` as JSON and write it as one length-prefixed frame.
+///
+/// `pub`, not `pub(crate)`: `xi push`'s `target-pull` transport
+/// ([[xi-push-target-pull]] task 3.1) builds this exact frame shape
+/// itself, writing it to an `xi-sources-daemon ctl` subprocess's stdin
+/// over SSH rather than a local [`UnixStream`] - it has no socket of its
+/// own to go through [`call`]/[`advance`], only a child process's piped
+/// stdio, so it needs the framing primitive directly.
+///
+/// # Errors
+/// Returns an error if `msg` cannot be serialised, or if writing to
+/// `writer` fails.
+pub fn write_message<W: Write, T: Serialize>(
   writer: &mut W,
   msg: &T,
 ) -> io::Result<()> {
@@ -133,7 +145,15 @@ fn write_message<W: Write, T: Serialize>(
   write_frame(writer, &json)
 }
 
-fn read_message<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T> {
+/// Read one length-prefixed frame and decode it as JSON. See
+/// [`write_message`] for why this is `pub`.
+///
+/// # Errors
+/// Returns an error if reading from `reader` fails, or the frame's bytes
+/// do not decode as the expected JSON shape.
+pub fn read_message<R: Read, T: DeserializeOwned>(
+  reader: &mut R,
+) -> io::Result<T> {
   let buf = read_frame(reader)?;
   serde_json::from_slice(&buf)
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
