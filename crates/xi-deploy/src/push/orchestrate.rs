@@ -43,6 +43,7 @@ use super::{
   limits::PhaseLimits,
   mode_sources,
   preflight,
+  receipt,
   rollback,
 };
 use crate::target::ProfileKind;
@@ -411,12 +412,7 @@ fn push_one(
         args.interactive_sudo,
       )
       .and_then(|()| {
-        mode_sources::switch(
-          transport,
-          target,
-          args.sources_scope(),
-          args.interactive_sudo,
-        )
+        switch_with_receipt(transport, target, args, &context.state_dir)
       }) {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
@@ -491,6 +487,55 @@ fn push_one(
   }
 
   Ok(())
+}
+
+/// Run [`mode_sources::switch`] with a local receipt bracketing the SSH
+/// call that starts its transient `systemd-run` unit.
+///
+/// A push-id is generated here, before any SSH call runs, so the
+/// receipt at `<state_dir>/push-receipts/<push-id>.json` names the
+/// exact unit [`mode_sources::switch`] is about to start on `target`.
+/// The receipt is removed again once `switch` returns, whether it
+/// succeeded or failed: either way this process observed a terminal
+/// outcome for the unit itself. A receipt that outlives this function
+/// (process killed, connection lost while still blocked in `switch`) is
+/// exactly the signal a later `--reattach` needs - left for a sibling
+/// task, not read here.
+///
+/// # Errors
+///
+/// Propagates a [`receipt::write`] failure before the SSH call, or
+/// [`mode_sources::switch`]'s own error after it.
+fn switch_with_receipt(
+  transport: &dyn Transport,
+  target: &PushTarget,
+  args: &PushArgs,
+  state_dir: &std::path::Path,
+) -> Result<()> {
+  let push_id = mode_sources::push_id(&target.addr.name);
+  let unit_name = mode_sources::unit_name(&push_id);
+  let receipt = receipt::PushReceipt::new(
+    target.addr.name.clone(),
+    unit_name,
+    args.sources_scope(),
+  );
+  receipt::write(state_dir, &push_id, &receipt)?;
+
+  let outcome = mode_sources::switch(
+    transport,
+    target,
+    args.sources_scope(),
+    args.interactive_sudo,
+    &push_id,
+  );
+  if let Err(remove_err) = receipt::remove(state_dir, &push_id) {
+    warn!(
+      push_id,
+      error = %remove_err,
+      "failed to remove push receipt after observing a terminal outcome"
+    );
+  }
+  outcome
 }
 
 /// Upload every declared secret whose [`UploadAt`] matches `when`.
@@ -917,7 +962,9 @@ mod tests {
       .script
       .clone();
     assert!(
-      switch_call.starts_with("systemd-run --wait --pipe --collect --unit=xi-push-web1-"),
+      switch_call.starts_with(
+        "systemd-run --wait --pipe --collect --unit=xi-push-web1-"
+      ),
       "got: {switch_call}"
     );
     assert!(switch_call.contains(" -- "), "got: {switch_call}");
@@ -925,6 +972,40 @@ mod tests {
       switch_call
         .ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
       "got: {switch_call}"
+    );
+  }
+
+  #[test]
+  fn a_successful_mode_sources_push_leaves_no_receipt_behind() {
+    // xi-enwe.1.2: this process observed a terminal (successful) outcome
+    // for the unit it started, so the receipt that named it before the
+    // SSH call must be gone again once `execute` returns.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+
+    let report = execute(
+      &args(PushMode::Sources),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    let receipts_dir = context.state_dir.join("push-receipts");
+    let leftover: Vec<_> = std::fs::read_dir(&receipts_dir)
+      .map(|entries| entries.filter_map(Result::ok).collect())
+      .unwrap_or_default();
+    assert!(
+      leftover.is_empty(),
+      "expected no receipts left in {}: {leftover:?}",
+      receipts_dir.display()
     );
   }
 
