@@ -25,7 +25,7 @@ use xi_core::sources::{
   pause::{PauseReply, PauseRequest},
 };
 use xi_sources_daemon::{
-  control::{self, AdvanceContext, ControlServer},
+  control::{self, AdvanceContext, AdvanceNow, AdvanceReply, ControlServer},
   exec::recorder::RecordingExec,
   singleton::Singleton,
 };
@@ -113,5 +113,73 @@ fn ctl_subcommand_relays_one_request_and_one_reply() {
     serde_json::from_slice(&reply_bytes).expect("decode reply frame");
   assert_eq!(reply, PauseReply::NotPaused);
 
+  server.shutdown();
+}
+
+/// Same relay, but with an [`AdvanceNow`] request ([[xi-push-target-pull]]
+/// task 2.2) instead of a [`PauseRequest`] - the `ctl` subcommand and the
+/// untagged `ControlRequest` decode on the server side must tell the two
+/// request shapes apart over the real stdio-to-socket relay, not just
+/// in-process.
+///
+/// Holds the shared [`Singleton`] gate before sending the request so the
+/// server answers `Busy` without needing a real git remote behind
+/// `dummy_context`'s nonexistent paths.
+#[test]
+fn ctl_subcommand_relays_an_advance_now_request_and_reply() {
+  let tmp = TempDir::new().expect("tempdir");
+  let socket_path = control::socket_path(tmp.path());
+  let gate = Arc::new(Singleton::new());
+  let server = ControlServer::spawn(
+    socket_path,
+    Duration::from_secs(30),
+    Arc::clone(&gate),
+    Box::new(RecordingExec::always_ok()),
+    dummy_context(),
+  )
+  .expect("spawn control server");
+
+  let permit = gate.enter();
+  server.begin_tick();
+
+  let exe = env!("CARGO_BIN_EXE_xi-sources-daemon");
+  let mut child = Command::new(exe)
+    .args(["--scope", "user", "ctl"])
+    .env("XI_SOURCES_STATE_DIR", tmp.path())
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn ctl subcommand");
+
+  let request = AdvanceNow {
+    to_sha:        "deadbeef".to_owned(),
+    requester_pid: std::process::id(),
+  };
+  let payload = serde_json::to_vec(&request).expect("encode request");
+  {
+    let mut stdin = child.stdin.take().expect("child stdin");
+    write_frame(&mut stdin, &payload).expect("write request frame");
+  }
+
+  let reply_bytes = {
+    let mut stdout = child.stdout.take().expect("child stdout");
+    read_frame(&mut stdout).expect("read reply frame")
+  };
+
+  let output = child.wait_with_output().expect("ctl subcommand exits");
+  assert!(
+    output.status.success(),
+    "ctl subcommand exited with {:?}; stderr: {}",
+    output.status,
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let reply: AdvanceReply =
+    serde_json::from_slice(&reply_bytes).expect("decode reply frame");
+  assert_eq!(reply, AdvanceReply::Busy);
+
+  drop(permit);
+  server.end_tick();
   server.shutdown();
 }
