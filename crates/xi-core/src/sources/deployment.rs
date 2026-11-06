@@ -275,6 +275,18 @@ impl DeploymentStatusArgs {
     let applied_at = super::read_state_file(&paths.state_dir, "applied-at")
       .ok()
       .flatten();
+    // `applied-origin` distinguishes local/daemon/push triggers;
+    // `applied-via` only distinguishes local/remote. Both markers are
+    // written by every activation (see `record_activation_at`), so
+    // both are read here regardless of `sources`'s own status variant.
+    let applied_origin =
+      super::read_state_file(&paths.state_dir, "applied-origin")
+        .ok()
+        .flatten();
+    let inventory_role =
+      super::read_state_file(&paths.state_dir, "inventory-role")
+        .ok()
+        .flatten();
 
     let sources_id = SourcesId::new(scope, &remote);
     let context =
@@ -328,6 +340,8 @@ impl DeploymentStatusArgs {
         "working_dir": working_dir,
         "applied_via": applied_via,
         "applied_at": applied_at,
+        "applied_origin": applied_origin,
+        "inventory_role": inventory_role,
         "dirty": dirty,
         "closure": closure,
         "sources": status,
@@ -346,6 +360,8 @@ impl DeploymentStatusArgs {
       username: &username,
       applied_via: applied_via.as_deref(),
       applied_at: applied_at.as_deref(),
+      applied_origin: applied_origin.as_deref(),
+      inventory_role: inventory_role.as_deref(),
       status: &status,
     });
     Ok(())
@@ -365,6 +381,8 @@ struct PrintHumanArgs<'a> {
   username:              &'a str,
   applied_via:           Option<&'a str>,
   applied_at:            Option<&'a str>,
+  applied_origin:        Option<&'a str>,
+  inventory_role:        Option<&'a str>,
   status:                &'a SourcesStatus,
 }
 
@@ -379,6 +397,8 @@ fn print_human(args: PrintHumanArgs<'_>) {
     username,
     applied_via,
     applied_at,
+    applied_origin,
+    inventory_role,
     status,
   } = args;
   let rev = crate::XI_REV.unwrap_or("unknown");
@@ -479,6 +499,12 @@ fn print_human(args: PrintHumanArgs<'_>) {
           print!(" ({at})");
         }
         println!();
+      }
+      if let Some(origin) = applied_origin {
+        println!("  applied_origin: {origin}");
+      }
+      if let Some(role) = inventory_role {
+        println!("  inventory_role: {role}");
       }
       if snapshot.sync_available {
         println!(

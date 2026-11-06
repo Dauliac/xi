@@ -277,6 +277,72 @@ fn sc_e_001_contending_actors_serialise_rather_than_overlap() {
 }
 
 // ---------------------------------------------------------------------------
+// Task 1.2: ActorName::Push and ActorName::Daemon contend for one lock
+// ---------------------------------------------------------------------------
+
+/// Task 1.2: a gitops tick holding the lock and an inbound push waiting on
+/// it serialise rather than both succeeding, mirroring the module doc's
+/// "a push and a daemon tick on the same target serialise" scenario.
+#[test]
+fn push_and_daemon_contending_for_one_lock_serialise_rather_than_both_succeeding()
+ {
+  let host = Host::new();
+
+  let tick =
+    SourcesLock::acquire(&host.system, &impatient(ActorName::Daemon, "tick"))
+      .expect("the daemon takes a free lock");
+
+  // A push arriving mid-tick, patient enough to outlast the release below.
+  // The flag is the point: without it this test passes even when the lock
+  // excludes nobody, because every assertion about the acquired lock holds
+  // just as well for one taken too early.
+  let released = Arc::new(AtomicBool::new(false));
+  let state_dir = host.system.clone();
+  let seen = Arc::clone(&released);
+  let waiter = thread::spawn(move || {
+    let lock = SourcesLock::acquire(
+      &state_dir,
+      &LockOptions::new(ActorName::Push, "inbound push")
+        .wait_for(Duration::from_secs(10))
+        .without_refresh(),
+    );
+    (lock, seen.load(Ordering::SeqCst))
+  });
+
+  // The daemon's tick is still recorded as holder while the push spins.
+  let state = status(&host.system)
+    .expect("read status")
+    .expect("the lock is held");
+  assert_eq!(state.held_by, ActorName::Daemon);
+
+  // Long enough that a lock providing no exclusion would have been taken
+  // by now, so the flag below distinguishes the two outcomes.
+  thread::sleep(Duration::from_millis(300));
+  released.store(true, Ordering::SeqCst);
+  tick.release().expect("release");
+
+  let (acquired, after_release) = waiter.join().expect("waiter thread");
+  let acquired =
+    acquired.expect("the push acquires once the daemon's tick releases");
+  assert!(
+    after_release,
+    "the push took the lock while the daemon's tick still held it, so the \
+     lock excludes nobody"
+  );
+  assert_eq!(acquired.record().actor_name, ActorName::Push);
+  assert!(
+    acquired.stolen_from().is_none(),
+    "an orderly handover is not a steal"
+  );
+  acquired.release().expect("release");
+
+  assert!(
+    status(&host.system).expect("read status").is_none(),
+    "a fully released lock reports free"
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SC-E-002: pause / resume around an inbound push
 // ---------------------------------------------------------------------------
 
