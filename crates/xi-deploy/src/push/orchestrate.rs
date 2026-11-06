@@ -368,7 +368,12 @@ fn push_one(
     inventory,
     nix_module_remote_build,
   );
-  let mode = args.effective_mode(remote_build);
+  let sources_transport = config::resolve_sources_transport(
+    args.sources_transport,
+    &target.addr.name,
+    inventory,
+  );
+  let mode = args.effective_mode(remote_build, sources_transport);
   if mode == PushMode::Sources && args.copy_via == super::args::CopyVia::Target
   {
     bail!(
@@ -585,10 +590,11 @@ mod tests {
 
   use tempfile::TempDir;
   use xi_core::sources::{Scope, SourcesId};
+  use xi_sources_daemon::control::{AdvanceNow, AdvanceReply};
 
   use super::*;
   use crate::push::{
-    args::{CopyVia as PushCopyVia, PushBackend},
+    args::{CopyVia as PushCopyVia, PushBackend, SourcesTransport},
     engine::{Outcome, TargetAddr},
   };
 
@@ -646,6 +652,7 @@ mod tests {
     copy_calls:       Mutex<Vec<(String, String)>>,
     secret_calls:     Mutex<Vec<String>>,
     sync_calls:       Mutex<Vec<String>>,
+    advance_calls:    Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -726,6 +733,22 @@ mod tests {
         .push(format!("{}->{remote}", local.display()));
       Ok(())
     }
+
+    fn advance_now(
+      &self,
+      target: &TargetAddr,
+      _scope: Scope,
+      request: &AdvanceNow,
+    ) -> Result<AdvanceReply> {
+      self
+        .advance_calls
+        .lock()
+        .expect("advance_calls lock")
+        .push(target.name.clone());
+      Ok(AdvanceReply::Advanced {
+        new_head: request.to_sha.clone(),
+      })
+    }
   }
 
   /// Wraps a [`FixtureTransport`] to fail the rebuild-tool preflight
@@ -791,6 +814,24 @@ mod tests {
     (root, context)
   }
 
+  /// Like [`fixture_context`], but `sources_dir` is a real `git init`'d
+  /// repo with one commit, so [`xi_core::sources::shadow::head_sha`]
+  /// (what `--mode target-pull` resolves `to_sha` from) has a real `HEAD`
+  /// to read instead of erroring out on "not a repository".
+  fn fixture_context_with_git_sources() -> (TempDir, SourcesContext) {
+    let root = TempDir::new().expect("tempdir");
+    let sources_dir = root.path().join("sources");
+    std::fs::create_dir_all(&sources_dir).expect("sources dir");
+    git_repo(&sources_dir);
+    let context = SourcesContext::load(
+      SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir,
+      root.path().join("state"),
+    )
+    .expect("load context");
+    (root, context)
+  }
+
   fn args(mode: PushMode) -> PushArgs {
     PushArgs {
       mode: Some(mode),
@@ -806,6 +847,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      sources_transport: None,
       magic_rollback: 0,
       parallel: 1,
       interactive_sudo: false,
@@ -958,7 +1000,8 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      sources_transport: None,
+      hosts: Vec::new(),
     };
 
     let report = execute(
@@ -983,6 +1026,102 @@ mod tests {
   }
 
   #[test]
+  fn a_toml_sources_transport_default_of_target_pull_skips_copy_closure_and_sync_dir()
+   {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context_with_git_sources();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::TargetPull),
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(transport.advance_calls.lock().expect("lock").len(), 1);
+    assert_eq!(transport.copy_calls.lock().expect("lock").len(), 0);
+    assert_eq!(transport.sync_calls.lock().expect("lock").len(), 0);
+    assert!(nix.built.lock().expect("lock").is_empty());
+  }
+
+  #[test]
+  fn a_per_host_sources_transport_override_outranks_the_table_default() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context_with_git_sources();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::OperatorCopy),
+      hosts:             vec![super::super::config::PushHost {
+        name:              "web1".to_owned(),
+        ssh:               "web1".to_owned(),
+        remote_build:      None,
+        sources_transport: Some(SourcesTransport::TargetPull),
+      }],
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(transport.advance_calls.lock().expect("lock").len(), 1);
+  }
+
+  #[test]
+  fn an_explicit_mode_flag_overrides_the_toml_sources_transport_default() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::TargetPull),
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args(PushMode::Closure),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(
+      transport.advance_calls.lock().expect("lock").len(),
+      0,
+      "--mode closure must win over the ladder's sources-transport=target-pull"
+    );
+    assert_eq!(nix.built.lock().expect("lock").len(), 1);
+  }
+
+  #[test]
   fn an_explicit_mode_flag_overrides_the_toml_remote_build_default() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
@@ -990,7 +1129,8 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      sources_transport: None,
+      hosts: Vec::new(),
     };
 
     let report = execute(
