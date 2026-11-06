@@ -39,11 +39,15 @@ in
   config = lib.mkIf (cfg.enable && cfg.sources.enable) {
     assertions = [
       {
-        assertion = cfg.sources.requireSigned != true || cfg.sources.allowedSigners != null;
+        assertion =
+          cfg.sources.requireSigned != true
+          || cfg.sources.allowedSigners != null
+          || cfg.sources.gpgPublicKeys != [ ];
         message = ''
-          programs.xi.sources.requireSigned requires
-          programs.xi.sources.allowedSigners to point at an SSH
-          allowed_signers file. Verifying against an empty trust root is
+          programs.xi.sources.requireSigned needs a trust root: set
+          programs.xi.sources.allowedSigners to an SSH allowed_signers
+          file, or programs.xi.sources.gpgPublicKeys to a non-empty list
+          of GPG public keys. Verifying against an empty trust root is
           worse than not verifying, because it looks safe.
         '';
       }
@@ -61,5 +65,26 @@ in
       run mkdir -p ${lib.escapeShellArg sourcesDir} ${lib.escapeShellArg stateDir}
       run chmod 700 ${lib.escapeShellArg sourcesDir} ${lib.escapeShellArg stateDir}
     '';
+
+    # The pull-GitOps loop (xi-sources-gitops), user scope. Only meaningful
+    # under a systemd user instance (standalone home-manager on Linux, or
+    # home-manager-as-a-NixOS-module); there is no equivalent on nix-darwin,
+    # which has no `systemd --user` to run this under, so a darwin user who
+    # wants gitops has to run the daemon some other way for now.
+    systemd.user.services.xi-sources-daemon = lib.mkIf cfg.sources.gitops.enable {
+      Unit = {
+        Description = "xi sources gitops daemon (user scope)";
+        After = [ "network-online.target" ];
+        Wants = [ "network-online.target" ];
+      };
+
+      Service = {
+        ExecStart = "${lib.getExe' cfg.package "xi-sources-daemon"} --scope user";
+        Restart = "on-failure";
+        RestartSec = "10s";
+      };
+
+      Install.WantedBy = [ "default.target" ];
+    };
   };
 }

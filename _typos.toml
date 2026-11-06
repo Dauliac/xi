@@ -1,0 +1,24 @@
+# Spell-checker exceptions for `treefmt`'s typos pass (nix/treefmt.nix).
+#
+# treefmt runs typos with `--write-changes`, so an entry missing from
+# here is not merely reported: the word is silently rewritten in place.
+# That is fine for prose and dangerous for a test fixture whose whole
+# point is to be misspelled, so those get an exception rather than a
+# correction.
+#
+# Keep both tables short enough to read. A word that is genuinely wrong
+# gets fixed where it is written instead of listed here.
+
+# Matched as a whole identifier, so a misspelling of the same word
+# anywhere else is still caught.
+[default.extend-identifiers]
+# crates/xi-core/src/sources/secrets.rs: the fixture for "an unknown key
+# is rejected" is a typo of `owner`, because that is how an operator
+# actually produces an unknown key. Correcting it would make the test
+# assert that a *valid* key is rejected, which is the opposite claim.
+onwer = "onwer"
+
+[default.extend-words]
+# nixos-facter: the hardware-config generator xi-sources-bootstrap can
+# invoke. Not a misspelling of "factor" or "faster".
+facter = "facter"

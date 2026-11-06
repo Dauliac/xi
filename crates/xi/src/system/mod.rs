@@ -38,6 +38,8 @@ impl SystemArgs {
         args.rebuild(&Build, elevation)
       },
       SystemSubcommand::Sources(proxy) => proxy.run(Self::scope()),
+      SystemSubcommand::Status(args) => args.run(Self::scope()),
+      SystemSubcommand::Uninstall => crate::bootstrap::run(Self::scope()),
     }
   }
 }
@@ -75,12 +77,20 @@ impl SystemRebuildArgs {
 
     // Switch pre-steps: installer check, then adopt a config repo if
     // the positional named one. Everything else passes through.
-    let installable = xi_core::sources::switch::prepare(
+    // `prepared` holds the sources lock for the rest of this
+    // function, which is what serialises this switch against a
+    // daemon tick or an inbound push. Binding it rather than
+    // chaining off it is load-bearing: a temporary would release
+    // the lock before the build even starts.
+    let prepared = xi_core::sources::switch::prepare(
       crate::system::args::SystemArgs::scope(),
       self.common.installable.clone(),
       &self.common.sources,
-    )?
-    .resolve_or_default(CommandContext::System)?;
+    )?;
+    let installable = prepared
+      .installable()
+      .clone()
+      .resolve_or_default(CommandContext::System)?;
 
     if self.update_args.update_all || self.update_args.update_input.is_some() {
       update(
@@ -165,6 +175,13 @@ impl SystemRebuildArgs {
         .with_required_env()
         .run()
         .wrap_err("system-manager activation failed")?;
+
+      if !self.common.dry {
+        xi_core::sources::switch::record_activation(
+          crate::system::args::SystemArgs::scope(),
+          &store_path,
+        );
+      }
     }
 
     debug!("Completed operation with output path: {out_path:?}");

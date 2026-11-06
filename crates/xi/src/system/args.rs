@@ -8,7 +8,7 @@ use xi_core::{
     HasCacheArgs,
     NixBuildPassthroughArgs,
   },
-  checks::{FeatureRequirements, FlakeFeatures},
+  checks::{FeatureRequirements, FlakeFeatures, NoFeatures},
   complete,
   installable::CommandContext,
   update::UpdateArgs,
@@ -27,12 +27,16 @@ impl SystemArgs {
   #[must_use]
   pub fn get_feature_requirements(&self) -> Box<dyn FeatureRequirements> {
     match &self.subcommand {
-      // `sources` only reads config and the state dir; it never
-      // evaluates a flake, so it needs no Nix features.
-      SystemSubcommand::Sources(_) => Box::new(FlakeFeatures),
-      SystemSubcommand::Switch(_) | SystemSubcommand::Build(_) => {
-        Box::new(FlakeFeatures)
-      },
+      // `sources` and `status` only read config and the state dir, but
+      // `FlakeFeatures` is the same requirement either way, so they
+      // share this arm with the verbs that actually build a flake.
+      SystemSubcommand::Sources(_)
+      | SystemSubcommand::Status(_)
+      | SystemSubcommand::Switch(_)
+      | SystemSubcommand::Build(_) => Box::new(FlakeFeatures),
+      // `uninstall` replays recorded shell-outs from the bootstrap
+      // receipt; it never evaluates a flake either.
+      SystemSubcommand::Uninstall => Box::new(NoFeatures),
     }
   }
 }
@@ -46,6 +50,17 @@ pub enum SystemSubcommand {
 
   /// Inspect and manage the config repo this scope deploys from
   Sources(xi_core::sources::args::SourcesProxy),
+
+  /// Report this scope's deployment: xi's version, sources git hashes,
+  /// and the active generation
+  Status(xi_core::sources::deployment::DeploymentStatusArgs),
+
+  /// Reverse a prior `xi system switch <remote-url>` bootstrap
+  ///
+  /// Reads `bootstrap-receipt.json` and undoes every recorded action in
+  /// last-applied-first order, including a delegated Nix install.
+  /// Refuses with a clear error when this host has no receipt.
+  Uninstall,
 }
 
 #[derive(Debug, Args)]
@@ -86,7 +101,9 @@ impl SystemRebuildArgs {
 impl HasCacheArgs for SystemArgs {
   fn cache_args_mut(&mut self) -> Option<&mut CacheArgs> {
     match &mut self.subcommand {
-      SystemSubcommand::Sources(_) => None,
+      SystemSubcommand::Sources(_)
+      | SystemSubcommand::Status(_)
+      | SystemSubcommand::Uninstall => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.cache)
       },
@@ -97,7 +114,9 @@ impl HasCacheArgs for SystemArgs {
 impl HasBuildArgs for SystemArgs {
   fn build_passthrough_mut(&mut self) -> Option<&mut NixBuildPassthroughArgs> {
     match &mut self.subcommand {
-      SystemSubcommand::Sources(_) => None,
+      SystemSubcommand::Sources(_)
+      | SystemSubcommand::Status(_)
+      | SystemSubcommand::Uninstall => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.passthrough)
       },
@@ -106,7 +125,9 @@ impl HasBuildArgs for SystemArgs {
 
   fn no_nom_mut(&mut self) -> Option<&mut bool> {
     match &mut self.subcommand {
-      SystemSubcommand::Sources(_) => None,
+      SystemSubcommand::Sources(_)
+      | SystemSubcommand::Status(_)
+      | SystemSubcommand::Uninstall => None,
       SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
         Some(&mut a.common.no_nom)
       },

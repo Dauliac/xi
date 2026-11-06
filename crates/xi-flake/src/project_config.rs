@@ -11,7 +11,6 @@ pub struct ProjectConfig {
   pub doctor:      ProjectDoctorConfig,
   pub test:        ProjectTestConfig,
   pub fmt:         ProjectFmtConfig,
-  pub materialize: ProjectMaterializeConfig,
   pub sources:     SourcesConfig,
 }
 
@@ -102,64 +101,6 @@ impl Default for ProjectConsumerConfig {
       include_configs: true,
     }
   }
-}
-
-/// Materialization configuration.
-///
-/// Controls caching of expensive eval-time computations.
-/// Each target is independently generated and cached.
-#[derive(Debug)]
-pub struct ProjectMaterializeConfig {
-  /// Base path for committed materialized files (AOT mode).
-  /// Default: `"nix/materialized"`.
-  pub commit_path:         String,
-  /// Verify freshness in CI (`xi ci`).
-  pub check_in_ci:         bool,
-  /// Apply skip-worktree to committed materialized files so they
-  /// don't appear in `git status`. Default: true.
-  pub git_hide:            bool,
-  /// Automatically run `xi materialize` before build/ci commands.
-  /// Only re-runs stale targets. Default: false.
-  pub pre_build:           bool,
-  /// After `--commit`, automatically `git add` the materialized files.
-  /// Default: false.
-  pub auto_stage:          bool,
-  /// Restrict auto-stage to specific branches. Empty = all branches.
-  pub auto_stage_branches: Vec<String>,
-  /// Individual materialization targets.
-  pub targets:             Vec<MaterializeTarget>,
-}
-
-impl Default for ProjectMaterializeConfig {
-  fn default() -> Self {
-    Self {
-      commit_path:         "nix/materialized".to_string(),
-      check_in_ci:         false,
-      git_hide:            true,
-      pre_build:           false,
-      auto_stage:          false,
-      auto_stage_branches: Vec::new(),
-      targets:             Vec::new(),
-    }
-  }
-}
-
-/// A single materialization target.
-#[derive(Debug, Clone)]
-pub struct MaterializeTarget {
-  /// Human-readable name (e.g. "cargo-hash").
-  pub name:    String,
-  /// Shell command to produce the output. Runs in project root.
-  /// Stdout is captured and written to the output file.
-  pub command: String,
-  /// Output path relative to the materialization base directory.
-  /// Trailing `/` means directory output (command writes to
-  /// `$XI_MATERIALIZE_OUT`).
-  pub output:  String,
-  /// Glob patterns of files whose content determines cache validity.
-  /// Hash of these files is compared to decide if re-materialization
-  /// is needed.
-  pub sources: Vec<String>,
 }
 
 /// Load project config from `.xi.toml` in the given directory.
@@ -317,71 +258,6 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
     }
   }
 
-  // [materialize] section
-  if let Some(mat) = doc.get("materialize").and_then(|v| v.as_table()) {
-    if let Some(path) = mat.get("commit-path").and_then(|v| v.as_str()) {
-      config.materialize.commit_path = path.to_string();
-    }
-
-    if let Some(v) = mat.get("check-in-ci").and_then(toml_edit::Item::as_bool) {
-      config.materialize.check_in_ci = v;
-    }
-
-    if let Some(v) = mat.get("git-hide").and_then(toml_edit::Item::as_bool) {
-      config.materialize.git_hide = v;
-    }
-
-    if let Some(v) = mat.get("pre-build").and_then(toml_edit::Item::as_bool) {
-      config.materialize.pre_build = v;
-    }
-
-    if let Some(v) = mat.get("auto-stage").and_then(toml_edit::Item::as_bool) {
-      config.materialize.auto_stage = v;
-    }
-
-    if let Some(branches) =
-      mat.get("auto-stage-branches").and_then(|v| v.as_array())
-    {
-      config.materialize.auto_stage_branches = branches
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
-    }
-
-    // [[materialize.target]] array of tables
-    if let Some(targets) =
-      mat.get("target").and_then(|v| v.as_array_of_tables())
-    {
-      for entry in targets {
-        let name = entry.get("name").and_then(|v| v.as_str());
-        let command = entry.get("command").and_then(|v| v.as_str());
-        let output = entry.get("output").and_then(|v| v.as_str());
-
-        if let (Some(name), Some(command), Some(output)) =
-          (name, command, output)
-        {
-          let sources = entry
-            .get("sources")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-              arr
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-            })
-            .unwrap_or_default();
-
-          config.materialize.targets.push(MaterializeTarget {
-            name: name.to_string(),
-            command: command.to_string(),
-            output: output.to_string(),
-            sources,
-          });
-        }
-      }
-    }
-  }
-
   // [sources] section.
   //
   // The schema, the closed key set and the validation live in
@@ -404,7 +280,8 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
 
 /// Load and validate the `.xi.toml [sources]` section, strictly.
 ///
-/// Unlike [`load_project_config`], a malformed `[sources]` block is an
+/// Unlike `load_project_config`, which is crate-private and warns, a
+/// malformed `[sources]` block is an
 /// error rather than a warning: an operator who misspells `remote` must
 /// find out at config-load time, not when a gitops daemon silently never
 /// advances. A missing `.xi.toml`, or one without a `[sources]` table, is
@@ -432,7 +309,6 @@ fn default_config() -> ProjectConfig {
     },
     test:        ProjectTestConfig::default(),
     fmt:         ProjectFmtConfig::default(),
-    materialize: ProjectMaterializeConfig::default(),
     sources:     SourcesConfig::default(),
   }
 }

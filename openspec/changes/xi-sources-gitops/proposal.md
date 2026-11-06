@@ -37,6 +37,24 @@ ones it defers.
   - Post-fetch hooks: `on_advance` runs after a successful fast-forward,
     `on_build` after a successful build, `on_switch` after a successful
     activation (comin's post-deployment hook pattern).
+  - **Build and activate by delegating to `xi <scope> switch`.** In gitops mode,
+    the machine that pulls is the machine that builds: the daemon never invents
+    its own build pipeline. After a successful fast-forward, it execs
+    `xi <scope> switch` (no positional) through the `Exec` seam - the same
+    no-positional case the interactive CLI already uses, which resolves the
+    conflict policy, takes the sources lock, builds, activates, and registers
+    the generation. This is a deliberate rejection of an in-process Nix build
+    inside the daemon crate: it would mean maintaining a second flake-attribute
+    convention and a second lock/transaction/receipt path alongside the one
+    `switch.rs` already owns.
+  - **Daemon-side pre-activation gates**, run before the daemon decides to exec
+    `xi switch` at all, not inside `switch` itself: the `machineId` guard and
+    the `reboot_window` check are specifically "don't surprise anyone with an
+    unattended autonomous activation" safeguards, which an interactively-run
+    `xi switch` does not need. A mismatch or an out-of-window reboot-requiring
+    generation is reported (`Degraded` / `Deferred`) without `xi switch` ever
+    being invoked. `--ignore-machine-id` is therefore a daemon flag, not a
+    `switch` flag.
   - A **named Nix profile** at
     `/nix/var/nix/profiles/system-profiles/xi-sources` (system scope) or
     `~/.local/state/nix/profiles/xi-sources` (user scope) so generations are

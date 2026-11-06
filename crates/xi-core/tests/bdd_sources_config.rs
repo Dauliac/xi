@@ -5,15 +5,16 @@
 //! The assertions are the scenario's THEN clauses and nothing else, so a
 //! failure here points at exactly one broken requirement.
 //!
-//! Two scenarios are deliberately not here:
+//! Two groups of scenarios are deliberately not here:
 //!
 //! - "System paths require root at activation" is a Nix-module property
 //!   (`systemd.tmpfiles.rules`), not a Rust one. It is asserted by evaluating a
 //!   real `nixosSystem`; see the note on bead xi-pko.
-//! - "Init on fresh user profile" needs a git remote and the `xi` binary, so it
-//!   lives with the CLI rather than in this crate. The half that is pure config
-//!   - which file gets written, and the refusal to overwrite  -  is covered
-//!   below.
+//! - The adoption scenarios under "Switch is the sources entrypoint" need a git
+//!   remote and the `xi` binary, so they live with the CLI in
+//!   `crates/xi/tests/bdd_sources_entrypoint.rs`. The halves that are pure
+//!   library  -  the `[sources]` block writer, and which status a clone reports
+//!   before it has been activated  -  are covered below.
 
 #![expect(clippy::expect_used, clippy::panic, reason = "Fine in tests")]
 #![expect(
@@ -26,20 +27,31 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use tempfile::TempDir;
 use xi_core::sources::{
+  GitopsHealth,
   Scope,
+  SourcesContext,
+  SourcesId,
+  SourcesStatus,
+  SourcesStatusResponse,
   config::{
     BlockWrite,
     ConfigError,
     DEFAULT_BRANCH,
     DEFAULT_POLL_INTERVAL,
+    Installer,
     Layers,
     Provenance,
+    RebootWindow,
+    RemoteSpec,
+    SOURCES_KEYS,
     ScopePaths,
     SourcesConfig,
     SyncMode,
     WriteError,
     env_var_for,
   },
+  switch::record_activation_at,
+  write_state_file,
 };
 
 /// A fake environment, so no test has to mutate the real one.
@@ -354,6 +366,7 @@ fn full_block_parses_into_every_field() {
   assert_eq!(config.poll_interval, Some(Duration::from_secs(300)));
   assert_eq!(config.require_signed, Some(true));
   assert_eq!(config.sync_mode, Some(SyncMode::AutoCopy));
+  assert_eq!(config.installer, Some(Installer::Lix));
 }
 
 /// Validation is a load-time concern, not a first-fetch one (SC-C-006),
@@ -414,6 +427,28 @@ fn env_var_names_follow_the_mechanical_rule() {
   assert_eq!(env_var_for("remote"), "XI_SOURCES_REMOTE");
   assert_eq!(env_var_for("poll-interval"), "XI_SOURCES_POLL_INTERVAL");
   assert_eq!(env_var_for("allowed-signers"), "XI_SOURCES_ALLOWED_SIGNERS");
+  // `xi-sources-conflict` task 5b.1 names this one in the spec text, so
+  // it is pinned rather than left to the rule above.
+  assert_eq!(env_var_for("sync-mode"), "XI_SOURCES_SYNC_MODE");
+}
+
+/// Every key the `[sources]` table accepts has an env spelling, because
+/// the precedence ladder promises the env rung can answer for any of
+/// them. A sub-table is the documented exception and lives in
+/// `SOURCES_TABLE_KEYS` instead.
+#[test]
+fn every_scalar_key_has_an_env_spelling() {
+  for key in SOURCES_KEYS {
+    let var = env_var_for(key);
+    assert!(
+      var.starts_with("XI_SOURCES_"),
+      "`{key}` produced `{var}`, which is not an XI_SOURCES_* name"
+    );
+    assert!(
+      !var.contains('-') && !var.contains('.'),
+      "`{key}` produced `{var}`, which is not a legal variable name"
+    );
+  }
 }
 
 /// The env layer applies exactly the validation the TOML layer does,
@@ -453,13 +488,15 @@ fn empty_env_variable_does_not_occupy_its_rung() {
   );
 }
 
-// -- Requirement: `xi sources init` ---------------------------------------
+// -- The `[sources]` block writer -----------------------------------------
+//
+// `SourcesConfig::write_block` is the one surface that *writes* the
+// schema the rest of this file reads. Its only caller, `xi sources
+// init`, was removed when switch became the single entrypoint, so these
+// tests are what keeps the writer honest until a capability picks it up
+// again. See bead xi-4p3h.
 
-/// Scenario: Init refuses to overwrite.
-///
-/// GIVEN `.xi.toml` already contains a `[sources]` block
-/// WHEN `xi sources init <different-url>` runs without `--force`
-/// THEN the command exits non-zero without modifying any file
+/// A second write at a different URL must refuse rather than clobber.
 #[test]
 fn init_refuses_to_overwrite_without_force() {
   let tmp = TempDir::new().expect("tempdir");
@@ -586,13 +623,29 @@ fn written_blocks_round_trip_through_the_loader() {
   let path = tmp.path().join(".xi.toml");
   let original = SourcesConfig {
     remote:          Some("ssh://git@example.org/cfg".to_owned()),
+    remotes:         Some(vec![RemoteSpec::plain(
+      "ssh://git@example.org/cfg".to_owned(),
+    )]),
     branch:          Some("trunk".to_owned()),
     working_dir:     Some(PathBuf::from("/home/you/src/cfg")),
     poll_interval:   Some(Duration::from_secs(300)),
     require_signed:  Some(true),
     allowed_signers: Some(PathBuf::from("/etc/ssh/allowed_signers")),
+    gpg_public_keys: Some(PathBuf::from("/etc/xi/gpg.asc")),
     sync_mode:       Some(SyncMode::Never),
-    installer:       None,
+    installer:       Some(Installer::Detsys),
+    reboot_window:   Some(RebootWindow::Daily {
+      start: 2 * 60,
+      end:   4 * 60,
+    }),
+    on_advance:      Some("echo advanced".to_owned()),
+    on_build:        Some("echo built".to_owned()),
+    on_switch:       Some("systemctl restart my-service".to_owned()),
+    // The two sub-trees have their own round-trip coverage in the
+    // credentials and push suites; left empty here so this case keeps
+    // testing exactly the flat keys it was written for.
+    credentials:     Default::default(),
+    secrets:         Default::default(),
   };
 
   original.write_block(&path, false).expect("write");
@@ -718,4 +771,111 @@ fn classification_does_not_depend_on_what_exists_on_disk() {
     classify_positional("https://definitely.invalid/nope.git"),
     PositionalKind::ConfigRemote
   );
+}
+
+// -- Requirement: Switch is the sources entrypoint, status half -----------
+
+/// The status a fresh adopt reports, decided on bead xi-4p3h.
+///
+/// Adoption is steps 1-5 of the entrypoint requirement and "proceed
+/// with the normal build and activation" is step 6, so the window
+/// between a successful clone and a successful activation is reachable
+/// whenever step 6 fails. [[xi-sources-model]] maps exactly that window
+/// - "sources dir exists but `active_generation` is unknown (never
+/// switched)" - to `Pending`, so a clone alone must never report
+/// `Ready`, and recording an activation is the only thing that promotes
+/// it.
+#[test]
+fn a_clone_is_pending_until_an_activation_is_recorded() {
+  let tmp = TempDir::new().expect("tempdir");
+  let paths = ScopePaths {
+    sources_dir: tmp.path().join("sources"),
+    state_dir:   tmp.path().join("state"),
+    config_file: tmp.path().join("sources.toml"),
+  };
+
+  // Exactly what adoption leaves behind: a clone, the remote it came
+  // from, and that clone's HEAD. No generation.
+  std::fs::create_dir_all(&paths.sources_dir).expect("mkdir sources");
+  for (name, value) in [
+    ("remote-url", "https://git.example/dotfiles"),
+    ("sources-head", "aaaa1111"),
+  ] {
+    write_state_file(&paths.state_dir, name, value).expect("seed state");
+  }
+
+  match status_of(&paths) {
+    SourcesStatus::Pending { snapshot } => {
+      assert_eq!(snapshot.refs.sources_head.as_deref(), Some("aaaa1111"));
+      assert_eq!(snapshot.refs.active_generation, None);
+    },
+    other => {
+      panic!("a clone with no generation must be Pending, got {other:?}")
+    },
+  }
+
+  // Now what a successful activation leaves behind.
+  let profile = tmp.path().join("generation-42");
+  std::fs::create_dir_all(&profile).expect("mkdir profile");
+  record_activation_at(&paths, &profile).expect("record activation");
+
+  let resolved = profile
+    .canonicalize()
+    .expect("canonicalize profile")
+    .display()
+    .to_string();
+  match status_of(&paths) {
+    SourcesStatus::Ready { snapshot } => {
+      assert_eq!(
+        snapshot.refs.active_generation.as_deref(),
+        Some(resolved.as_str()),
+        "the recorded generation must name the activated store path"
+      );
+      assert_eq!(
+        snapshot.refs.sources_head.as_deref(),
+        Some("aaaa1111"),
+        "recording a generation must not disturb the adopted HEAD"
+      );
+    },
+    other => panic!("expected Ready after an activation, got {other:?}"),
+  }
+}
+
+/// `xi <scope> sources status` reads the model, not the writer, so the
+/// promotion has to be visible in the serialised envelope too.
+#[test]
+fn the_envelope_reports_pending_before_an_activation_and_ready_after() {
+  let tmp = TempDir::new().expect("tempdir");
+  let paths = ScopePaths {
+    sources_dir: tmp.path().join("sources"),
+    state_dir:   tmp.path().join("state"),
+    config_file: tmp.path().join("sources.toml"),
+  };
+  std::fs::create_dir_all(&paths.sources_dir).expect("mkdir sources");
+  write_state_file(&paths.state_dir, "remote-url", "https://git.example/d")
+    .expect("seed state");
+
+  let envelope = |paths: &ScopePaths| {
+    serde_json::to_value(SourcesStatusResponse::new(status_of(paths)))
+      .expect("serialise envelope")
+  };
+
+  let before = envelope(&paths);
+  assert_eq!(before["status"], "pending");
+  assert!(before["active_generation"].is_null());
+
+  record_activation_at(&paths, &tmp.path().join("sources"))
+    .expect("record activation");
+
+  let after = envelope(&paths);
+  assert_eq!(after["status"], "ready");
+  assert!(after["active_generation"].is_string());
+}
+
+/// The model's four statuses, driven from a path table.
+fn status_of(paths: &ScopePaths) -> SourcesStatus {
+  let id = SourcesId::new(Scope::User, "https://git.example/dotfiles");
+  SourcesContext::load(id, &paths.sources_dir, &paths.state_dir)
+    .expect("load context")
+    .status(&GitopsHealth::Disabled)
 }

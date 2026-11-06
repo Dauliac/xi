@@ -5,7 +5,7 @@
 The user flagged this as a chicken-and-egg problem worth documenting: "for a
 bootstrap xi should setup the cache configs if they are nix managed by the
 module before the deployment of all things to take benefits from the cache
-before the build in the machine (this is a complem[entary] mecanism we can note
+before the build in the machine (this is a complem[entary] mechanism we can note
 for later)".
 
 Without prestage, every bootstrap starts by building every derivation from
