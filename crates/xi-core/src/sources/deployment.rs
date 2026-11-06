@@ -842,6 +842,46 @@ mod sources_fallback_single_match_tests {
   }
 }
 
+/// Host state silent, both or neither namespace declares the hostname:
+/// detection refuses and names the ambiguity rather than guessing, per
+/// the "An ambiguous declaration refuses" scenario.
+#[cfg(test)]
+mod sources_fallback_ambiguity_tests {
+  use super::{MechanismAmbiguity, SystemDeploymentKind};
+
+  #[test]
+  fn host_state_silent_both_namespaces_refuses_as_both() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|_attribute: &str| true,
+    );
+    assert_eq!(
+      result,
+      Err(MechanismAmbiguity::Both {
+        hostname: "host1".to_owned(),
+      })
+    );
+  }
+
+  #[test]
+  fn host_state_silent_neither_namespace_refuses_as_neither() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|_attribute: &str| false,
+    );
+    assert_eq!(
+      result,
+      Err(MechanismAmbiguity::Neither {
+        hostname: "host1".to_owned(),
+      })
+    );
+  }
+}
+
 #[cfg(test)]
 mod home_activation_mode_tests {
   use super::{
