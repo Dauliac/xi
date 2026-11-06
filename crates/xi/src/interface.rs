@@ -96,7 +96,14 @@ pub enum XiCommand {
   Doctor(xi_flake::args::DoctorArgs),
 
   // -- Deployment --
-  Deploy(xi_deploy::args::DeployArgs),
+  /// Resolve and activate: the one verb that replaces `os switch`,
+  /// `home switch`, `darwin switch`, `system switch`, and `push`.
+  Deploy(xi_deploy::unified_args::DeployArgs),
+  /// The pre-`xi-deploy-unified-verb` flake-probing deploy, kept
+  /// functional under this name until its own deprecation window
+  /// (xi-fxgx.5.2) runs out.
+  #[command(name = "deploy-legacy")]
+  DeployLegacy(xi_deploy::args::DeployArgs),
   Push(xi_deploy::push::args::PushArgs),
 
   // -- Development --
@@ -127,19 +134,10 @@ pub enum XiCommand {
 const COMMAND_GROUPS: &[(&str, &[&str])] = &[
   ("Config mgmt", &["os", "home", "darwin", "system"]),
   ("Flake ops", &[
-    "build",
-    "check",
-    "run",
-    "fmt",
-    "show",
-    "init",
-    "update",
-    "ci",
-    "lib",
-    "test",
-    "doctor",
+    "build", "check", "run", "fmt", "show", "init", "update", "ci", "lib",
+    "test", "doctor",
   ]),
-  ("Deployment", &["deploy", "push"]),
+  ("Deployment", &["deploy", "deploy-legacy", "push"]),
   ("Development", &["develop", "search"]),
   ("Agentic", &["agent", "auth"]),
   ("Other", &["cache", "clean", "nix", "completions"]),
@@ -236,6 +234,14 @@ impl XiCommand {
       Self::Darwin(..) => Some(xi_darwin::args::DarwinArgs::scope()),
       Self::System(..) => Some(crate::system::args::SystemArgs::scope()),
       Self::Push(args) => Some(args.sources_scope()),
+      Self::Deploy(args) => {
+        Some(match args.scope {
+          Some(xi_deploy::unified_args::DeployScope::User) => {
+            xi_core::sources::Scope::User
+          },
+          _ => xi_core::sources::Scope::System,
+        })
+      },
       _ => None,
     }
   }
@@ -260,6 +266,7 @@ impl XiCommand {
       | Self::Test(..)
       | Self::Doctor(..)
       | Self::Deploy(..)
+      | Self::DeployLegacy(..)
       | Self::Push(..) => Box::new(xi_core::checks::FlakeFeatures),
       Self::Agent(..)
       | Self::Switch
@@ -445,7 +452,8 @@ impl XiCommand {
       Self::Lib(args) => args.run(),
       Self::Test(args) => args.run(),
       Self::Doctor(args) => args.run(),
-      Self::Deploy(args) => xi_deploy::detect_and_deploy(&args),
+      Self::Deploy(args) => crate::deploy::run(&args, &elevation),
+      Self::DeployLegacy(args) => xi_deploy::detect_and_deploy(&args),
       Self::Push(args) => xi_deploy::push::orchestrate::run(&args),
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
