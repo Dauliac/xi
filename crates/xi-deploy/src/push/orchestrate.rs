@@ -495,12 +495,14 @@ fn push_one(
 /// A push-id is generated here, before any SSH call runs, so the
 /// receipt at `<state_dir>/push-receipts/<push-id>.json` names the
 /// exact unit [`mode_sources::switch`] is about to start on `target`.
-/// The receipt is removed again once `switch` returns, whether it
-/// succeeded or failed: either way this process observed a terminal
-/// outcome for the unit itself. A receipt that outlives this function
-/// (process killed, connection lost while still blocked in `switch`) is
-/// exactly the signal a later `--reattach` needs - left for a sibling
-/// task, not read here.
+/// The receipt is removed only once `switch` returns `Ok`: that is the
+/// one outcome this process can be sure it observed cleanly end to end.
+/// Any `Err` - whether the remote unit itself failed or the transport
+/// call never completed (a dropped connection) - leaves the receipt in
+/// place, because `switch`'s `Result` does not distinguish "the remote
+/// told us it failed" from "we lost the connection and don't know": the
+/// signal a later `--reattach` needs (a sibling task, not read here) is
+/// exactly a receipt an ambiguous outcome did not remove.
 ///
 /// # Errors
 ///
@@ -528,7 +530,9 @@ fn switch_with_receipt(
     args.interactive_sudo,
     &push_id,
   );
-  if let Err(remove_err) = receipt::remove(state_dir, &push_id) {
+  if outcome.is_ok()
+    && let Err(remove_err) = receipt::remove(state_dir, &push_id)
+  {
     warn!(
       push_id,
       error = %remove_err,
@@ -1005,6 +1009,153 @@ mod tests {
     assert!(
       leftover.is_empty(),
       "expected no receipts left in {}: {leftover:?}",
+      receipts_dir.display()
+    );
+  }
+
+  /// Wraps a [`FixtureTransport`], watching for the `systemd-run`-wrapped
+  /// switch call specifically (not the earlier preflight/sync calls
+  /// `run`/`sync_dir` also make), so a test can observe receipt state at
+  /// the exact moment that call fires.
+  struct SwitchObservingTransport {
+    inner:                  FixtureTransport,
+    state_dir:              std::path::PathBuf,
+    receipt_seen_at_switch: Mutex<Option<bool>>,
+    fail_switch_with_error: bool,
+  }
+
+  impl SwitchObservingTransport {
+    fn receipts_present(&self) -> bool {
+      std::fs::read_dir(self.state_dir.join("push-receipts"))
+        .is_ok_and(|mut entries| entries.find_map(Result::ok).is_some())
+    }
+  }
+
+  impl Transport for SwitchObservingTransport {
+    fn run(&self, target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+      if cmd.script.starts_with("systemd-run") {
+        *self.receipt_seen_at_switch.lock().expect("lock") =
+          Some(self.receipts_present());
+        if self.fail_switch_with_error {
+          bail!("simulated disconnect: ssh connection dropped");
+        }
+      }
+      self.inner.run(target, cmd)
+    }
+
+    fn copy_closure(
+      &self,
+      target: &TargetAddr,
+      store_path: &str,
+      via: PushCopyVia,
+    ) -> Result<()> {
+      self.inner.copy_closure(target, store_path, via)
+    }
+
+    fn upload_secret(
+      &self,
+      target: &TargetAddr,
+      local: &std::path::Path,
+      spec: &SecretSpec,
+      interactive_sudo: bool,
+    ) -> Result<()> {
+      self
+        .inner
+        .upload_secret(target, local, spec, interactive_sudo)
+    }
+
+    fn sync_dir(
+      &self,
+      target: &TargetAddr,
+      local: &std::path::Path,
+      remote: &str,
+      excludes: &[&str],
+      interactive_sudo: bool,
+    ) -> Result<()> {
+      self
+        .inner
+        .sync_dir(target, local, remote, excludes, interactive_sudo)
+    }
+  }
+
+  #[test]
+  fn the_receipt_is_written_before_the_switch_transport_call_fires() {
+    // xi-enwe.1.3: the receipt must exist on disk by the time the
+    // (mocked) transport call that starts the remote unit runs, not
+    // merely by the time `execute` returns.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let (_root, context) = fixture_context();
+    let transport = SwitchObservingTransport {
+      inner:                  FixtureTransport::default(),
+      state_dir:              context.state_dir.clone(),
+      receipt_seen_at_switch: Mutex::new(None),
+      fail_switch_with_error: false,
+    };
+    let secrets = BTreeMap::new();
+
+    let report = execute(
+      &args(PushMode::Sources),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(
+      transport
+        .receipt_seen_at_switch
+        .lock()
+        .expect("lock")
+        .clone(),
+      Some(true),
+      "the receipt must already be on disk when the switch transport call \
+       fires"
+    );
+  }
+
+  #[test]
+  fn a_simulated_disconnect_during_switch_leaves_the_receipt_in_place() {
+    // xi-enwe.1.3: when the transport call that starts the remote unit
+    // returns an error (a dropped connection, not an observed remote
+    // failure), this process has not seen a terminal outcome for the
+    // unit - so the receipt must survive for a later `--reattach`.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let (_root, context) = fixture_context();
+    let transport = SwitchObservingTransport {
+      inner:                  FixtureTransport::default(),
+      state_dir:              context.state_dir.clone(),
+      receipt_seen_at_switch: Mutex::new(None),
+      fail_switch_with_error: true,
+    };
+    let secrets = BTreeMap::new();
+
+    let report = execute(
+      &args(PushMode::Sources),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(!report.ok(), "the simulated disconnect must be reported");
+    let receipts_dir = context.state_dir.join("push-receipts");
+    let leftover: Vec<_> = std::fs::read_dir(&receipts_dir)
+      .map(|entries| entries.filter_map(Result::ok).collect())
+      .unwrap_or_default();
+    assert_eq!(
+      leftover.len(),
+      1,
+      "a simulated disconnect must leave the receipt behind in {}: \
+       {leftover:?}",
       receipts_dir.display()
     );
   }
