@@ -6,10 +6,14 @@
 //! receipt's target reachability with a plain connectivity check.
 //!
 //! The with-id path (`xi-enwe.2.2`) `SSH`s to that one receipt's target
-//! and asks `systemctl show` for the named unit's state. The
-//! `journalctl` fallback for an already-`--collect`ed unit, the
-//! live-streaming case for a still-running unit, and `--notify` are
-//! `xi-enwe.2.3`, a sibling task not implemented here.
+//! and asks `systemctl show` for the named unit's state.
+//!
+//! `xi-enwe.2.3` fills in what happens next: a [`ReattachOutcome::Collected`]
+//! (`--collect` already unloaded the unit) falls back to parsing
+//! `journalctl`'s terminal status line for the unit, and a
+//! [`ReattachOutcome::Running`] unit is followed by streaming its journal
+//! live until that same terminal line goes by or the operator interrupts.
+//! `--notify` is `xi-enwe.3.1`, a sibling task not implemented here.
 
 use std::{collections::HashMap, path::Path};
 
@@ -116,8 +120,8 @@ pub fn format_rows(rows: &[ReceiptRow]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReattachOutcome {
   /// The unit is still active (or on its way there, or on its way out);
-  /// nothing terminal to report yet. Streaming its journal live is
-  /// `xi-enwe.2.3`.
+  /// nothing terminal to report yet. `run` follows this with a live
+  /// `journalctl -f` stream.
   Running,
   /// The unit ran to completion with a zero exit.
   Succeeded,
@@ -137,9 +141,53 @@ pub enum ReattachOutcome {
   /// with all-default properties instead of erroring, and a unit whose
   /// main process genuinely ran (to success or failure) always leaves
   /// `ExecMainCode` set - so "unset" here only ever means `--collect`
-  /// already unloaded it. Falling back to `journalctl -u <unit_name>` is
-  /// `xi-enwe.2.3`, not implemented here.
+  /// already unloaded it. `run` falls back to `journalctl -u <unit_name>`
+  /// for this case.
   Collected,
+}
+
+/// What `journalctl -u <unit_name>`'s own `systemd[1]:` status lines say
+/// about how the unit ended, recovered once `--collect` has already
+/// unloaded it from `systemctl show`'s live state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JournalOutcome {
+  /// systemd logged `<unit>: Succeeded.`
+  Succeeded,
+  /// systemd logged `<unit>: Failed with result '<result>'.`, carrying
+  /// that `<result>` (e.g. `exit-code`, `signal`, `timeout`).
+  Failed {
+    /// The quoted result systemd gave for the failure.
+    result: String,
+  },
+}
+
+/// The literal marker systemd logs on a unit's successful exit.
+const JOURNAL_SUCCEEDED_MARKER: &str = ": Succeeded.";
+/// The literal marker prefix systemd logs on a unit's failed exit, just
+/// before the single-quoted result.
+const JOURNAL_FAILED_MARKER: &str = ": Failed with result '";
+
+/// Scan `stdout` (a `journalctl -u <unit_name>` capture) backwards for
+/// the unit's final status line.
+///
+/// Backwards because the log is chronological and only the *last*
+/// `Succeeded.`/`Failed with result` line is the terminal one - an
+/// in-progress unit's log never has one at all, which is how `--since`
+/// window bugs (an empty or truncated capture) are told apart from a
+/// genuinely-not-terminal-yet unit by returning `None` either way.
+///
+/// `journalctl -u <unit_name>` already filters to this unit's own
+/// entries, so a bare marker match cannot belong to another unit.
+fn parse_journal_status(stdout: &str) -> Option<JournalOutcome> {
+  stdout.lines().rev().find_map(|line| {
+    if line.contains(JOURNAL_SUCCEEDED_MARKER) {
+      return Some(JournalOutcome::Succeeded);
+    }
+    let idx = line.find(JOURNAL_FAILED_MARKER)?;
+    let rest = &line[idx + JOURNAL_FAILED_MARKER.len()..];
+    let result = rest.split('\'').next().unwrap_or("unknown").to_owned();
+    Some(JournalOutcome::Failed { result })
+  })
 }
 
 /// `ExecMainCode`'s `waitid(2)` `si_code`, as `systemctl show` reports
@@ -236,19 +284,107 @@ fn query_unit(
   })
 }
 
+/// Ask `target` for `unit_name`'s journal since `started_at` and parse
+/// its terminal status line.
+///
+/// The only way to learn a `--collect`ed unit's outcome: `systemctl show`
+/// has nothing live left for it, but journald retains unit-indexed
+/// history independent of whether the unit is still loaded.
+///
+/// # Errors
+///
+/// Returns an error if the local `ssh` could not be spawned, if
+/// `journalctl` itself exited non-zero, or if its output has no
+/// `Succeeded.`/`Failed with result` line for `unit_name` since
+/// `started_at`.
+fn query_journal(
+  transport: &dyn Transport,
+  target: &TargetAddr,
+  unit_name: &str,
+  started_at: &str,
+) -> Result<JournalOutcome> {
+  let outcome = transport.run(
+    target,
+    &RemoteCommand::probe(format!(
+      "journalctl -u {} --since {} --no-pager",
+      shell_quote(unit_name),
+      shell_quote(started_at)
+    )),
+  )?;
+  if !outcome.success {
+    bail!(
+      "journalctl -u {unit_name} failed on {}: {}",
+      target.name,
+      outcome.message()
+    );
+  }
+
+  parse_journal_status(&outcome.stdout).ok_or_else(|| {
+    eyre!(
+      "journalctl -u {unit_name} since {started_at} on {} has no terminal \
+       status line yet",
+      target.name
+    )
+  })
+}
+
+/// Stream `unit_name`'s journal live on `target`, echoing every line to
+/// this process's own stdout, until a terminal status line goes by or
+/// the operator interrupts (killing the local `ssh`, which ends this
+/// call without returning).
+///
+/// Plain `journalctl -f` never exits on its own, so the remote script
+/// itself watches each line for the same terminal markers
+/// [`parse_journal_status`] looks for and exits `0`/`1` the moment one
+/// goes by - that exit status is this function's return value, since a
+/// streaming [`Outcome`](super::engine::Outcome) carries no captured
+/// stdout to parse after the fact.
+///
+/// The failure marker is matched without its trailing single quote
+/// (unlike [`JOURNAL_FAILED_MARKER`]), since that quote cannot itself
+/// appear inside the single-quoted glob a `case` pattern needs here.
+///
+/// # Errors
+///
+/// Returns an error if the local `ssh` could not be spawned.
+fn stream_unit(
+  transport: &dyn Transport,
+  target: &TargetAddr,
+  unit_name: &str,
+  started_at: &str,
+) -> Result<bool> {
+  let script = format!(
+    "journalctl -u {} -f --since {} --no-pager | while IFS= read -r line; do \
+     printf '%s\\n' \"$line\"; case \"$line\" in \
+     *': Succeeded.'*) exit 0 ;; \
+     *': Failed with result'*) exit 1 ;; \
+     esac; done",
+    shell_quote(unit_name),
+    shell_quote(started_at),
+  );
+  let outcome = transport.run(target, &RemoteCommand::streaming(script))?;
+  Ok(outcome.success)
+}
+
 /// Dispatch `xi push --reattach`.
 ///
 /// With an empty `id` (`xi push --reattach` on its own), lists every
 /// local receipt newest first. With an id, `SSH`s to that receipt's
-/// target and asks `systemctl show` the named unit's state.
+/// target and asks `systemctl show` the named unit's state, falling back
+/// to `journalctl` if `--collect` already unloaded it, or following a
+/// still-running unit's journal live until it reaches one of those same
+/// terminal states.
 ///
 /// # Errors
 ///
 /// Propagates [`list`]'s error for an empty `id`. For a non-empty `id`,
 /// errors if no receipt exists for it, if the `systemctl show` query
-/// itself fails (see [`query_unit`]), or if the unit is found to have
-/// failed - a failed reattach deliberately exits non-zero so the
-/// operator has to acknowledge it rather than it passing silently.
+/// itself fails (see [`query_unit`]), if a `journalctl` fallback query
+/// fails or finds no terminal status line (see [`query_journal`]), if the
+/// local `ssh` for a live stream could not be spawned (see
+/// [`stream_unit`]), or if the unit is found (by any of those three
+/// paths) to have failed - a failed reattach deliberately exits non-zero
+/// so the operator has to acknowledge it rather than it passing silently.
 pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> {
   if id.is_empty() {
     let rows = list(state_dir, transport)?;
@@ -269,10 +405,20 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
   match query_unit(transport, &addr, &receipt.unit_name)? {
     ReattachOutcome::Running => {
       println!(
-        "{} is still running on {}",
+        "{} is still running on {}; streaming its journal until it finishes \
+         (Ctrl-C to stop watching without affecting the unit)",
         receipt.unit_name, receipt.target
       );
-      Ok(())
+      if stream_unit(transport, &addr, &receipt.unit_name, &receipt.started_at)? {
+        println!("{} succeeded on {}", receipt.unit_name, receipt.target);
+        receipt::remove(state_dir, id)
+      } else {
+        bail!(
+          "{} failed on {} (see the streamed journal above)",
+          receipt.unit_name,
+          receipt.target,
+        );
+      }
     },
     ReattachOutcome::Succeeded => {
       println!("{} succeeded on {}", receipt.unit_name, receipt.target);
@@ -288,14 +434,28 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
         receipt.target,
       );
     },
-    ReattachOutcome::Collected => {
-      println!(
-        "{} is no longer tracked by systemd on {} - it was already \
-         `--collect`ed; a journalctl fallback by unit name is \
-         xi-enwe.2.3, not implemented yet",
-        receipt.unit_name, receipt.target
-      );
-      Ok(())
+    ReattachOutcome::Collected => match query_journal(
+      transport,
+      &addr,
+      &receipt.unit_name,
+      &receipt.started_at,
+    )? {
+      JournalOutcome::Succeeded => {
+        println!(
+          "{} succeeded on {} (recovered from journalctl - the unit was \
+           already `--collect`ed)",
+          receipt.unit_name, receipt.target
+        );
+        receipt::remove(state_dir, id)
+      },
+      JournalOutcome::Failed { result } => {
+        bail!(
+          "{} failed on {} (result={result}, recovered from journalctl - \
+           the unit was already `--collect`ed)",
+          receipt.unit_name,
+          receipt.target,
+        );
+      },
     },
   }
 }
@@ -577,25 +737,6 @@ mod tests {
   }
 
   #[test]
-  fn reattaching_to_a_running_unit_leaves_the_receipt_and_does_not_error() {
-    let tmp = TempDir::new().expect("tempdir");
-    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
-    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
-    let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=active\nSubState=running\nExecMainStatus=0\n\
-       ExecMainCode=0\n",
-    ));
-
-    run("web1-push", tmp.path(), &transport).expect("still running is not an error");
-    assert!(
-      receipt::read(tmp.path(), "web1-push")
-        .expect("read")
-        .is_some(),
-      "a still-running unit's receipt must survive"
-    );
-  }
-
-  #[test]
   fn reattaching_to_a_succeeded_unit_removes_the_receipt() {
     let tmp = TempDir::new().expect("tempdir");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
@@ -635,23 +776,216 @@ mod tests {
     );
   }
 
+  /// A [`Transport`] that answers a `systemctl show`, a captured
+  /// `journalctl` query, or a streaming `journalctl -f` differently -
+  /// for `run`'s with-id path, which chains more than one remote call
+  /// once the first answer is `Collected` or `Running`.
+  struct RoutedTransport {
+    systemctl: Outcome,
+    journal:   Outcome,
+    stream:    Outcome,
+  }
+
+  impl Transport for RoutedTransport {
+    fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+      Ok(if cmd.script.contains("systemctl show") {
+        self.systemctl.clone()
+      } else if cmd.streaming {
+        self.stream.clone()
+      } else {
+        self.journal.clone()
+      })
+    }
+
+    fn copy_closure(
+      &self,
+      _target: &TargetAddr,
+      _store_path: &str,
+      _via: super::super::args::CopyVia,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn upload_secret(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _spec: &xi_core::sources::secrets::SecretSpec,
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn sync_dir(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _remote: &str,
+      _excludes: &[&str],
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  const COLLECTED_SYSTEMCTL: &str =
+    "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nExecMainCode=0\n";
+  const RUNNING_SYSTEMCTL: &str =
+    "ActiveState=active\nSubState=running\nExecMainStatus=0\nExecMainCode=0\n";
+
   #[test]
-  fn reattaching_to_a_collected_unit_reports_it_without_erroring() {
+  fn parse_journal_status_finds_a_trailing_succeeded_line() {
+    assert_eq!(
+      parse_journal_status(
+        "Nov 06 09:59:00 host systemd[1]: Started xi-push-web1-1.\n\
+         Nov 06 10:00:00 host systemd[1]: xi-push-web1-1.service: Succeeded.\n"
+      ),
+      Some(JournalOutcome::Succeeded)
+    );
+  }
+
+  #[test]
+  fn parse_journal_status_extracts_the_failed_result() {
+    assert_eq!(
+      parse_journal_status(
+        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Main \
+         process exited, code=exited, status=1/FAILURE\n\
+         Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed \
+         with result 'exit-code'.\n"
+      ),
+      Some(JournalOutcome::Failed {
+        result: "exit-code".to_owned()
+      })
+    );
+  }
+
+  #[test]
+  fn parse_journal_status_is_none_without_a_terminal_line() {
+    assert_eq!(
+      parse_journal_status(
+        "Nov 06 09:59:00 host systemd[1]: Started xi-push-web1-1.\n"
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_collected_unit_falls_back_to_journalctl_success() {
     let tmp = TempDir::new().expect("tempdir");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
-    let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-       ExecMainCode=0\n",
-    ));
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(COLLECTED_SYSTEMCTL),
+      journal:   Outcome::ok(
+        "Nov 06 10:00:00 host systemd[1]: xi-push-web1-1.service: Succeeded.\n",
+      ),
+      stream:    Outcome::ok(""),
+    };
 
     run("web1-push", tmp.path(), &transport)
-      .expect("a collected unit is deferred work, not an error");
+      .expect("journalctl fallback resolves success");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_none(),
+      "a collected-but-succeeded unit's receipt must be removed"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_collected_unit_falls_back_to_journalctl_failure() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(COLLECTED_SYSTEMCTL),
+      journal:   Outcome::ok(
+        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed \
+         with result 'exit-code'.\n",
+      ),
+      stream:    Outcome::ok(""),
+    };
+
+    let err = run("web1-push", tmp.path(), &transport)
+      .expect_err("a failure recovered via journalctl must not pass silently");
+    assert!(format!("{err}").contains("exit-code"), "got: {err}");
     assert!(
       receipt::read(tmp.path(), "web1-push")
         .expect("read")
         .is_some(),
-      "xi-enwe.2.3's journalctl fallback still needs this receipt"
+      "an operator must still acknowledge a failure before its receipt goes away"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_collected_unit_with_no_terminal_journal_line_errors() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(COLLECTED_SYSTEMCTL),
+      journal:   Outcome::ok(
+        "Nov 06 09:59:00 host systemd[1]: Started xi-push-web1-1.\n",
+      ),
+      stream:    Outcome::ok(""),
+    };
+
+    let err = run("web1-push", tmp.path(), &transport)
+      .expect_err("no terminal status line must error, not silently succeed");
+    assert!(
+      format!("{err}").contains("no terminal status line"),
+      "got: {err}"
+    );
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_some(),
+      "an unresolved reattach must not discard the receipt"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_running_unit_streams_to_success_and_removes_the_receipt()
+   {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(RUNNING_SYSTEMCTL),
+      journal:   Outcome::ok(""),
+      stream:    Outcome::ok(""),
+    };
+
+    run("web1-push", tmp.path(), &transport)
+      .expect("a stream that ends on the success marker is not an error");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_none(),
+      "a unit that streamed to success must have its receipt removed"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_running_unit_streams_to_failure_and_keeps_the_receipt()
+   {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(RUNNING_SYSTEMCTL),
+      journal:   Outcome::ok(""),
+      stream:    Outcome::failed(""),
+    };
+
+    let err = run("web1-push", tmp.path(), &transport)
+      .expect_err("a stream that ends on the failure marker must not pass silently");
+    assert!(format!("{err}").contains("failed on web1"), "got: {err}");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_some(),
+      "an operator must still acknowledge a failure before its receipt goes away"
     );
   }
 }
