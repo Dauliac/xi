@@ -1,5 +1,6 @@
 //! The `[push]` table of `.xi.toml`: the declarative inventory
-//! (`[[push.hosts]]`) and the `remote-build` config rung.
+//! (`[[push.hosts]]`) and the `remote-build`/`retry-attempts` config
+//! rungs.
 //!
 //! Read from the same place [`super::context::resolve_context`] reads
 //! the rest of `.xi.toml` from: the current directory, literally
@@ -7,7 +8,7 @@
 //! `[sources]`). Unlike `[sources]`, `[push]` is not part of that
 //! capability's precedence ladder - it is parsed here, in the push
 //! crate, because nothing outside `xi push` ever needs an inventory
-//! entry or the `remote-build` default.
+//! entry or the `remote-build`/`retry-attempts` defaults.
 //!
 //! The inventory describes *other* machines (the proposal's own
 //! distinction from every other `[sources.*]` key, which describes the
@@ -21,13 +22,14 @@ use std::path::Path;
 use color_eyre::{Result, eyre::eyre};
 
 /// Every key the `[push]` table accepts, besides the `hosts` sub-table.
-pub const PUSH_KEYS: &[&str] = &["remote-build"];
+pub const PUSH_KEYS: &[&str] = &["remote-build", "retry-attempts"];
 
 /// Sub-tables the `[push]` table accepts, alongside [`PUSH_KEYS`].
 pub const PUSH_TABLE_KEYS: &[&str] = &["hosts"];
 
 /// Every key a `[[push.hosts]]` entry accepts.
-pub const PUSH_HOST_KEYS: &[&str] = &["name", "ssh", "remote-build"];
+pub const PUSH_HOST_KEYS: &[&str] =
+  &["name", "ssh", "remote-build", "retry-attempts"];
 
 /// One `[[push.hosts]]` entry: an inventory name and the SSH target it
 /// resolves to.
@@ -39,6 +41,8 @@ pub struct PushHost {
   pub ssh:          String,
   /// Per-host override of the `remote-build` rung.
   pub remote_build: Option<bool>,
+  /// Per-host override of the `retry-attempts` rung.
+  pub retry_attempts: Option<u32>,
 }
 
 /// The parsed `[push]` table: the `remote-build` default and the flat
@@ -48,6 +52,9 @@ pub struct PushConfig {
   /// `.xi.toml [push] remote-build`, the middle rung of the
   /// build-location ladder.
   pub remote_build: Option<bool>,
+  /// `.xi.toml [push] retry-attempts`, the table-level rung of the
+  /// retry-attempts ladder.
+  pub retry_attempts: Option<u32>,
   /// `[[push.hosts]]` entries, in file order.
   pub hosts:        Vec<PushHost>,
 }
@@ -104,6 +111,11 @@ impl PushConfig {
       },
     };
 
+    let retry_attempts = match table.get("retry-attempts") {
+      None => None,
+      Some(item) => Some(parse_retry_attempts(path, item, "[push]")?),
+    };
+
     let hosts = match table.get("hosts") {
       None => Vec::new(),
       Some(item) => {
@@ -122,6 +134,7 @@ impl PushConfig {
 
     Ok(Self {
       remote_build,
+      retry_attempts,
       hosts,
     })
   }
@@ -186,11 +199,45 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
       })?)
     },
   };
+  let retry_attempts = match entry.get("retry-attempts") {
+    None => None,
+    Some(item) => Some(parse_retry_attempts(
+      path,
+      item,
+      &format!("[[push.hosts]] entry '{name}'"),
+    )?),
+  };
 
   Ok(PushHost {
     name,
     ssh,
     remote_build,
+    retry_attempts,
+  })
+}
+
+/// Parse a `retry-attempts` value, shared by the `[push]` table and a
+/// `[[push.hosts]]` entry.
+///
+/// `context` names where the value came from, for the error message -
+/// `"[push]"` or `"[[push.hosts]] entry '<name>'"`.
+fn parse_retry_attempts(
+  path: &Path,
+  item: &toml_edit::Item,
+  context: &str,
+) -> Result<u32> {
+  let value = item.as_integer().ok_or_else(|| {
+    eyre!(
+      "{}: 'retry-attempts' in {context} must be an integer",
+      path.display()
+    )
+  })?;
+  u32::try_from(value).map_err(|_| {
+    eyre!(
+      "{}: 'retry-attempts' in {context} must be a non-negative integer \
+       that fits in a u32",
+      path.display()
+    )
   })
 }
 
@@ -224,6 +271,34 @@ pub fn resolve_remote_build(
     return table_default;
   }
   nix_module_remote_build.unwrap_or(false)
+}
+
+/// Resolve the retry-attempts ladder for one target: `--retry` >
+/// `.xi.toml [push]` (a per-host `[[push.hosts]]` override first, then
+/// the table-level default) > the compiled floor of `3`.
+///
+/// Mirrors [`resolve_remote_build`]'s precedence shape exactly, minus the
+/// Nix-module rung: retry attempts have no module-provided default to
+/// consult.
+#[must_use]
+pub fn resolve_retry_attempts(
+  cli: Option<u32>,
+  host_name: &str,
+  toml_config: &PushConfig,
+) -> u32 {
+  if let Some(attempts) = cli {
+    return attempts;
+  }
+  if let Some(per_host) = toml_config
+    .host(host_name)
+    .and_then(|host| host.retry_attempts)
+  {
+    return per_host;
+  }
+  if let Some(table_default) = toml_config.retry_attempts {
+    return table_default;
+  }
+  3
 }
 
 /// Rewrite `targets`' SSH address from a matching `[[push.hosts]]` entry.
@@ -437,5 +512,74 @@ mod tests {
   fn with_every_rung_silent_the_floor_is_false() {
     let toml = PushConfig::default();
     assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  // -- retry-attempts parsing ----------------------------------------------
+
+  #[test]
+  fn retry_attempts_parses_as_an_integer() {
+    let config = toml_config("[push]\nretry-attempts = 5\n");
+    assert_eq!(config.retry_attempts, Some(5));
+  }
+
+  #[test]
+  fn a_non_integer_retry_attempts_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(&path, "[push]\nretry-attempts = \"five\"\n")
+      .expect("write");
+    let err =
+      PushConfig::from_toml_file(&path).expect_err("not an integer");
+    assert!(format!("{err}").contains("retry-attempts"), "got: {err}");
+  }
+
+  #[test]
+  fn a_negative_retry_attempts_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(&path, "[push]\nretry-attempts = -1\n").expect("write");
+    let err = PushConfig::from_toml_file(&path).expect_err("negative");
+    assert!(format!("{err}").contains("retry-attempts"), "got: {err}");
+  }
+
+  #[test]
+  fn a_host_level_retry_attempts_parses_in_order() {
+    let config = toml_config(
+      "[[push.hosts]]\nname = \"web1\"\nssh = \"deploy@10.0.0.1\"\nretry-attempts \
+       = 7\n",
+    );
+    assert_eq!(config.hosts[0].retry_attempts, Some(7));
+  }
+
+  // -- resolve_retry_attempts: the three-rung retry-attempts ladder -------
+
+  #[test]
+  fn the_cli_flag_wins_over_every_other_retry_rung() {
+    let toml = toml_config("[push]\nretry-attempts = 5\n");
+    assert_eq!(resolve_retry_attempts(Some(0), "web1", &toml), 0);
+    assert_eq!(resolve_retry_attempts(Some(9), "web1", &toml), 9);
+  }
+
+  #[test]
+  fn without_a_flag_the_toml_table_default_answers_for_retry() {
+    let toml = toml_config("[push]\nretry-attempts = 5\n");
+    assert_eq!(resolve_retry_attempts(None, "web1", &toml), 5);
+  }
+
+  #[test]
+  fn a_per_host_retry_override_outranks_the_table_level_default() {
+    let toml = toml_config(
+      "[push]\nretry-attempts = 5\n\n[[push.hosts]]\nname = \"web1\"\nssh = \
+       \"deploy@web1\"\nretry-attempts = 9\n",
+    );
+    assert_eq!(resolve_retry_attempts(None, "web1", &toml), 9);
+    // A different host falls through to the table-level default.
+    assert_eq!(resolve_retry_attempts(None, "web2", &toml), 5);
+  }
+
+  #[test]
+  fn with_every_retry_rung_silent_the_floor_is_three() {
+    let toml = PushConfig::default();
+    assert_eq!(resolve_retry_attempts(None, "web1", &toml), 3);
   }
 }

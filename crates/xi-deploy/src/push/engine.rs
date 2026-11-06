@@ -55,6 +55,12 @@ pub struct RemoteCommand {
   /// Off for probes, whose output is parsed; on for activation, whose
   /// output is the thing the operator is watching.
   pub streaming: bool,
+  /// Retry attempts for this command's underlying `ssh` spawn.
+  ///
+  /// Only consulted on the `streaming` path - a probe never retries
+  /// regardless of this value (see [`SshTransport::run`]), so
+  /// [`Self::probe`] sets it to a meaningless `1`.
+  pub retry_attempts: u32,
 }
 
 impl RemoteCommand {
@@ -66,12 +72,17 @@ impl RemoteCommand {
       pty:       false,
       elevate:   Elevate::No,
       streaming: false,
+      retry_attempts: 1,
     }
   }
 
   /// An elevated command, with the sudo mode the flags imply.
   #[must_use]
-  pub fn elevated(script: impl Into<String>, interactive_sudo: bool) -> Self {
+  pub fn elevated(
+    script: impl Into<String>,
+    interactive_sudo: bool,
+    retry_attempts: u32,
+  ) -> Self {
     Self {
       script:    script.into(),
       pty:       interactive_sudo,
@@ -81,6 +92,7 @@ impl RemoteCommand {
         Elevate::NonInteractive
       },
       streaming: true,
+      retry_attempts,
     }
   }
 }
@@ -202,6 +214,7 @@ pub trait Transport: Send + Sync {
     target: &TargetAddr,
     store_path: &str,
     via: CopyVia,
+    retry_attempts: u32,
   ) -> Result<()>;
 
   /// Upload one secret to its destination with its owner, group and mode.
@@ -215,6 +228,7 @@ pub trait Transport: Send + Sync {
     local: &Path,
     spec: &SecretSpec,
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()>;
 
   /// Mirror a directory onto the target.
@@ -229,6 +243,7 @@ pub trait Transport: Send + Sync {
     remote: &str,
     excludes: &[&str],
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()>;
 }
 
@@ -334,7 +349,11 @@ impl Transport for SshTransport {
       // a probe. A probe (the `!cmd.streaming` branch below) wants an
       // honest, immediate answer, not one that papers over the condition
       // it is testing for.
-      let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+      let policy = RetryPolicy {
+        max_attempts: cmd.retry_attempts,
+        ..RetryPolicy::default()
+      };
+      let status = retry(&policy, classify_ssh_exit, || {
         ssh
           .status()
           .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))
@@ -361,14 +380,19 @@ impl Transport for SshTransport {
     target: &TargetAddr,
     store_path: &str,
     via: CopyVia,
+    retry_attempts: u32,
   ) -> Result<()> {
+    let policy = RetryPolicy {
+      max_attempts: retry_attempts,
+      ..RetryPolicy::default()
+    };
     match via {
       // `nix-copy-closure --use-substitutes` makes the *target* fetch
       // what it can from its own caches, which is the deploy-rs
       // `substituteOnDestination` behaviour and the only sensible choice
       // when the operator's link is the bottleneck.
       CopyVia::Target => {
-        let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+        let status = retry(&policy, classify_ssh_exit, || {
           Command::new("nix-copy-closure")
             .args(nix_copy_closure_args(target, store_path))
             .status()
@@ -381,7 +405,7 @@ impl Transport for SshTransport {
       },
       CopyVia::Local => {
         let last_stderr = std::cell::RefCell::new(String::new());
-        let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+        let status = retry(&policy, classify_ssh_exit, || {
           let output = NixCommand::new(CommandKind::Copy)
             .arg("--to")
             .arg(format!("ssh://{}", target.ssh_host))
@@ -409,6 +433,7 @@ impl Transport for SshTransport {
     local: &Path,
     spec: &SecretSpec,
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()> {
     // Staged through a 0600 temp path owned by the SSH user, then moved
     // into place with `install`. Uploading straight to the destination
@@ -430,8 +455,10 @@ impl Transport for SshTransport {
     let script = install_secret_script(spec, &staged);
     let destination = spec.destination.display().to_string();
 
-    let outcome =
-      self.run(target, &RemoteCommand::elevated(script, interactive_sudo))?;
+    let outcome = self.run(
+      target,
+      &RemoteCommand::elevated(script, interactive_sudo, retry_attempts),
+    )?;
     if !outcome.success {
       bail!(
         "installing secret '{}' at {destination} on {} failed: {}",
@@ -450,6 +477,7 @@ impl Transport for SshTransport {
     remote: &str,
     excludes: &[&str],
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()> {
     // The destination is usually root-owned, so rsync needs elevation on
     // the far side. `--rsync-path` is how that is spelled; the local
@@ -460,7 +488,11 @@ impl Transport for SshTransport {
       "sudo -n rsync"
     };
 
-    let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+    let policy = RetryPolicy {
+      max_attempts: retry_attempts,
+      ..RetryPolicy::default()
+    };
+    let status = retry(&policy, classify_ssh_exit, || {
       let mut rsync = Command::new("rsync");
       rsync.arg("--archive").arg("--delete").arg("--compress");
       for exclude in excludes {
@@ -567,16 +599,28 @@ mod tests {
 
   #[test]
   fn an_interactive_command_asks_for_a_pty() {
-    let cmd = RemoteCommand::elevated("true", true);
+    let cmd = RemoteCommand::elevated("true", true, 3);
     assert!(cmd.pty);
     assert_eq!(cmd.elevate, Elevate::Interactive);
   }
 
   #[test]
   fn a_default_command_asks_for_no_pty() {
-    let cmd = RemoteCommand::elevated("true", false);
+    let cmd = RemoteCommand::elevated("true", false, 3);
     assert!(!cmd.pty);
     assert_eq!(cmd.elevate, Elevate::NonInteractive);
+  }
+
+  #[test]
+  fn an_elevated_command_carries_its_retry_attempts() {
+    let cmd = RemoteCommand::elevated("true", false, 7);
+    assert_eq!(cmd.retry_attempts, 7);
+  }
+
+  #[test]
+  fn a_probe_never_asks_for_more_than_one_attempt() {
+    let cmd = RemoteCommand::probe("true");
+    assert_eq!(cmd.retry_attempts, 1);
   }
 
   #[test]
