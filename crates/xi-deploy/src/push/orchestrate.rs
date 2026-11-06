@@ -751,6 +751,70 @@ mod tests {
     }
   }
 
+  /// Wraps a [`FixtureTransport`] so `advance_now` fails the way
+  /// [`super::engine::SshTransport::advance_now`] does when nothing is
+  /// listening on the target's control socket: the local `ssh` spawns
+  /// fine but the daemon side refuses the connection, which
+  /// `SshTransport` reports as a [`super::engine::TargetPullUnreachable`]
+  /// naming `--sources-transport operator-copy` as the fallback.
+  /// Everything else delegates to the wrapped fixture so preflight and
+  /// secret upload still succeed, isolating the failure to the
+  /// target-pull request itself.
+  struct ConnectionRefusedAdvanceNow(FixtureTransport);
+
+  impl Transport for ConnectionRefusedAdvanceNow {
+    fn run(&self, target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+      self.0.run(target, cmd)
+    }
+
+    fn copy_closure(
+      &self,
+      target: &TargetAddr,
+      store_path: &str,
+      via: PushCopyVia,
+    ) -> Result<()> {
+      self.0.copy_closure(target, store_path, via)
+    }
+
+    fn upload_secret(
+      &self,
+      target: &TargetAddr,
+      local: &std::path::Path,
+      spec: &SecretSpec,
+      interactive_sudo: bool,
+    ) -> Result<()> {
+      self.0.upload_secret(target, local, spec, interactive_sudo)
+    }
+
+    fn sync_dir(
+      &self,
+      target: &TargetAddr,
+      local: &std::path::Path,
+      remote: &str,
+      excludes: &[&str],
+      interactive_sudo: bool,
+    ) -> Result<()> {
+      self
+        .0
+        .sync_dir(target, local, remote, excludes, interactive_sudo)
+    }
+
+    fn advance_now(
+      &self,
+      target: &TargetAddr,
+      _scope: Scope,
+      _request: &AdvanceNow,
+    ) -> Result<AdvanceReply> {
+      Err(eyre!(
+        "target-pull on {} is unreachable (ctl relay exited with exit \
+         status: 255: ssh: connect to host {} port 22: Connection \
+         refused); fall back to --sources-transport operator-copy",
+        target.name,
+        target.ssh_host,
+      ))
+    }
+  }
+
   /// Wraps a [`FixtureTransport`] to fail the rebuild-tool preflight
   /// check specifically, for a scenario that needs preflight to fail
   /// without touching the SSH connectivity probe the way
@@ -1054,6 +1118,62 @@ mod tests {
     assert_eq!(transport.copy_calls.lock().expect("lock").len(), 0);
     assert_eq!(transport.sync_calls.lock().expect("lock").len(), 0);
     assert!(nix.built.lock().expect("lock").is_empty());
+  }
+
+  #[test]
+  fn a_target_pull_with_no_daemon_listening_refuses_rather_than_switching_to_operator_copy()
+   {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = ConnectionRefusedAdvanceNow(FixtureTransport::default());
+    let (_root, context) = fixture_context_with_git_sources();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::TargetPull),
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("execute reports a per-target failure rather than erroring itself");
+
+    assert!(!report.ok(), "{:?}", report.results);
+    let failures = report.failures();
+    assert_eq!(failures.len(), 1);
+    let message = failures[0]
+      .outcome
+      .as_ref()
+      .expect_err("target-pull must fail when the control socket refuses the connection")
+      .to_string();
+    assert!(
+      message.contains("target-pull on web1 is unreachable"),
+      "got: {message}"
+    );
+    assert!(
+      message.contains("Connection refused"),
+      "the connection-refused cause must not be swallowed; got: {message}"
+    );
+    assert!(
+      message.contains("--sources-transport operator-copy"),
+      "the error must name the fallback for the operator to retry with; got: {message}"
+    );
+    assert_eq!(
+      transport.0.copy_calls.lock().expect("lock").len(),
+      0,
+      "an unreachable target-pull must not silently fall back to copy_closure"
+    );
+    assert_eq!(
+      transport.0.sync_calls.lock().expect("lock").len(),
+      0,
+      "an unreachable target-pull must not silently fall back to sync_dir"
+    );
   }
 
   #[test]
