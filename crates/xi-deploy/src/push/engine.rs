@@ -66,6 +66,22 @@ impl RemoteCommand {
     }
   }
 
+  /// A non-elevated, non-interactive command whose output streams live
+  /// to this process's stdout/stderr instead of being captured.
+  ///
+  /// Distinct from [`Self::elevated`]'s `streaming: true`, which also
+  /// wants a sudo prompt; this is for a plain long-running command like
+  /// `journalctl -f` that an operator watches directly.
+  #[must_use]
+  pub fn streaming(script: impl Into<String>) -> Self {
+    Self {
+      script:    script.into(),
+      pty:       false,
+      elevate:   Elevate::No,
+      streaming: true,
+    }
+  }
+
   /// An elevated command, with the sudo mode the flags imply.
   #[must_use]
   pub fn elevated(script: impl Into<String>, interactive_sudo: bool) -> Self {
