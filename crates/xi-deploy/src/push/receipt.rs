@@ -80,6 +80,25 @@ pub fn write(
   Ok(())
 }
 
+/// Read the receipt for `push_id`, or `None` if it has none.
+///
+/// # Errors
+///
+/// Propagates an I/O error other than `NotFound`, or a parse error for a
+/// receipt file that exists but is not valid JSON.
+pub fn read(state_dir: &Path, push_id: &str) -> Result<Option<PushReceipt>> {
+  let path = receipt_path(state_dir, push_id);
+  let raw = match std::fs::read_to_string(&path) {
+    Ok(raw) => raw,
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+    Err(err) => return Err(err.into()),
+  };
+  let receipt: PushReceipt = serde_json::from_str(&raw).map_err(|e| {
+    color_eyre::eyre::eyre!("push receipt {} is not valid JSON: {e}", path.display())
+  })?;
+  Ok(Some(receipt))
+}
+
 /// Remove the receipt for `push_id`, treating an already-absent receipt
 /// as success rather than an error.
 ///
@@ -188,6 +207,23 @@ mod tests {
     .expect("read back");
     let read: PushReceipt = serde_json::from_str(&raw).expect("parses");
     assert_eq!(read, receipt);
+  }
+
+  #[test]
+  fn read_returns_a_written_receipt() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = receipt();
+    write(tmp.path(), "web1-1700000000-abc123", &receipt).expect("writes");
+    assert_eq!(
+      read(tmp.path(), "web1-1700000000-abc123").expect("read"),
+      Some(receipt)
+    );
+  }
+
+  #[test]
+  fn read_returns_none_for_an_absent_receipt() {
+    let tmp = TempDir::new().expect("tempdir");
+    assert_eq!(read(tmp.path(), "never-written").expect("read"), None);
   }
 
   #[test]
