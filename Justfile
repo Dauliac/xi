@@ -5,8 +5,14 @@ check: cargo-check clippy-check fmt-check taplo-check deno-check
 cargo-check:
     RUSTFLAGS="-Dwarnings" cargo check
 
+# Release profile (so cfg(debug_assertions)-gated code compiles the same
+# branches CI sees) and --deny warnings (so findings fail the gate instead
+# of just printing), same as CI. Do NOT add --all-targets: the workspace
+# does not currently pass clippy on its test code at --release, and the
+# flake check doesn't ask for it either.
+# Mirrors nix/checks.nix's xi-clippy check.
 clippy-check:
-    cargo clippy -- -W clippy::pedantic -W clippy::correctness -W clippy::suspicious -W clippy::cargo
+    cargo clippy --release --locked --workspace -- --deny warnings
 
 fmt-check:
     cargo fmt --check

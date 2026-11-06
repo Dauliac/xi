@@ -37,15 +37,15 @@ root=$(bd q "xi sources + gitops + bootstrap + push: universal pull/push for Nix
   --labels "$labels_root" --priority high)
 
 # -------- Research beads (parallel; 5 agents, 5 beads) --------
-r_pull=$(bd q    "Research pull-mode GitOps (comin, krops, flake-pull, etc)" \
+r_pull=$(bd q "Research pull-mode GitOps (comin, krops, flake-pull, etc)" \
   --labels "$labels_research,topic:pull-gitops")
-r_push=$(bd q    "Research push-mode Nix deploy (deploy-rs, colmena, morph, krops, nixinate, nixops4)" \
+r_push=$(bd q "Research push-mode Nix deploy (deploy-rs, colmena, morph, krops, nixinate, nixops4)" \
   --labels "$labels_research,topic:push-deploy")
-r_boot=$(bd q    "Research bootstrap curl|sh (DetSys installer, Lix, nixos-anywhere, rustup, starship)" \
+r_boot=$(bd q "Research bootstrap curl|sh (DetSys installer, Lix, nixos-anywhere, rustup, starship)" \
   --labels "$labels_research,topic:bootstrap")
-r_layout=$(bd q  "Research state-dir layout (XDG, FHS, systemd StateDirectory, chezmoi, comin)" \
+r_layout=$(bd q "Research state-dir layout (XDG, FHS, systemd StateDirectory, chezmoi, comin)" \
   --labels "$labels_research,topic:state-layout")
-r_map=$(bd q     "Map xi codebase insertion points (switch sites, xi-deploy, xi-develop daemon, modules)" \
+r_map=$(bd q "Map xi codebase insertion points (switch sites, xi-deploy, xi-develop daemon, modules)" \
   --labels "$labels_research,topic:xi-map")
 
 for id in "$r_pull" "$r_push" "$r_boot" "$r_layout" "$r_map"; do
@@ -143,8 +143,8 @@ bd link "$d_obs" "$d_modules"
 val=$(bd q "openspec validate for every xi-sources-* change (strict)" \
   --labels "effort:xi-sources,phase:validate")
 for id in "$d_model" "$d_config" "$d_conflict" "$d_gitops" "$d_push" \
-          "$d_cache" "$d_boot" "$d_modules" "$d_creds" "$d_race" \
-          "$d_crash" "$d_obs"; do
+  "$d_cache" "$d_boot" "$d_modules" "$d_creds" "$d_race" \
+  "$d_crash" "$d_obs"; do
   bd link "$val" "$id"
 done
 

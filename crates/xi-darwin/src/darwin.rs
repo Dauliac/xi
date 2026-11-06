@@ -96,12 +96,20 @@ impl DarwinRebuildArgs {
 
     // Switch pre-steps: installer check, then adopt a config repo if
     // the positional named one. Everything else passes through.
-    let installable = xi_core::sources::switch::prepare(
+    // `prepared` holds the sources lock for the rest of this
+    // function, which is what serialises this switch against a
+    // daemon tick or an inbound push. Binding it rather than
+    // chaining off it is load-bearing: a temporary would release
+    // the lock before the build even starts.
+    let prepared = xi_core::sources::switch::prepare(
       crate::args::DarwinArgs::scope(),
       self.common.installable.clone(),
       &self.common.sources,
-    )?
-    .resolve_or_default(CommandContext::Darwin)?;
+    )?;
+    let installable = prepared
+      .installable()
+      .clone()
+      .resolve_or_default(CommandContext::Darwin)?;
 
     if self.update_args.update_all || self.update_args.update_input.is_some() {
       update(
@@ -249,6 +257,13 @@ impl DarwinRebuildArgs {
         .with_required_env()
         .run()
         .wrap_err("Darwin activation failed")?;
+
+      if !self.common.dry {
+        xi_core::sources::switch::record_activation(
+          crate::args::DarwinArgs::scope(),
+          &out_path,
+        );
+      }
     }
 
     debug!("Completed operation with output path: {out_path:?}");
