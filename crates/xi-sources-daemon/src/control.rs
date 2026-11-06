@@ -50,7 +50,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, info, warn};
 use xi_core::sources::pause::{
   PauseController,
@@ -140,6 +140,84 @@ pub fn call(
 
   let mut reader = BufReader::new(&stream);
   read_message(&mut reader)
+}
+
+/// Call `advance_now` on the daemon listening at `socket_path`
+/// ([[xi-push-target-pull]]).
+///
+/// # Errors
+/// Returns an error if the socket cannot be reached, the daemon does not
+/// answer within its read/write timeouts, or the reply cannot be decoded -
+/// including the daemon refusing the request outright because the
+/// fetch-and-resolve step `AdvanceNow` needs is not wired up yet
+/// (`xi-lutp.1.2`).
+pub fn advance(
+  socket_path: &Path,
+  request: &AdvanceNow,
+) -> io::Result<AdvanceReply> {
+  let stream = UnixStream::connect(socket_path)?;
+  stream.set_write_timeout(Some(REQUEST_READ_TIMEOUT))?;
+  stream.set_read_timeout(Some(DEFERRED_REPLY_TIMEOUT))?;
+
+  let mut writer = BufWriter::new(&stream);
+  write_message(&mut writer, request)?;
+
+  let mut reader = BufReader::new(&stream);
+  read_message(&mut reader)
+}
+
+// ---------------------------------------------------------------------------
+// `AdvanceNow` - target-pull's sibling request/reply pair ([[xi-push-target-pull]])
+// ---------------------------------------------------------------------------
+
+/// Ask the daemon to fetch and fast-forward right now, instead of waiting
+/// for its poll interval.
+///
+/// Sent by `xi push`'s `target-pull` transport ([[xi-push-target-pull]]).
+/// `to_sha` names the commit the caller expects the sources dir to land on;
+/// `requester_pid` identifies the caller the same way [`PauseRequest`]'s
+/// field does.
+///
+/// Has no `method` tag of its own on the wire - [`ControlRequest`]
+/// distinguishes it from a [`PauseRequest`] by shape, since a `PauseRequest`
+/// always carries a `method` field and this does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvanceNow {
+  /// The commit the caller expects the sources dir to fast-forward to.
+  pub to_sha:        String,
+  /// Pid of the process asking (the `xi push` client).
+  pub requester_pid: u32,
+}
+
+/// The daemon's answer to an [`AdvanceNow`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum AdvanceReply {
+  /// The fetch-and-resolve step ran and the sources dir is now at
+  /// `new_head`.
+  Advanced {
+    /// The sha the sources dir fast-forwarded to.
+    new_head: String,
+  },
+  /// The fetched tip was not a descendant of the sources dir's current
+  /// `HEAD` - the same refusal [`crate::tick::run`] already makes on its own
+  /// poll cycle, surfaced here rather than duplicated.
+  NotFastForward,
+  /// A tick is already in flight. The caller should retry; `AdvanceNow`
+  /// never queues or blocks behind a tick it has no visibility into.
+  Busy,
+}
+
+/// Either request shape the control socket accepts, decoded from the same
+/// length-prefixed JSON frame [`handle_connection`] reads.
+///
+/// `untagged`: tried in order, so a frame carrying a `method` field matches
+/// [`PauseRequest`] first; one without matches [`AdvanceNow`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ControlRequest {
+  Pause(PauseRequest),
+  Advance(AdvanceNow),
 }
 
 // ---------------------------------------------------------------------------
@@ -299,12 +377,24 @@ fn handle_connection(
   stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT))?;
 
   let mut reader = BufReader::new(stream);
-  let request: PauseRequest = read_message(&mut reader)?;
+  let request: ControlRequest = read_message(&mut reader)?;
+
+  match request {
+    ControlRequest::Pause(request) => handle_pause(stream, inner, &request),
+    ControlRequest::Advance(request) => handle_advance(stream, inner, &request),
+  }
+}
+
+fn handle_pause(
+  stream: &UnixStream,
+  inner: &Arc<Mutex<Inner>>,
+  request: &PauseRequest,
+) -> io::Result<()> {
   let now = Instant::now();
 
   let mut guard = lock(inner);
   let tick_in_flight = guard.tick_in_flight;
-  let reply = guard.controller.on_request(&request, tick_in_flight, now);
+  let reply = guard.controller.on_request(request, tick_in_flight, now);
   let pending = if matches!(reply, PauseReply::Pausing) {
     let (tx, rx) = mpsc::channel();
     guard.deferred = Some(tx);
@@ -329,6 +419,34 @@ fn handle_connection(
   debug!(?request, ?reply, "control socket request handled");
   let mut writer = BufWriter::new(stream);
   write_message(&mut writer, &reply)
+}
+
+/// Handle an [`AdvanceNow`].
+///
+/// Only the `Busy` short-circuit is implemented today - it just reads the
+/// same `tick_in_flight` flag [`handle_pause`] does, so nothing here needs
+/// `tick.rs`. The actual fetch-and-resolve step is `xi-lutp.1.2`'s job
+/// (factoring it out of [`crate::tick::run`] without duplicating its
+/// fast-forward check); until that lands, a request that is not `Busy` gets
+/// a connection-level error instead of a fabricated `AdvanceReply`.
+fn handle_advance(
+  stream: &UnixStream,
+  inner: &Arc<Mutex<Inner>>,
+  request: &AdvanceNow,
+) -> io::Result<()> {
+  let tick_in_flight = lock(inner).tick_in_flight;
+
+  if tick_in_flight {
+    let reply = AdvanceReply::Busy;
+    debug!(?request, ?reply, "control socket request handled");
+    let mut writer = BufWriter::new(stream);
+    return write_message(&mut writer, &reply);
+  }
+
+  Err(io::Error::new(
+    io::ErrorKind::Unsupported,
+    "AdvanceNow's fetch-and-resolve step is not wired up yet (xi-lutp.1.2)",
+  ))
 }
 
 #[cfg(test)]
@@ -454,6 +572,55 @@ mod tests {
 
     assert_eq!(server.gate(Instant::now()), TickGate::Hold);
 
+    server.shutdown();
+  }
+
+  /// The connection handler must tell an `AdvanceNow` apart from a
+  /// `PauseRequest` sharing the same socket and framing - not a second
+  /// listener, a second message type ([[xi-push-target-pull]]).
+  #[test]
+  fn advance_now_while_idle_is_distinguished_from_pause_and_refuses() {
+    let (server, path, _tmp) = start(Duration::from_secs(30));
+
+    // The daemon refuses with an `io::Error` server-side (see
+    // `handle_advance`) but, like every other error path in
+    // `handle_connection`, writes no reply - the client just observes the
+    // connection close.
+    let error = advance(&path, &AdvanceNow {
+      to_sha:        "deadbeef".to_owned(),
+      requester_pid: std::process::id(),
+    })
+    .expect_err("fetch-and-resolve is not wired up yet (xi-lutp.1.2)");
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+
+    // The socket is still healthy for an unrelated `PauseRequest` after
+    // that refusal - confirms the two message types are dispatched
+    // independently, not through shared, corruptible state.
+    let reply = call(&path, &PauseRequest::Resume {
+      requester_pid: std::process::id(),
+    })
+    .expect("call");
+    assert_eq!(reply, PauseReply::NotPaused);
+
+    server.shutdown();
+  }
+
+  /// SC-TP-003: `AdvanceNow` arriving mid-tick replies `Busy` immediately,
+  /// without deferring the way a mid-tick `pause` does.
+  #[test]
+  fn advance_now_mid_tick_replies_busy_immediately() {
+    let (server, path, _tmp) = start(Duration::from_secs(30));
+
+    server.begin_tick();
+
+    let reply = advance(&path, &AdvanceNow {
+      to_sha:        "deadbeef".to_owned(),
+      requester_pid: std::process::id(),
+    })
+    .expect("advance");
+    assert_eq!(reply, AdvanceReply::Busy);
+
+    server.end_tick();
     server.shutdown();
   }
 }
