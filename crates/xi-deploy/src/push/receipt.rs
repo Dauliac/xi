@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use xi_core::sources::{Scope, atomic::write_atomic, transaction::now_iso8601};
 
 /// Directory under a scope's state dir where push receipts live.
@@ -32,6 +33,15 @@ pub struct PushReceipt {
   pub started_at: String,
   /// The sources scope the push ran under.
   pub scope:      Scope,
+  /// `--notify <command>`, if the push that wrote this receipt was given
+  /// one: run exactly once, by whichever process (this one, or a later
+  /// `--reattach`) actually removes this receipt after observing a
+  /// terminal outcome for `unit_name`.
+  ///
+  /// `#[serde(default)]` so a receipt written before this field existed
+  /// still deserializes, as `None`.
+  #[serde(default)]
+  pub notify:     Option<String>,
 }
 
 impl PushReceipt {
@@ -48,7 +58,15 @@ impl PushReceipt {
       unit_name: unit_name.into(),
       started_at: now_iso8601(),
       scope,
+      notify: None,
     }
+  }
+
+  /// Attach a `--notify` command to this receipt before it is written.
+  #[must_use]
+  pub fn with_notify(mut self, notify: Option<String>) -> Self {
+    self.notify = notify;
+    self
   }
 }
 
@@ -99,18 +117,75 @@ pub fn read(state_dir: &Path, push_id: &str) -> Result<Option<PushReceipt>> {
   Ok(Some(receipt))
 }
 
-/// Remove the receipt for `push_id`, treating an already-absent receipt
-/// as success rather than an error.
+/// Remove the receipt for `push_id`, returning whether this call is the
+/// one that actually deleted it.
+///
+/// An already-absent receipt is `Ok(false)`, not an error: the original
+/// push process and a later `--reattach` can both observe the same
+/// terminal outcome for a unit at nearly the same moment and race to
+/// remove the same receipt, and `std::fs::remove_file` is the atomic
+/// point that decides between them - exactly one caller gets `Ok(())`
+/// (reported here as `true`), the other gets `NotFound` (`false`).
+/// [`remove_and_notify`] is what turns that distinction into "only the
+/// winner fires `--notify`".
 ///
 /// # Errors
 ///
 /// Propagates any I/O error other than `NotFound`.
-pub fn remove(state_dir: &Path, push_id: &str) -> Result<()> {
+pub fn remove(state_dir: &Path, push_id: &str) -> Result<bool> {
   let path = receipt_path(state_dir, push_id);
   match std::fs::remove_file(&path) {
-    Ok(()) => Ok(()),
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Ok(()) => Ok(true),
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
     Err(err) => Err(err.into()),
+  }
+}
+
+/// Remove the receipt for `push_id` and, only if this call is the one
+/// that actually deleted it, run `receipt.notify` (when set).
+///
+/// This is the single gate `--notify` fires through. A receipt is only
+/// ever removed once this process (or a `--reattach`) is certain it has
+/// observed a terminal outcome for the unit - never on an ambiguous
+/// error (see `orchestrate::switch_with_receipt`) or an intermediate
+/// still-running poll (see `reattach::run`) - so gating on [`remove`]'s
+/// own atomicity, rather than re-deriving "did I just observe a terminal
+/// state" at each call site, is what keeps two racing observers (the
+/// original push reconnecting, and a concurrent `--reattach`) from both
+/// running the command.
+///
+/// A notify command that fails to spawn or exits non-zero is logged, not
+/// propagated: by the time this runs, the push or reattach it is
+/// attached to has already succeeded or failed on its own terms, and a
+/// broken `--notify` command should not turn that into an error.
+///
+/// # Errors
+///
+/// Propagates [`remove`]'s own I/O error.
+pub fn remove_and_notify(
+  state_dir: &Path,
+  push_id: &str,
+  receipt: &PushReceipt,
+) -> Result<()> {
+  if remove(state_dir, push_id)?
+    && let Some(command) = &receipt.notify
+  {
+    run_notify(command);
+  }
+  Ok(())
+}
+
+/// Run `command` through the shell, logging rather than propagating a
+/// spawn failure or a non-zero exit.
+fn run_notify(command: &str) {
+  match std::process::Command::new("sh").arg("-c").arg(command).status() {
+    Ok(status) if status.success() => {},
+    Ok(status) => {
+      warn!(command, %status, "--notify command exited non-zero");
+    },
+    Err(error) => {
+      warn!(command, %error, "failed to spawn --notify command");
+    },
   }
 }
 
@@ -179,6 +254,7 @@ mod tests {
   use tempfile::TempDir;
 
   use super::*;
+  use crate::push::engine::shell_quote;
 
   fn receipt() -> PushReceipt {
     PushReceipt::new("web1", "xi-push-web1-1700000000-abc123", Scope::System)
@@ -227,17 +303,106 @@ mod tests {
   }
 
   #[test]
-  fn remove_deletes_an_existing_receipt() {
+  fn remove_deletes_an_existing_receipt_and_reports_it_removed() {
     let tmp = TempDir::new().expect("tempdir");
     write(tmp.path(), "web1-1700000000-abc123", &receipt()).expect("writes");
-    remove(tmp.path(), "web1-1700000000-abc123").expect("removes");
+    assert!(
+      remove(tmp.path(), "web1-1700000000-abc123").expect("removes"),
+      "the call that deletes the receipt must report true"
+    );
     assert!(!receipt_path(tmp.path(), "web1-1700000000-abc123").exists());
   }
 
   #[test]
-  fn removing_an_absent_receipt_is_not_an_error() {
+  fn removing_an_absent_receipt_is_not_an_error_and_reports_false() {
     let tmp = TempDir::new().expect("tempdir");
-    remove(tmp.path(), "never-written").expect("absent receipt is fine");
+    assert!(
+      !remove(tmp.path(), "never-written").expect("absent receipt is fine"),
+      "nothing was there to delete"
+    );
+  }
+
+  #[test]
+  fn removing_an_already_removed_receipt_reports_false() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), "web1-1700000000-abc123", &receipt()).expect("writes");
+    assert!(remove(tmp.path(), "web1-1700000000-abc123").expect("first remove"));
+    assert!(
+      !remove(tmp.path(), "web1-1700000000-abc123").expect("second remove"),
+      "a second remove of the same push_id must not report true again - this \
+       is the exact distinction remove_and_notify gates on"
+    );
+  }
+
+  #[test]
+  fn with_notify_attaches_a_command_to_the_receipt() {
+    let receipt = receipt().with_notify(Some("echo done".to_owned()));
+    assert_eq!(receipt.notify.as_deref(), Some("echo done"));
+  }
+
+  #[test]
+  fn a_receipt_with_no_notify_round_trips_as_none() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), "web1-1700000000-abc123", &receipt()).expect("writes");
+    assert_eq!(
+      read(tmp.path(), "web1-1700000000-abc123")
+        .expect("read")
+        .expect("some")
+        .notify,
+      None
+    );
+  }
+
+  #[test]
+  fn a_receipt_written_before_notify_existed_still_deserializes() {
+    // A receipt on disk from before this field existed has no `notify`
+    // key at all; `--reattach` against one of those (or this process
+    // reading its own receipt back) must not fail to parse it.
+    let tmp = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmp.path().join(RECEIPTS_DIR)).expect("mkdir");
+    std::fs::write(
+      tmp.path().join(RECEIPTS_DIR).join("legacy.json"),
+      r#"{"target":"web1","unit_name":"xi-push-web1-1",
+          "started_at":"2024-01-01T00:00:00Z","scope":"system"}"#,
+    )
+    .expect("write legacy receipt");
+    assert_eq!(
+      read(tmp.path(), "legacy").expect("read").expect("some").notify,
+      None
+    );
+  }
+
+  #[test]
+  fn remove_and_notify_only_runs_the_command_for_the_call_that_removes() {
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("fired");
+    let receipt = receipt()
+      .with_notify(Some(format!("touch {}", shell_quote(&marker.display().to_string()))));
+    write(tmp.path(), "web1-1700000000-abc123", &receipt).expect("writes");
+
+    remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
+      .expect("first call removes and notifies");
+    assert!(
+      marker.exists(),
+      "the call that actually removed the receipt must have run --notify"
+    );
+
+    std::fs::remove_file(&marker).expect("clear marker to detect a rerun");
+    remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
+      .expect("second call finds the receipt already gone, which is not an error");
+    assert!(
+      !marker.exists(),
+      "a call that finds the receipt already gone must not rerun --notify"
+    );
+  }
+
+  #[test]
+  fn remove_and_notify_does_nothing_when_no_notify_command_is_set() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), "web1-1700000000-abc123", &receipt()).expect("writes");
+    remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt())
+      .expect("removes cleanly with no --notify to run");
+    assert!(!receipt_path(tmp.path(), "web1-1700000000-abc123").exists());
   }
 
   #[test]

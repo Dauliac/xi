@@ -177,6 +177,7 @@ fn push_args() -> PushArgs {
     force_dirty:      false,
     scope:            PushScope::System,
     reattach:         None,
+    notify:           None,
   }
 }
 

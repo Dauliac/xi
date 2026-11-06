@@ -13,7 +13,13 @@
 //! `journalctl`'s terminal status line for the unit, and a
 //! [`ReattachOutcome::Running`] unit is followed by streaming its journal
 //! live until that same terminal line goes by or the operator interrupts.
-//! `--notify` is `xi-enwe.3.1`, a sibling task not implemented here.
+//!
+//! `xi-enwe.3.1` adds `--notify`: every path below that resolves to a
+//! confirmed success removes the receipt through
+//! [`receipt::remove_and_notify`] rather than [`receipt::remove`], so a
+//! reattach that races the original push process to the same terminal
+//! observation only fires the notify command once, from whichever side
+//! actually wins the receipt's removal.
 
 use std::{collections::HashMap, path::Path};
 
@@ -411,7 +417,7 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
       );
       if stream_unit(transport, &addr, &receipt.unit_name, &receipt.started_at)? {
         println!("{} succeeded on {}", receipt.unit_name, receipt.target);
-        receipt::remove(state_dir, id)
+        receipt::remove_and_notify(state_dir, id, &receipt)
       } else {
         bail!(
           "{} failed on {} (see the streamed journal above)",
@@ -422,7 +428,7 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
     },
     ReattachOutcome::Succeeded => {
       println!("{} succeeded on {}", receipt.unit_name, receipt.target);
-      receipt::remove(state_dir, id)
+      receipt::remove_and_notify(state_dir, id, &receipt)
     },
     ReattachOutcome::Failed {
       exec_main_status,
@@ -446,7 +452,7 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
            already `--collect`ed)",
           receipt.unit_name, receipt.target
         );
-        receipt::remove(state_dir, id)
+        receipt::remove_and_notify(state_dir, id, &receipt)
       },
       JournalOutcome::Failed { result } => {
         bail!(
@@ -752,6 +758,28 @@ mod tests {
         .expect("read")
         .is_none(),
       "a succeeded unit's receipt must be removed"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_succeeded_unit_runs_notify_exactly_once() {
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("notified");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
+      .with_notify(Some(format!(
+        "touch {}",
+        shell_quote(&marker.display().to_string())
+      )));
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+       ExecMainCode=1\n",
+    ));
+
+    run("web1-push", tmp.path(), &transport).expect("success is not an error");
+    assert!(
+      marker.exists(),
+      "expected --notify to run once the unit's success was confirmed"
     );
   }
 
