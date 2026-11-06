@@ -102,8 +102,11 @@ pub enum XiCommand {
   /// The pre-`xi-deploy-unified-verb` flake-probing deploy, kept
   /// functional under this name until its own deprecation window
   /// (xi-fxgx.5.2) runs out.
-  #[command(name = "deploy-legacy")]
+  #[command(name = "deploy-legacy", hide = true)]
   DeployLegacy(xi_deploy::args::DeployArgs),
+  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
+  /// functional for the deprecation window, hidden from `--help`.
+  #[command(hide = true)]
   Push(xi_deploy::push::args::PushArgs),
 
   // -- Development --
@@ -216,6 +219,14 @@ pub enum CompletionShell {
   PowerShell,
   Zsh,
   Nushell,
+}
+
+/// Print the deprecation notice for a superseded verb.
+///
+/// Named here so the five deprecated verbs' wording never drifts; see
+/// `xi-deploy-unified-verb`'s deprecation window (xi-fxgx.5.2).
+fn deprecated_verb_notice(old: &str) {
+  eprintln!("xi: `{old}` is deprecated and will be removed; use `xi deploy` instead");
 }
 
 impl XiCommand {
@@ -436,10 +447,37 @@ impl XiCommand {
     requirements.check_features()?;
 
     match self {
-      Self::Os(args) => args.run(elevation),
-      Self::Home(args) => args.run(),
-      Self::Darwin(args) => args.run(elevation),
-      Self::System(args) => args.run(elevation),
+      Self::Os(args) => {
+        if matches!(args.subcommand, xi_nixos::args::OsSubcommand::Switch(_)) {
+          deprecated_verb_notice("os switch");
+        }
+        args.run(elevation)
+      },
+      Self::Home(args) => {
+        if matches!(args.subcommand, xi_home::args::HomeSubcommand::Switch(_))
+        {
+          deprecated_verb_notice("home switch");
+        }
+        args.run()
+      },
+      Self::Darwin(args) => {
+        if matches!(
+          args.subcommand,
+          xi_darwin::args::DarwinSubcommand::Switch(_)
+        ) {
+          deprecated_verb_notice("darwin switch");
+        }
+        args.run(elevation)
+      },
+      Self::System(args) => {
+        if matches!(
+          args.subcommand,
+          crate::system::args::SystemSubcommand::Switch(_)
+        ) {
+          deprecated_verb_notice("system switch");
+        }
+        args.run(elevation)
+      },
       Self::Build(args) => args.run(),
       Self::Check(args) => args.run(),
       Self::Run(args) => args.run(),
@@ -453,8 +491,14 @@ impl XiCommand {
       Self::Test(args) => args.run(),
       Self::Doctor(args) => args.run(),
       Self::Deploy(args) => crate::deploy::run(&args, &elevation),
-      Self::DeployLegacy(args) => xi_deploy::detect_and_deploy(&args),
-      Self::Push(args) => xi_deploy::push::orchestrate::run(&args),
+      Self::DeployLegacy(args) => {
+        deprecated_verb_notice("deploy-legacy");
+        xi_deploy::detect_and_deploy(&args)
+      },
+      Self::Push(args) => {
+        deprecated_verb_notice("push");
+        xi_deploy::push::orchestrate::run(&args)
+      },
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
       Self::Auth(args) => xi_auth::run(&args),
