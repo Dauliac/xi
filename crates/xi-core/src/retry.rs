@@ -20,6 +20,7 @@ use std::{
 };
 
 use color_eyre::{eyre::Context, Result};
+use tracing::debug;
 
 /// Whether an attempt's result is worth retrying.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +138,11 @@ fn full_jitter(upper: Duration) -> Duration {
 /// error; a single-attempt policy (or a `Permanent` verdict on the first
 /// attempt) returns the error exactly as `attempt` produced it.
 ///
+/// Each scheduled retry emits one `debug`-level `"transient failure;
+/// retrying"` line - the only operator-visible difference between a call
+/// that needed retrying and one that did not, since the returned `T` or
+/// `Err` is otherwise identical either way.
+///
 /// # Errors
 ///
 /// Returns whatever `attempt` last produced, once `classify` calls it
@@ -161,7 +167,14 @@ pub fn retry<T>(
         result
       };
     }
-    thread::sleep(policy.delay_for(attempt_index));
+    let delay = policy.delay_for(attempt_index);
+    debug!(
+      attempt = attempt_index + 1,
+      max_attempts = attempts,
+      delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+      "transient failure; retrying"
+    );
+    thread::sleep(delay);
     attempt_index += 1;
   }
 }
