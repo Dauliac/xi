@@ -62,6 +62,7 @@ pub fn sync(
   scope: Scope,
   extra_excludes: &[&str],
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<()> {
   let mut excludes: Vec<&str> = DEFAULT_EXCLUDES.to_vec();
   excludes.extend_from_slice(extra_excludes);
@@ -71,6 +72,7 @@ pub fn sync(
     remote_path(scope),
     &excludes,
     interactive_sudo,
+    retry_attempts,
   )
 }
 
@@ -139,11 +141,12 @@ pub fn switch(
   target: &PushTarget,
   scope: Scope,
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<()> {
   let script = wrap_in_systemd_run(&switch_script(target, scope));
   let outcome = transport.run(
     &target.addr,
-    &RemoteCommand::elevated(script, interactive_sudo),
+    &RemoteCommand::elevated(script, interactive_sudo, retry_attempts).non_retryable(),
   )?;
   if !outcome.success {
     bail!(
@@ -249,6 +252,7 @@ mod tests {
       _target: &TargetAddr,
       _store_path: &str,
       _via: CopyVia,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by --mode sources tests")
     }
@@ -259,6 +263,7 @@ mod tests {
       _local: &Path,
       _spec: &xi_core::sources::secrets::SecretSpec,
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by --mode sources tests")
     }
@@ -270,6 +275,7 @@ mod tests {
       remote: &str,
       excludes: &[&str],
       interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self.calls.lock().expect("calls lock").push(SyncCall {
         local: local.display().to_string(),
@@ -342,6 +348,7 @@ mod tests {
       Scope::System,
       &[],
       false,
+      3,
     )
     .expect("syncs");
     let calls = transport.calls();
@@ -360,6 +367,7 @@ mod tests {
       Scope::System,
       &[".envrc.local"],
       false,
+      3,
     )
     .expect("syncs");
     let calls = transport.calls();
@@ -381,6 +389,7 @@ mod tests {
       Scope::User,
       &[],
       true,
+      3,
     )
     .expect("syncs");
     assert!(transport.calls()[0].interactive_sudo);
@@ -396,6 +405,7 @@ mod tests {
       Scope::System,
       &[],
       false,
+      3,
     )
     .expect_err("fails");
     assert!(format!("{err}").contains("rsync failed"), "got: {err}");
@@ -480,7 +490,7 @@ mod tests {
   fn a_successful_switch_runs_the_systemd_wrapped_script_elevated() {
     let transport = RecordingTransport::with_run_outcomes(vec![true]);
     let target = push_target("web1", "nixos-rebuild");
-    switch(&transport, &target, Scope::System, false).expect("switches");
+    switch(&transport, &target, Scope::System, false, 3).expect("switches");
 
     let calls = transport.run_calls();
     assert_eq!(calls.len(), 1);
@@ -495,7 +505,7 @@ mod tests {
   fn interactive_sudo_propagates_to_the_remote_switch() {
     let transport = RecordingTransport::with_run_outcomes(vec![true]);
     let target = push_target("web1", "nixos-rebuild");
-    switch(&transport, &target, Scope::System, true).expect("switches");
+    switch(&transport, &target, Scope::System, true, 3).expect("switches");
 
     let calls = transport.run_calls();
     assert_eq!(calls[0].elevate, Elevate::Interactive);
@@ -503,10 +513,18 @@ mod tests {
   }
 
   #[test]
+  fn switch_threads_its_retry_attempts_into_the_remote_command() {
+    let transport = RecordingTransport::with_run_outcomes(vec![true]);
+    let target = push_target("web1", "nixos-rebuild");
+    switch(&transport, &target, Scope::System, false, 7).expect("switches");
+    assert_eq!(transport.run_calls()[0].retry_attempts, 7);
+  }
+
+  #[test]
   fn a_failed_remote_switch_names_the_target_and_the_remote_error() {
     let transport = RecordingTransport::with_run_outcomes(vec![false]);
     let target = push_target("web1", "nixos-rebuild");
-    let err = switch(&transport, &target, Scope::System, false)
+    let err = switch(&transport, &target, Scope::System, false, 3)
       .expect_err("remote switch failed");
     let message = format!("{err}");
     assert!(message.contains("web1"), "got: {message}");

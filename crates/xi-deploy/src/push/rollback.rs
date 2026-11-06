@@ -57,6 +57,7 @@ pub fn plant(
   transport: &dyn Transport,
   target: &TargetAddr,
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<()> {
   let script = format!(
     "set -e; mkdir -p $(dirname {sentinel}); date +%s > {sentinel}; printf \
@@ -66,8 +67,10 @@ pub fn plant(
     hatch = shell_quote(ESCAPE_HATCH_PATH),
   );
 
-  let outcome = transport
-    .run(target, &RemoteCommand::elevated(script, interactive_sudo))?;
+  let outcome = transport.run(
+    target,
+    &RemoteCommand::elevated(script, interactive_sudo, retry_attempts),
+  )?;
   if !outcome.success {
     bail!(
       "planting the magic-rollback sentinel on {} failed: {}",
@@ -107,12 +110,14 @@ pub fn trigger(
   transport: &dyn Transport,
   target: &TargetAddr,
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<()> {
   let outcome = transport.run(
     target,
     &RemoteCommand::elevated(
       format!("sh {}", shell_quote(ESCAPE_HATCH_PATH)),
       interactive_sudo,
+      retry_attempts,
     ),
   )?;
   if !outcome.success {
@@ -144,8 +149,9 @@ pub fn confirm(
   window: Duration,
   poll_interval: Duration,
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<RollbackOutcome> {
-  plant(transport, target, interactive_sudo)?;
+  plant(transport, target, interactive_sudo, retry_attempts)?;
   let deadline = Instant::now() + window;
 
   loop {
@@ -154,7 +160,7 @@ pub fn confirm(
         target = %target.name,
         "magic-rollback sentinel unreadable; triggering rollback"
       );
-      trigger(transport, target, interactive_sudo)?;
+      trigger(transport, target, interactive_sudo, retry_attempts)?;
       return Ok(RollbackOutcome::RolledBack);
     }
 
@@ -242,6 +248,7 @@ mod tests {
       _target: &TargetAddr,
       _store_path: &str,
       _via: CopyVia,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by magic-rollback tests")
     }
@@ -252,6 +259,7 @@ mod tests {
       _local: &std::path::Path,
       _spec: &xi_core::sources::secrets::SecretSpec,
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by magic-rollback tests")
     }
@@ -263,6 +271,7 @@ mod tests {
       _remote: &str,
       _excludes: &[&str],
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by magic-rollback tests")
     }
@@ -279,7 +288,7 @@ mod tests {
   #[test]
   fn planting_writes_the_sentinel_and_the_escape_hatch_in_one_command() {
     let transport = ScriptedTransport::new(vec![("", true)]);
-    plant(&transport, &target(), false).expect("plants");
+    plant(&transport, &target(), false, 3).expect("plants");
     let commands = transport.commands();
     assert_eq!(commands.len(), 1, "one round trip, not two");
     assert!(commands[0].script.contains(SENTINEL_PATH));
@@ -294,7 +303,7 @@ mod tests {
   #[test]
   fn a_failed_plant_is_an_error() {
     let transport = ScriptedTransport::new(vec![("", false)]);
-    let err = plant(&transport, &target(), false).expect_err("plant fails");
+    let err = plant(&transport, &target(), false, 3).expect_err("plant fails");
     assert!(format!("{err}").contains("planting"), "got: {err}");
   }
 
@@ -317,14 +326,14 @@ mod tests {
   #[test]
   fn trigger_runs_the_escape_hatch() {
     let transport = ScriptedTransport::new(vec![("", true)]);
-    trigger(&transport, &target(), false).expect("triggers");
+    trigger(&transport, &target(), false, 3).expect("triggers");
     assert!(transport.commands()[0].script.contains(ESCAPE_HATCH_PATH));
   }
 
   #[test]
   fn a_failed_trigger_is_an_error() {
     let transport = ScriptedTransport::new(vec![("", false)]);
-    let err = trigger(&transport, &target(), false).expect_err("fails");
+    let err = trigger(&transport, &target(), false, 3).expect_err("fails");
     assert!(format!("{err}").contains("escape hatch"), "got: {err}");
   }
 
@@ -339,6 +348,7 @@ mod tests {
       Duration::from_millis(20),
       Duration::from_millis(5),
       false,
+      3,
     )
     .expect("confirms");
     assert_eq!(outcome, RollbackOutcome::Confirmed);
@@ -363,6 +373,7 @@ mod tests {
       Duration::from_mins(1),
       Duration::from_millis(5),
       false,
+      3,
     )
     .expect("confirms");
     assert_eq!(outcome, RollbackOutcome::RolledBack);
@@ -380,6 +391,7 @@ mod tests {
       Duration::ZERO,
       Duration::from_millis(1),
       false,
+      3,
     )
     .expect("confirms");
     assert_eq!(outcome, RollbackOutcome::Confirmed);
@@ -394,6 +406,7 @@ mod tests {
       Duration::from_secs(5),
       Duration::from_millis(5),
       true,
+      3,
     )
     .expect("confirms");
     // Elevated commands under interactive sudo request a PTY and
@@ -405,5 +418,23 @@ mod tests {
     assert_eq!(commands[1].elevate, Elevate::No, "a probe");
     assert_eq!(commands[2].elevate, Elevate::Interactive);
     assert!(commands[2].pty);
+  }
+
+  #[test]
+  fn retry_attempts_propagates_to_plant_and_trigger_but_not_the_probe() {
+    let transport = ScriptedTransport::new(vec![("", true), ("", false)]);
+    confirm(
+      &transport,
+      &target(),
+      Duration::from_secs(5),
+      Duration::from_millis(5),
+      false,
+      9,
+    )
+    .expect("confirms");
+    let commands = transport.commands();
+    assert_eq!(commands.len(), 3, "plant, probe, trigger");
+    assert_eq!(commands[0].retry_attempts, 9, "plant");
+    assert_eq!(commands[2].retry_attempts, 9, "trigger");
   }
 }

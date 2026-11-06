@@ -366,6 +366,8 @@ fn push_one(
     inventory,
     nix_module_remote_build,
   );
+  let retry_attempts =
+    config::resolve_retry_attempts(args.retry, &target.addr.name, inventory);
   let mode = args.effective_mode(remote_build);
   if mode == PushMode::Sources && args.copy_via == super::args::CopyVia::Target
   {
@@ -396,6 +398,7 @@ fn push_one(
     secrets,
     UploadAt::PreActivate,
     args.interactive_sudo,
+    retry_attempts,
   )?;
 
   match mode {
@@ -409,6 +412,7 @@ fn push_one(
         args.sources_scope(),
         &[],
         args.interactive_sudo,
+        retry_attempts,
       )
       .and_then(|()| {
         mode_sources::switch(
@@ -416,6 +420,7 @@ fn push_one(
           target,
           args.sources_scope(),
           args.interactive_sudo,
+          retry_attempts,
         )
       }) {
         if args.fail_fast {
@@ -432,9 +437,12 @@ fn push_one(
 
       let _permit = limits.apply.acquire();
       check_aborted()?;
-      if let Err(e) =
-        transport.copy_closure(&target.addr, &store_path, args.copy_via)
-      {
+      if let Err(e) = transport.copy_closure(
+        &target.addr,
+        &store_path,
+        args.copy_via,
+        retry_attempts,
+      ) {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
         }
@@ -444,7 +452,8 @@ fn push_one(
       let script = activation_script(target, &store_path);
       let outcome = transport.run(
         &target.addr,
-        &RemoteCommand::elevated(script, args.interactive_sudo),
+        &RemoteCommand::elevated(script, args.interactive_sudo, retry_attempts)
+          .non_retryable(),
       )?;
       if !outcome.success {
         if args.fail_fast {
@@ -466,6 +475,7 @@ fn push_one(
     secrets,
     UploadAt::PostActivate,
     args.interactive_sudo,
+    retry_attempts,
   )?;
 
   if args.magic_rollback > 0 {
@@ -477,6 +487,7 @@ fn push_one(
       Duration::from_secs(args.magic_rollback),
       ROLLBACK_POLL_INTERVAL,
       args.interactive_sudo,
+      retry_attempts,
     )?;
     if outcome == rollback::RollbackOutcome::RolledBack {
       if args.fail_fast {
@@ -512,11 +523,12 @@ fn upload_secrets(
   secrets: &BTreeMap<String, SecretSpec>,
   when: UploadAt,
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<()> {
   for secret in secrets.values().filter(|secret| secret.upload_at == when) {
     let local = secret.source_from(&context.sources_dir);
     transport
-      .upload_secret(&target.addr, &local, secret, interactive_sudo)
+      .upload_secret(&target.addr, &local, secret, interactive_sudo, retry_attempts)
       .map_err(|e| {
         eyre!(
           "uploading secret '{}' to {}: {e}",
@@ -664,6 +676,7 @@ mod tests {
       target: &TargetAddr,
       store_path: &str,
       _via: PushCopyVia,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self
         .copy_calls
@@ -679,6 +692,7 @@ mod tests {
       local: &std::path::Path,
       spec: &SecretSpec,
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self
         .secret_calls
@@ -695,6 +709,7 @@ mod tests {
       remote: &str,
       _excludes: &[&str],
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self
         .sync_calls
@@ -724,8 +739,9 @@ mod tests {
       target: &TargetAddr,
       store_path: &str,
       via: PushCopyVia,
+      retry_attempts: u32,
     ) -> Result<()> {
-      self.0.copy_closure(target, store_path, via)
+      self.0.copy_closure(target, store_path, via, retry_attempts)
     }
 
     fn upload_secret(
@@ -734,8 +750,11 @@ mod tests {
       local: &std::path::Path,
       spec: &SecretSpec,
       interactive_sudo: bool,
+      retry_attempts: u32,
     ) -> Result<()> {
-      self.0.upload_secret(target, local, spec, interactive_sudo)
+      self
+        .0
+        .upload_secret(target, local, spec, interactive_sudo, retry_attempts)
     }
 
     fn sync_dir(
@@ -745,10 +764,16 @@ mod tests {
       remote: &str,
       excludes: &[&str],
       interactive_sudo: bool,
+      retry_attempts: u32,
     ) -> Result<()> {
-      self
-        .0
-        .sync_dir(target, local, remote, excludes, interactive_sudo)
+      self.0.sync_dir(
+        target,
+        local,
+        remote,
+        excludes,
+        interactive_sudo,
+        retry_attempts,
+      )
     }
   }
 
@@ -783,6 +808,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      retry: None,
       magic_rollback: 0,
       parallel: 1,
       interactive_sudo: false,
@@ -935,7 +961,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      ..PushConfig::default()
     };
 
     let report = execute(
@@ -967,7 +993,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      ..PushConfig::default()
     };
 
     let report = execute(

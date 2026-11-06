@@ -126,6 +126,7 @@ impl Transport for FixtureTransport {
     _target: &TargetAddr,
     _store_path: &str,
     _via: CopyVia,
+    _retry_attempts: u32,
   ) -> Result<()> {
     Ok(())
   }
@@ -136,6 +137,7 @@ impl Transport for FixtureTransport {
     _local: &std::path::Path,
     _spec: &xi_core::sources::secrets::SecretSpec,
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("a multi-host activate push has no secrets in this scenario")
   }
@@ -147,6 +149,7 @@ impl Transport for FixtureTransport {
     _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("--mode closure never syncs a directory")
   }
@@ -182,11 +185,11 @@ fn push_one(
 
   let _apply_permit = limits.apply.acquire();
   transport
-    .copy_closure(&target.addr, &store_path, CopyVia::Local)
+    .copy_closure(&target.addr, &store_path, CopyVia::Local, 3)
     .expect("copies the closure");
   let script = activation_script(target, &store_path);
   let outcome = transport
-    .run(&target.addr, &RemoteCommand::elevated(script, false))
+    .run(&target.addr, &RemoteCommand::elevated(script, false, 3))
     .expect("activates");
   assert!(outcome.success);
 }

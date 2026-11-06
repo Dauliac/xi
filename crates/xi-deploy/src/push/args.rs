@@ -210,6 +210,15 @@ pub struct PushArgs {
   #[arg(long)]
   pub remote_build: Option<bool>,
 
+  /// Retry attempts for a transient SSH/rsync/`nix copy` failure
+  ///
+  /// Left unset, the retry-attempts ladder decides instead: `.xi.toml
+  /// [push] retry-attempts` (a per-host `[[push.hosts]]` override first,
+  /// then the table-level default), then the compiled floor of `3`.
+  /// `--retry 0` disables retrying entirely (one attempt).
+  #[arg(long, value_name = "N")]
+  pub retry: Option<u32>,
+
   /// Seconds to confirm the new generation in before rolling back (0 = off)
   #[arg(long, default_value_t = 0, value_name = "SECONDS")]
   pub magic_rollback: u64,
@@ -348,6 +357,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      retry: None,
       magic_rollback: 0,
       parallel: 1,
       interactive_sudo: false,
