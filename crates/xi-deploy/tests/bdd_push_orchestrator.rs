@@ -178,6 +178,8 @@ fn push_args() -> PushArgs {
     fail_fast: false,
     force_dirty: false,
     build_strategy: BuildStrategy::Interleaved,
+    build_only: false,
+    from_manifest: None,
     scope: PushScope::System,
   }
 }

@@ -19,6 +19,7 @@
 
 use std::{
   collections::BTreeMap,
+  path::{Path, PathBuf},
   sync::atomic::{AtomicBool, Ordering},
   time::Duration,
 };
@@ -35,17 +36,127 @@ use xi_core::sources::{
 };
 
 use super::{
-  args::{PushArgs, PushMode},
+  args::{BuildStrategy, PushArgs, PushMode},
   config::{self, PushConfig},
   context,
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources,
-  preflight,
-  rollback,
+  mode_sources, preflight, rollback,
 };
 use crate::target::ProfileKind;
+
+/// The file name a batched build's manifest is written under, inside the
+/// push's state dir.
+const MANIFEST_FILE_NAME: &str = "push-manifest.json";
+
+/// Where `--build-only` writes its manifest: the same state dir every
+/// other `xi push` state file lives in, so a later `--from-manifest`
+/// invocation has an obvious default to point at.
+#[must_use]
+fn default_manifest_path(context: &SourcesContext) -> PathBuf {
+  context.state_dir.join(MANIFEST_FILE_NAME)
+}
+
+/// Write a batched build's manifest to `path` as JSON, creating the
+/// parent directory first if it does not exist yet.
+///
+/// # Errors
+///
+/// Returns an error naming `path` if the parent directory cannot be
+/// created, the manifest cannot be serialized, or the file cannot be
+/// written.
+fn write_manifest(
+  path: &Path,
+  manifest: &BTreeMap<String, String>,
+) -> Result<()> {
+  if let Some(parent) = path.parent() {
+    std::fs::create_dir_all(parent).map_err(|e| {
+      eyre!(
+        "{}: creating the manifest's directory: {e}",
+        parent.display()
+      )
+    })?;
+  }
+  let json = serde_json::to_string_pretty(manifest)
+    .map_err(|e| eyre!("serializing the push manifest: {e}"))?;
+  std::fs::write(path, json)
+    .map_err(|e| eyre!("{}: writing the push manifest: {e}", path.display()))
+}
+
+/// Read a batched build's manifest back from `path`.
+///
+/// # Errors
+///
+/// Returns an error naming `path` if the file is missing, unreadable, or
+/// not the `{ target: store-path }` JSON shape [`write_manifest`] wrote.
+fn read_manifest(path: &Path) -> Result<BTreeMap<String, String>> {
+  let raw = std::fs::read_to_string(path)
+    .map_err(|e| eyre!("{}: reading --from-manifest: {e}", path.display()))?;
+  serde_json::from_str(&raw)
+    .map_err(|e| eyre!("{}: parsing --from-manifest: {e}", path.display()))
+}
+
+/// The subset of `targets` a batched build phase builds, and a
+/// manifest's ship phase ships from a recorded store path: every target
+/// whose resolved mode is [`PushMode::Closure`].
+///
+/// Mode is resolved the same way `push_one` resolves it, through the
+/// build-location ladder (`config::resolve_remote_build`) rather than
+/// `args.mode` alone, so a target the ladder sends to `--mode sources`
+/// is excluded even when no `--mode` flag was given.
+fn closure_mode_targets<'a>(
+  targets: &'a [PushTarget],
+  args: &PushArgs,
+  inventory: &PushConfig,
+  nix_module_remote_build: Option<bool>,
+) -> Vec<&'a PushTarget> {
+  targets
+    .iter()
+    .filter(|target| {
+      let remote_build = config::resolve_remote_build(
+        args.remote_build,
+        &target.addr.name,
+        inventory,
+        nix_module_remote_build,
+      );
+      args.effective_mode(remote_build) == PushMode::Closure
+    })
+    .collect()
+}
+
+/// Refuse early if `manifest` (read from `--from-manifest`) is missing an
+/// entry for any closure-mode target this push selected.
+///
+/// The ship phase must not fall back to `nix.build` silently for a
+/// target nobody built, so this runs once, before dispatch, rather than
+/// leaving each worker to discover a missing entry on its own.
+///
+/// # Errors
+///
+/// Names every missing target in one error.
+fn require_manifest_covers(
+  targets: &[PushTarget],
+  args: &PushArgs,
+  inventory: &PushConfig,
+  nix_module_remote_build: Option<bool>,
+  manifest: &BTreeMap<String, String>,
+) -> Result<()> {
+  let missing: Vec<&str> =
+    closure_mode_targets(targets, args, inventory, nix_module_remote_build)
+      .into_iter()
+      .map(|target| target.addr.name.as_str())
+      .filter(|name| !manifest.contains_key(*name))
+      .collect();
+  if missing.is_empty() {
+    Ok(())
+  } else {
+    Err(eyre!(
+      "--from-manifest is missing an entry for: {}",
+      missing.join(", ")
+    ))
+  }
+}
 
 /// How often [`rollback::confirm`] polls the sentinel.
 ///
@@ -58,7 +169,7 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name:    String,
+  pub name: String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
@@ -227,11 +338,9 @@ pub fn execute(
     return Ok(PushReport {
       results: targets
         .iter()
-        .map(|target| {
-          TargetResult {
-            name:    target.addr.name.clone(),
-            outcome: Ok(()),
-          }
+        .map(|target| TargetResult {
+          name: target.addr.name.clone(),
+          outcome: Ok(()),
         })
         .collect(),
     });
@@ -240,6 +349,47 @@ pub fn execute(
   let limits = PhaseLimits::new(args.parallel);
   let aborted = AtomicBool::new(false);
 
+  // The build-then-ship manifest: read from `--from-manifest` when
+  // given, built fresh under `--build-strategy batched` otherwise (and
+  // not at all under the default interleaved strategy, which still
+  // builds each target inside `push_one` exactly as it always has).
+  let manifest: Option<BTreeMap<String, String>> =
+    if let Some(path) = &args.from_manifest {
+      let loaded = read_manifest(path)?;
+      require_manifest_covers(
+        &targets,
+        args,
+        inventory,
+        nix_module_remote_build,
+        &loaded,
+      )?;
+      Some(loaded)
+    } else if args.build_strategy == BuildStrategy::Batched {
+      let built = build_batch(
+        nix,
+        &targets,
+        args,
+        inventory,
+        nix_module_remote_build,
+        &limits,
+      )?;
+      if args.build_only {
+        write_manifest(&default_manifest_path(context), &built)?;
+        return Ok(PushReport {
+          results: built
+            .keys()
+            .map(|name| TargetResult {
+              name: name.clone(),
+              outcome: Ok(()),
+            })
+            .collect(),
+        });
+      }
+      Some(built)
+    } else {
+      None
+    };
+
   let results: Vec<TargetResult> = std::thread::scope(|scope| {
     let handles: Vec<_> = targets
       .iter()
@@ -247,6 +397,10 @@ pub fn execute(
         let limits = &limits;
         let aborted = &aborted;
         let name = target.addr.name.clone();
+        let prebuilt = manifest
+          .as_ref()
+          .and_then(|manifest| manifest.get(&name))
+          .map(String::as_str);
         let handle = scope.spawn(move || {
           push_one(
             nix,
@@ -258,6 +412,7 @@ pub fn execute(
             secrets,
             inventory,
             nix_module_remote_build,
+            prebuilt,
             aborted,
           )
         });
@@ -309,18 +464,8 @@ pub fn build_batch(
   nix_module_remote_build: Option<bool>,
   limits: &PhaseLimits,
 ) -> Result<BTreeMap<String, String>> {
-  let closure_targets: Vec<&PushTarget> = targets
-    .iter()
-    .filter(|target| {
-      let remote_build = config::resolve_remote_build(
-        args.remote_build,
-        &target.addr.name,
-        inventory,
-        nix_module_remote_build,
-      );
-      args.effective_mode(remote_build) == PushMode::Closure
-    })
-    .collect();
+  let closure_targets =
+    closure_mode_targets(targets, args, inventory, nix_module_remote_build);
 
   let built: Vec<(String, Result<String>)> = std::thread::scope(|scope| {
     // Collecting into `handles` first is load-bearing, not needless: every
@@ -385,27 +530,32 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref:         Some(flake_ref.to_owned()),
-    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on:                None,
-    backend:           Some(backend.as_str().to_owned()),
-    dry:               false,
-    no_nom:            false,
-    skip_checks:       false,
+    flake_ref: Some(flake_ref.to_owned()),
+    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on: None,
+    backend: Some(backend.as_str().to_owned()),
+    dry: false,
+    no_nom: false,
+    skip_checks: false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout:   if args.magic_rollback > 0 {
+    confirm_timeout: if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace:        false,
-    extra_args:        Vec::new(),
+    show_trace: false,
+    extra_args: Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
 
 /// Push one target through preflight, build-or-sync, activate, secrets
 /// and (optionally) the magic-rollback confirmation window.
+///
+/// `prebuilt`, when `Some`, is a [`PushMode::Closure`] target's already-
+/// built store path from a batched build's manifest - `nix.build` is not
+/// called at all in that case, which is the whole point of shipping from
+/// a manifest rather than rebuilding on the ship leg.
 ///
 /// # Errors
 ///
@@ -425,6 +575,7 @@ fn push_one(
   secrets: &BTreeMap<String, SecretSpec>,
   inventory: &PushConfig,
   nix_module_remote_build: Option<bool>,
+  prebuilt: Option<&str>,
   aborted: &AtomicBool,
 ) -> Result<()> {
   // Checked again just after every `apply` permit acquisition below: a
@@ -506,7 +657,9 @@ fn push_one(
       }
     },
     PushMode::Closure => {
-      let store_path = {
+      let store_path = if let Some(store_path) = prebuilt {
+        store_path.to_owned()
+      } else {
         let _permit = limits.eval.acquire();
         nix.build(&target.installable)?
       };
@@ -653,16 +806,16 @@ mod tests {
   /// Answers flake evaluation from a fixture table keyed by attr, the
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
-    outputs:     Vec<(&'static str, serde_json::Value)>,
-    built:       Mutex<Vec<String>>,
+    outputs: Vec<(&'static str, serde_json::Value)>,
+    built: Mutex<Vec<String>>,
     build_fails: bool,
   }
 
   impl FixtureNix {
     fn single_nixos_host(name: &'static str) -> Self {
       Self {
-        outputs:     vec![(".#nixosConfigurations", serde_json::json!([name]))],
-        built:       Mutex::new(Vec::new()),
+        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
+        built: Mutex::new(Vec::new()),
         build_fails: false,
       }
     }
@@ -700,10 +853,10 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls:        Mutex<Vec<RemoteCommand>>,
-    copy_calls:       Mutex<Vec<(String, String)>>,
-    secret_calls:     Mutex<Vec<String>>,
-    sync_calls:       Mutex<Vec<String>>,
+    run_calls: Mutex<Vec<RemoteCommand>>,
+    copy_calls: Mutex<Vec<(String, String)>>,
+    secret_calls: Mutex<Vec<String>>,
+    sync_calls: Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -870,7 +1023,9 @@ mod tests {
       copy_via: PushCopyVia::Local,
       fail_fast: false,
       force_dirty: false,
-      build_strategy: super::super::args::BuildStrategy::Interleaved,
+      build_strategy: BuildStrategy::Interleaved,
+      build_only: false,
+      from_manifest: None,
       scope: super::super::args::PushScope::System,
     }
   }
@@ -1017,7 +1172,8 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      backend: None,
+      hosts: Vec::new(),
     };
 
     let report = execute(
@@ -1049,7 +1205,8 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      backend: None,
+      hosts: Vec::new(),
     };
 
     let report = execute(
@@ -1102,15 +1259,18 @@ mod tests {
     let transport = FixtureTransport::default();
     let (_root, context) = fixture_context();
     let mut secrets = BTreeMap::new();
-    secrets.insert("ssh-key".to_owned(), SecretSpec {
-      name:        "ssh-key".to_owned(),
-      source:      std::path::PathBuf::from("./ssh-key"),
-      destination: std::path::PathBuf::from("/run/keys/ssh"),
-      owner:       "root".to_owned(),
-      group:       None,
-      mode:        "0600".to_owned(),
-      upload_at:   UploadAt::PreActivate,
-    });
+    secrets.insert(
+      "ssh-key".to_owned(),
+      SecretSpec {
+        name: "ssh-key".to_owned(),
+        source: std::path::PathBuf::from("./ssh-key"),
+        destination: std::path::PathBuf::from("/run/keys/ssh"),
+        owner: "root".to_owned(),
+        group: None,
+        mode: "0600".to_owned(),
+        upload_at: UploadAt::PreActivate,
+      },
+    );
 
     let report = execute(
       &args(PushMode::Closure),
@@ -1133,11 +1293,11 @@ mod tests {
   #[test]
   fn a_failed_activation_is_reported_but_other_targets_still_run() {
     let nix = FixtureNix {
-      outputs:     vec![(
+      outputs: vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built:       Mutex::new(Vec::new()),
+      built: Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
@@ -1169,11 +1329,11 @@ mod tests {
   #[test]
   fn fail_fast_skips_targets_queued_after_the_first_failure() {
     let nix = FixtureNix {
-      outputs:     vec![(
+      outputs: vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built:       Mutex::new(Vec::new()),
+      built: Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
@@ -1237,17 +1397,11 @@ mod tests {
     working_dir: std::path::PathBuf,
   ) -> SourcesContext {
     SourcesContext {
-      sources_id:          SourcesId::new(
-        Scope::System,
-        "https://example/repo",
-      ),
-      sources_dir:         working_dir
-        .parent()
-        .expect("parent")
-        .join("sources"),
-      state_dir:           working_dir.parent().expect("parent").join("state"),
-      working_dir:         Some(working_dir),
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: working_dir.parent().expect("parent").join("sources"),
+      state_dir: working_dir.parent().expect("parent").join("state"),
+      working_dir: Some(working_dir),
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -1287,14 +1441,11 @@ mod tests {
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id:          SourcesId::new(
-        Scope::System,
-        "https://example/repo",
-      ),
-      sources_dir:         root.path().join("sources"),
-      state_dir:           root.path().join("state"),
-      working_dir:         None,
-      refs:                xi_core::sources::RefLineage::default(),
+      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir: root.path().join("sources"),
+      state_dir: root.path().join("state"),
+      working_dir: None,
+      refs: xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
@@ -1307,15 +1458,15 @@ mod tests {
   /// `&[PushTarget]` slice rather than a flake to evaluate.
   fn closure_target(name: &str) -> PushTarget {
     PushTarget {
-      addr:         TargetAddr {
-        name:     name.to_owned(),
+      addr: TargetAddr {
+        name: name.to_owned(),
         ssh_host: name.to_owned(),
         ssh_opts: Vec::new(),
       },
-      source:       discover::TargetSource::NixosConfigurations,
-      tags:         Vec::new(),
-      installable:  format!(".#nixosConfigurations.{name}"),
-      kind:         ProfileKind::NixOS,
+      source: discover::TargetSource::NixosConfigurations,
+      tags: Vec::new(),
+      installable: format!(".#nixosConfigurations.{name}"),
+      kind: ProfileKind::NixOS,
       profile_path: "/nix/var/nix/profiles/system".to_owned(),
       rebuild_tool: "nixos-rebuild",
     }
@@ -1359,10 +1510,12 @@ mod tests {
     // so only `web1` should end up in the manifest.
     let inventory = PushConfig {
       remote_build: None,
-      hosts:        vec![config::PushHost {
-        name:         "web2".to_owned(),
-        ssh:          "web2".to_owned(),
+      backend: None,
+      hosts: vec![config::PushHost {
+        name: "web2".to_owned(),
+        ssh: "web2".to_owned(),
         remote_build: Some(true),
+        backend: None,
       }],
     };
 
@@ -1384,8 +1537,8 @@ mod tests {
   #[test]
   fn build_batch_fails_on_the_first_build_failure() {
     let nix = FixtureNix {
-      outputs:     Vec::new(),
-      built:       Mutex::new(Vec::new()),
+      outputs: Vec::new(),
+      built: Mutex::new(Vec::new()),
       build_fails: true,
     };
     let targets = vec![closure_target("web1")];
@@ -1401,5 +1554,214 @@ mod tests {
     )
     .expect_err("a failing build must fail the whole batch");
     assert!(format!("{err}").contains("web1"), "got: {err}");
+  }
+
+  // -- manifest serialization: write_manifest / read_manifest -----------
+
+  #[test]
+  fn write_then_read_manifest_round_trips() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("nested/push-manifest.json");
+    let mut manifest = BTreeMap::new();
+    manifest.insert("web1".to_owned(), "/nix/store/fake-web1".to_owned());
+    manifest.insert("web2".to_owned(), "/nix/store/fake-web2".to_owned());
+
+    write_manifest(&path, &manifest).expect("write");
+    let loaded = read_manifest(&path).expect("read");
+    assert_eq!(loaded, manifest);
+  }
+
+  #[test]
+  fn reading_a_missing_manifest_names_the_path() {
+    let err = read_manifest(std::path::Path::new(
+      "/nonexistent/dir/push-manifest.json",
+    ))
+    .expect_err("missing file");
+    assert!(
+      format!("{err}").contains("push-manifest.json"),
+      "got: {err}"
+    );
+  }
+
+  #[test]
+  fn an_incomplete_manifest_is_rejected_before_shipping_anything() {
+    let targets = vec![closure_target("web1"), closure_target("web2")];
+    let mut manifest = BTreeMap::new();
+    manifest.insert("web1".to_owned(), "/nix/store/fake-web1".to_owned());
+
+    let err = require_manifest_covers(
+      &targets,
+      &args(PushMode::Closure),
+      &PushConfig::default(),
+      None,
+      &manifest,
+    )
+    .expect_err("web2 has no manifest entry");
+    assert!(format!("{err}").contains("web2"), "got: {err}");
+  }
+
+  #[test]
+  fn a_manifest_covering_every_closure_target_is_accepted() {
+    let targets = vec![closure_target("web1")];
+    let mut manifest = BTreeMap::new();
+    manifest.insert("web1".to_owned(), "/nix/store/fake-web1".to_owned());
+
+    require_manifest_covers(
+      &targets,
+      &args(PushMode::Closure),
+      &PushConfig::default(),
+      None,
+      &manifest,
+    )
+    .expect("every closure target is covered");
+  }
+
+  // -- batched build-then-ship: --build-only, then --from-manifest ------
+
+  #[test]
+  fn build_only_builds_and_writes_a_manifest_but_ships_nothing() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+
+    let mut push_args = args(PushMode::Closure);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.build_only = true;
+
+    let report = execute(
+      &push_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("build-only succeeds");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].name, "web1");
+    assert_eq!(nix.built.lock().expect("built lock").len(), 1);
+    assert!(
+      transport.copy_calls.lock().expect("lock").is_empty(),
+      "--build-only must not copy anything"
+    );
+    assert!(
+      transport.run_calls.lock().expect("lock").is_empty(),
+      "--build-only must not activate anything"
+    );
+
+    let manifest_path = default_manifest_path(&context);
+    let manifest = read_manifest(&manifest_path).expect("manifest written");
+    assert_eq!(manifest.len(), 1);
+    assert!(
+      manifest["web1"].starts_with("/nix/store/fake-"),
+      "got: {}",
+      manifest["web1"]
+    );
+  }
+
+  #[test]
+  fn a_batched_build_then_ship_round_trip_never_rebuilds_on_the_ship_leg() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let manifest_path = default_manifest_path(&context);
+
+    // Leg 1: `--build-strategy batched --build-only` builds web1 and
+    // writes the manifest, as a separate invocation that ships nothing.
+    let build_transport = FixtureTransport::default();
+    let mut build_args = args(PushMode::Closure);
+    build_args.build_strategy = BuildStrategy::Batched;
+    build_args.build_only = true;
+
+    let build_report = execute(
+      &build_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &build_transport,
+    )
+    .expect("build-only leg succeeds");
+    assert!(build_report.ok(), "{:?}", build_report.results);
+    assert_eq!(nix.built.lock().expect("built lock").len(), 1);
+    assert!(manifest_path.exists());
+
+    // Leg 2: a separate invocation, `--from-manifest <path>`, ships web1
+    // from the manifest's recorded store path - against the *same*
+    // `FixtureNix`, so a second `nix.build` call here would show up in
+    // its shared `built` log.
+    let ship_transport = FixtureTransport::default();
+    let mut ship_args = args(PushMode::Closure);
+    ship_args.build_strategy = BuildStrategy::Batched;
+    ship_args.from_manifest = Some(manifest_path);
+
+    let ship_report = execute(
+      &ship_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &ship_transport,
+    )
+    .expect("from-manifest leg succeeds");
+
+    assert!(ship_report.ok(), "{:?}", ship_report.results);
+    assert_eq!(
+      nix.built.lock().expect("built lock").len(),
+      1,
+      "the ship leg must not call nix.build again"
+    );
+    assert_eq!(ship_transport.copy_calls.lock().expect("lock").len(), 1);
+    let last = ship_transport
+      .run_calls
+      .lock()
+      .expect("lock")
+      .last()
+      .expect("ran something")
+      .script
+      .clone();
+    assert!(
+      last.contains("switch-to-configuration switch"),
+      "got: {last}"
+    );
+  }
+
+  #[test]
+  fn from_manifest_missing_a_target_refuses_before_shipping_anything() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let manifest_path = context.state_dir.join("empty-manifest.json");
+    write_manifest(&manifest_path, &BTreeMap::new())
+      .expect("write empty manifest");
+
+    let mut push_args = args(PushMode::Closure);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.from_manifest = Some(manifest_path);
+
+    let err = execute(
+      &push_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect_err("manifest missing web1");
+    assert!(format!("{err}").contains("web1"), "got: {err}");
+    assert!(transport.copy_calls.lock().expect("lock").is_empty());
+    assert!(nix.built.lock().expect("built lock").is_empty());
   }
 }
