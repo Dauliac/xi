@@ -46,6 +46,10 @@ pub enum PushMode {
   Closure,
   /// The sources dir is synced to the target, which rebuilds from it.
   Sources,
+  /// The target pulls its own sources via its `xi-sources-daemon`
+  /// control socket, instead of the operator copying anything to it
+  /// ([[xi-push-target-pull]]).
+  TargetPull,
 }
 
 /// Who pulls the closure's store paths.

@@ -3661,6 +3661,7 @@ dependencies = [
  "tracing",
  "which",
  "xi-core",
+ "xi-sources-daemon",
  "yansi",
 ]
 

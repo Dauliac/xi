@@ -13,6 +13,7 @@
 //! describe the comparable tools doing.
 
 use std::{
+  io::Read,
   path::Path,
   process::{Command, Stdio},
 };
@@ -23,7 +24,8 @@ use color_eyre::{
 };
 use nix_command::{CommandKind, NixCommand};
 use tracing::debug;
-use xi_core::sources::secrets::SecretSpec;
+use xi_core::sources::{Scope, secrets::SecretSpec};
+use xi_sources_daemon::control::{self, AdvanceNow, AdvanceReply};
 
 use super::args::CopyVia;
 
@@ -227,6 +229,38 @@ pub trait Transport: Send + Sync {
     excludes: &[&str],
     interactive_sudo: bool,
   ) -> Result<()>;
+
+  /// Ask `target`'s own `xi-sources-daemon` to fetch-and-fast-forward
+  /// right now, for [`super::args::PushMode::TargetPull`]
+  /// ([[xi-push-target-pull]]).
+  ///
+  /// Not built on [`Transport::run`]: that method's [`Outcome`] captures
+  /// the remote's stdout as a lossy `String`, which would corrupt the
+  /// `AdvanceReply` frame's raw little-endian length prefix the moment a
+  /// payload crosses 127 bytes. A real implementation instead spawns its
+  /// own `ssh` child (the same SSH plumbing every other [`Transport`]
+  /// method already uses) and talks to its piped stdin/stdout directly,
+  /// preserving every byte.
+  ///
+  /// Defaults to an error so every existing [`Transport`] fake - none of
+  /// which exercise `--mode target-pull` - does not need updating just to
+  /// add a stub for a method it never calls.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error naming `target`; the default implementation always
+  /// errors.
+  fn advance_now(
+    &self,
+    target: &TargetAddr,
+    _scope: Scope,
+    _request: &AdvanceNow,
+  ) -> Result<AdvanceReply> {
+    Err(eyre!(
+      "{} does not support --mode target-pull's advance_now",
+      target.name
+    ))
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +501,65 @@ impl Transport for SshTransport {
       bail!("rsync of {} to {} failed", local.display(), target.name);
     }
     Ok(())
+  }
+
+  fn advance_now(
+    &self,
+    target: &TargetAddr,
+    scope: Scope,
+    request: &AdvanceNow,
+  ) -> Result<AdvanceReply> {
+    let mut ssh = Command::new("ssh");
+    ssh.args(Self::base_opts(target, false));
+    ssh.arg("-T");
+    ssh.arg(&target.ssh_host);
+    ssh.arg("--");
+    ssh.arg(format!("xi-sources-daemon --scope {} ctl", scope.as_str()));
+    ssh.stdin(Stdio::piped());
+    ssh.stdout(Stdio::piped());
+    ssh.stderr(Stdio::piped());
+
+    let mut child = ssh.spawn().map_err(|e| {
+      eyre!("failed to spawn the ctl relay on {}: {e}", target.name)
+    })?;
+
+    {
+      let mut stdin = child.stdin.take().ok_or_else(|| {
+        eyre!("ctl relay on {} has no stdin pipe", target.name)
+      })?;
+      control::write_message(&mut stdin, request).map_err(|e| {
+        eyre!("writing the AdvanceNow frame to {}: {e}", target.name)
+      })?;
+      // `stdin` drops here, closing the write half: `relay_stdio`'s own
+      // `read_frame` only needs the exact length-prefixed bytes (no EOF
+      // required), but closing it promptly still avoids holding the pipe
+      // open for no reason while the reply is awaited below.
+    }
+
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+      eyre!("ctl relay on {} has no stdout pipe", target.name)
+    })?;
+    let reply: AdvanceReply =
+      control::read_message(&mut stdout).map_err(|e| {
+        eyre!("reading the AdvanceReply frame from {}: {e}", target.name)
+      })?;
+
+    let status = child
+      .wait()
+      .map_err(|e| eyre!("waiting on the ctl relay on {}: {e}", target.name))?;
+    if !status.success() {
+      let mut stderr = String::new();
+      if let Some(mut pipe) = child.stderr.take() {
+        let _ignore_partial_read = pipe.read_to_string(&mut stderr);
+      }
+      bail!(
+        "ctl relay on {} exited with {status}: {}",
+        target.name,
+        stderr.trim()
+      );
+    }
+
+    Ok(reply)
   }
 }
 
