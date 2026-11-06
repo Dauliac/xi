@@ -301,6 +301,15 @@ let
         }
       );
 
+      # xi-sources-push: the backend ladder's Nix-module rung renders
+      # into the same sibling `[push]` table as `remoteBuild` above, not
+      # a second table.
+      systemWithBackend = nixosWith (
+        lib.recursiveUpdate enabledSystem {
+          programs.xi.sources.push.backend = "colmena";
+        }
+      );
+
       userHappy = homeManagerWith (
         lib.recursiveUpdate enabledUser {
           programs.xi.sources.workingDir = "${userHome}/src/dotfiles";
@@ -468,6 +477,11 @@ let
         }
 
         {
+          name = "programs.xi.sources.push.backend renders a [push] table";
+          ok = failures systemWithBackend == [ ];
+        }
+
+        {
           name = "user head creates the XDG dirs with mode 700";
           ok =
             let
@@ -540,6 +554,7 @@ let
       inherit
         systemHappy
         systemWithRemoteBuild
+        systemWithBackend
         broken
         homeManagerActivation
         ;
@@ -552,6 +567,7 @@ in
       inherit (fixtures pkgs)
         systemHappy
         systemWithRemoteBuild
+        systemWithBackend
         broken
         homeManagerActivation
         ;
@@ -592,6 +608,7 @@ in
             {
               sourcesToml = systemHappy.environment.etc."xi/sources.toml".source;
               remoteBuildToml = systemWithRemoteBuild.environment.etc."xi/sources.toml".source;
+              backendToml = systemWithBackend.environment.etc."xi/sources.toml".source;
               brokenCases = lib.concatMapStringsSep "\n" (case: case.name) broken;
             }
             ''
@@ -607,12 +624,14 @@ in
               grep -q '^installer = "lix"$' "$sourcesToml"
               grep -q '^\[sources\]$' "$sourcesToml"
 
-              # xi-sources-push's build-location ladder: left unset, no
-              # [push] table at all (the silent rung); set, a sibling
-              # [push] table in the same file.
+              # xi-sources-push's build-location and backend ladders:
+              # left unset, no [push] table at all (the silent rung);
+              # set, a sibling [push] table in the same file.
               ! grep -q '^\[push\]$' "$sourcesToml"
               grep -q '^\[push\]$' "$remoteBuildToml"
               grep -q '^remote-build = true$' "$remoteBuildToml"
+              grep -q '^\[push\]$' "$backendToml"
+              grep -q '^backend = "colmena"$' "$backendToml"
 
               # Options the tree declares but xi's closed key set does not
               # accept yet must stay out of the file, or loading it is an
