@@ -9,7 +9,12 @@
 //! copy with `--flake <remote path>#<target name>` ([`switch`], through
 //! [`Transport::run`]).
 
-use std::path::Path;
+use std::{
+  collections::hash_map::RandomState,
+  hash::{BuildHasher as _, Hasher as _},
+  path::Path,
+  time::{SystemTime, UNIX_EPOCH},
+};
 
 use color_eyre::{Result, eyre::bail};
 use xi_core::sources::Scope;
@@ -96,18 +101,53 @@ pub fn switch_script(target: &PushTarget, scope: Scope) -> String {
   )
 }
 
-/// Wrap `command` in a transient `systemd-run` unit, per the
-/// `xi-sources-push` proposal's "Remote execution wrapped in a
+/// Generate a short, practically-unique id for one push invocation:
+/// `target_name`, the current unix time, and a random suffix.
+///
+/// Per the `xi-push-resilient-remote-build` proposal, neither the
+/// timestamp nor the target name alone is enough to name a push: two
+/// operators can push to the same target in the same second, and the
+/// timestamp alone repeats across a long enough timeline. The random
+/// suffix (drawn from a fresh [`RandomState`]'s hash keys, not derived
+/// from the timestamp or [`std::process::id`]) is what actually keeps
+/// two such pushes from colliding.
+///
+/// There is nothing yet to collision-check this id against: the local
+/// receipt store that would record in-flight push ids is a sibling
+/// task, not this one.
+fn push_id(target_name: &str) -> String {
+  let unix_time = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map_or(0, |duration| duration.as_secs());
+  let mut hasher = RandomState::new().build_hasher();
+  hasher.write_u64(unix_time);
+  let suffix = hasher.finish() & 0xFF_FFFF;
+  format!("{target_name}-{unix_time}-{suffix:06x}")
+}
+
+/// The `systemd-run --unit` name for one push invocation: `xi-push-`
+/// followed by a [`push_id`] derived from `target_name`.
+fn unit_name(target_name: &str) -> String {
+  format!("xi-push-{}", push_id(target_name))
+}
+
+/// Wrap `command` in a transient, explicitly-named `systemd-run` unit,
+/// per the `xi-sources-push` proposal's "Remote execution wrapped in a
 /// transient systemd unit": the remote-build path runs its command this
 /// way instead of as a bare foreground SSH command.
 ///
-/// The three flags each earn their place:
+/// The flags each earn their place:
 /// - `--wait` blocks until the unit finishes and propagates its exit code, so
 ///   [`switch`] still sees a real success/failure.
 /// - `--pipe` connects the unit's stdio to this invocation's, so the rebuild's
 ///   own output still reaches the operator instead of only journald.
 /// - `--collect` unloads the unit (success or failure) once it exits, so
 ///   `--mode sources` never leaves a transient unit file behind.
+/// - `--unit={unit_name}` gives the transient unit an explicit,
+///   predictable name instead of letting `systemd-run` generate an
+///   anonymous one, so a later reattach (a sibling task) can name the
+///   exact unit to query instead of needing systemd to have remembered
+///   it.
 ///
 /// Together these survive an SSH hiccup (the unit keeps running on the
 /// target even if the SSH session drops), get journald logging on the
@@ -121,8 +161,8 @@ pub fn switch_script(target: &PushTarget, scope: Scope) -> String {
 /// [`RemoteCommand::script`]) splits it into the argv `systemd-run`
 /// wants on the far side of `--`.
 #[must_use]
-pub fn wrap_in_systemd_run(command: &str) -> String {
-  format!("systemd-run --wait --pipe --collect -- {command}")
+pub fn wrap_in_systemd_run(command: &str, unit_name: &str) -> String {
+  format!("systemd-run --wait --pipe --collect --unit={unit_name} -- {command}")
 }
 
 /// Run the remote rebuild `--mode sources` needs after [`sync`] has
@@ -140,7 +180,10 @@ pub fn switch(
   scope: Scope,
   interactive_sudo: bool,
 ) -> Result<()> {
-  let script = wrap_in_systemd_run(&switch_script(target, scope));
+  let script = wrap_in_systemd_run(
+    &switch_script(target, scope),
+    &unit_name(&target.addr.name),
+  );
   let outcome = transport.run(
     &target.addr,
     &RemoteCommand::elevated(script, interactive_sudo),
@@ -428,51 +471,95 @@ mod tests {
     );
   }
 
+  // -- push_id / unit_name: per-push naming -------------------------------
+
+  #[test]
+  fn push_id_carries_the_target_name_and_the_unix_time() {
+    let id = push_id("web1");
+    let mut parts = id.split('-');
+    assert_eq!(parts.next(), Some("web1"));
+    let unix_time: u64 = parts
+      .next()
+      .expect("has a timestamp segment")
+      .parse()
+      .expect("timestamp segment is numeric");
+    assert!(unix_time > 0);
+    assert!(parts.next().is_some(), "has a random suffix segment");
+  }
+
+  #[test]
+  fn two_push_ids_for_the_same_target_do_not_collide() {
+    assert_ne!(push_id("web1"), push_id("web1"));
+  }
+
+  #[test]
+  fn unit_name_is_prefixed_with_xi_push_and_carries_the_push_id_shape() {
+    let name = unit_name("web1");
+    let id = name
+      .strip_prefix("xi-push-")
+      .expect("unit name starts with xi-push-");
+    assert!(id.starts_with("web1-"));
+  }
+
   // -- wrap_in_systemd_run: flags and command placement ------------------
 
   #[test]
   fn the_wrapped_command_carries_every_required_flag_in_order() {
-    let wrapped =
-      wrap_in_systemd_run("nixos-rebuild switch --flake /etc/xi/sources#web1");
+    let wrapped = wrap_in_systemd_run(
+      "nixos-rebuild switch --flake /etc/xi/sources#web1",
+      "xi-push-web1-1700000000-abc123",
+    );
     assert_eq!(
       wrapped,
-      "systemd-run --wait --pipe --collect -- nixos-rebuild switch --flake \
-       /etc/xi/sources#web1"
+      "systemd-run --wait --pipe --collect \
+       --unit=xi-push-web1-1700000000-abc123 -- nixos-rebuild switch \
+       --flake /etc/xi/sources#web1"
     );
   }
 
   #[test]
   fn the_wait_flag_is_present_so_the_exit_code_propagates() {
-    assert!(wrap_in_systemd_run("true").contains("--wait"));
+    assert!(wrap_in_systemd_run("true", "xi-push-test").contains("--wait"));
   }
 
   #[test]
   fn the_pipe_flag_is_present_so_output_reaches_the_operator() {
-    assert!(wrap_in_systemd_run("true").contains("--pipe"));
+    assert!(wrap_in_systemd_run("true", "xi-push-test").contains("--pipe"));
   }
 
   #[test]
   fn the_collect_flag_is_present_so_no_unit_file_survives() {
-    assert!(wrap_in_systemd_run("true").contains("--collect"));
+    assert!(wrap_in_systemd_run("true", "xi-push-test").contains("--collect"));
+  }
+
+  #[test]
+  fn the_unit_flag_names_the_transient_unit_explicitly() {
+    assert!(
+      wrap_in_systemd_run("true", "xi-push-test").contains("--unit=xi-push-test")
+    );
   }
 
   #[test]
   fn the_command_is_appended_verbatim_after_the_double_dash_separator() {
-    let wrapped = wrap_in_systemd_run("echo hello");
+    let wrapped = wrap_in_systemd_run("echo hello", "xi-push-test");
     let (flags, command) =
       wrapped.split_once(" -- ").expect("has a -- separator");
-    assert_eq!(flags, "systemd-run --wait --pipe --collect");
+    assert_eq!(flags, "systemd-run --wait --pipe --collect --unit=xi-push-test");
     assert_eq!(command, "echo hello");
   }
 
   #[test]
   fn wrapping_the_real_switch_script_produces_the_full_remote_command() {
     let target = push_target("web1", "nixos-rebuild");
-    let wrapped = wrap_in_systemd_run(&switch_script(&target, Scope::System));
+    let wrapped = wrap_in_systemd_run(
+      &switch_script(&target, Scope::System),
+      "xi-push-web1-1700000000-abc123",
+    );
     assert_eq!(
       wrapped,
-      "systemd-run --wait --pipe --collect -- nixos-rebuild switch --flake \
-       /etc/xi/sources#web1"
+      "systemd-run --wait --pipe --collect \
+       --unit=xi-push-web1-1700000000-abc123 -- nixos-rebuild switch \
+       --flake /etc/xi/sources#web1"
     );
   }
 
@@ -484,11 +571,24 @@ mod tests {
 
     let calls = transport.run_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(
-      calls[0].script,
-      wrap_in_systemd_run(&switch_script(&target, Scope::System))
-    );
+    let (flags, command) = calls[0]
+      .script
+      .split_once(" -- ")
+      .expect("has a -- separator");
+    assert!(flags.starts_with("systemd-run --wait --pipe --collect --unit=xi-push-web1-"));
+    assert_eq!(command, switch_script(&target, Scope::System));
     assert_eq!(calls[0].elevate, Elevate::NonInteractive);
+  }
+
+  #[test]
+  fn each_switch_invocation_names_a_distinct_unit() {
+    let transport = RecordingTransport::with_run_outcomes(vec![true, true]);
+    let target = push_target("web1", "nixos-rebuild");
+    switch(&transport, &target, Scope::System, false).expect("switches");
+    switch(&transport, &target, Scope::System, false).expect("switches");
+
+    let calls = transport.run_calls();
+    assert_ne!(calls[0].script, calls[1].script);
   }
 
   #[test]
