@@ -10,6 +10,7 @@ pub mod installable;
 pub mod nix_value;
 pub mod override_input;
 pub mod progress;
+pub mod retry;
 pub mod sources;
 pub mod style;
 pub mod suggest;

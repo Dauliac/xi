@@ -8,22 +8,22 @@ license.workspace      = true
 publish                = true
 
 [dependencies]
-clap.workspace               = true
-color-eyre.workspace         = true
-nix-command.workspace        = true
-regex.workspace              = true
-serde.workspace              = true
-serde_json.workspace         = true
-toml_edit.workspace          = true
-tracing.workspace            = true
-which.workspace              = true
-xi-core.workspace            = true
-xi-sources-daemon.workspace  = true
-yansi.workspace              = true
+clap.workspace        = true
+color-eyre.workspace  = true
+nix-command.workspace = true
+regex.workspace       = true
+serde.workspace       = true
+serde_json.workspace  = true
+toml_edit.workspace   = true
+tracing.workspace     = true
+which.workspace       = true
+xi-core.workspace     = true
+yansi.workspace       = true
 
 [dev-dependencies]
-serial_test.workspace = true
-tempfile.workspace    = true
+serial_test.workspace        = true
+tempfile.workspace           = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
