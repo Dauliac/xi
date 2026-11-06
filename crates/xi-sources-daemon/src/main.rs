@@ -23,7 +23,9 @@
 //!    wait out a real interval).
 
 use std::{
+  io,
   path::PathBuf,
+  sync::Arc,
   thread,
   time::{Duration, Instant},
 };
@@ -43,7 +45,7 @@ use xi_core::sources::{
 };
 use xi_sources_daemon::{
   activate::{self, ActivateOutcome, SwitchVerb},
-  control::{self, ControlServer},
+  control::{self, AdvanceContext, ControlServer},
   exec::SystemExec,
   health::TickOutcome,
   machine_id,
@@ -74,6 +76,24 @@ impl From<ScopeArg> for Scope {
   }
 }
 
+/// A subcommand of `xi-sources-daemon`, as opposed to the default (no
+/// subcommand) daemon loop `main` runs when `command` is `None`.
+#[derive(Debug, Clone, clap::Subcommand)]
+enum Command {
+  /// Relay one request frame from stdin to this scope's local control
+  /// socket, and one reply frame from the socket back to stdout, then
+  /// exit.
+  ///
+  /// This is how an operator's `xi push`, running over SSH
+  /// ([[xi-push-target-pull]]), reaches the otherwise-local-only `AF_UNIX`
+  /// control socket [`ControlServer`] listens on: `ssh ... --
+  /// xi-sources-daemon --scope <scope> ctl`, exactly like every other
+  /// remote command `xi push` already runs through `Transport::run`. See
+  /// [`control::relay_stdio`] for why this is a thin stdio wrapper, not a
+  /// second protocol.
+  Ctl,
+}
+
 #[derive(Parser)]
 #[command(
   name = "xi-sources-daemon",
@@ -81,9 +101,13 @@ impl From<ScopeArg> for Scope {
            the sources dir, runs on_advance."
 )]
 struct Cli {
-  /// Which scope's config repo to watch.
+  /// Which scope's config repo (and, for `ctl`, control socket) to use.
   #[arg(long, value_enum)]
   scope: ScopeArg,
+
+  /// The subcommand to run, or `None` for the default daemon loop.
+  #[command(subcommand)]
+  command: Option<Command>,
 
   /// Run exactly one tick per configured remote, then exit, instead of
   /// looping forever. For operators driving the daemon by hand and for
@@ -115,6 +139,10 @@ fn main() -> Result<()> {
   setup_logging(cli.verbosity)?;
 
   let scope: Scope = cli.scope.into();
+
+  if matches!(cli.command, Some(Command::Ctl)) {
+    return run_ctl(scope);
+  }
 
   // Before anything else, including the first `ScopePaths::resolve`
   // below: a crashed predecessor's leftovers (a dangling shadow fetch,
@@ -163,10 +191,31 @@ fn main() -> Result<()> {
     "xi-sources-daemon starting"
   );
 
-  let gate = Singleton::new();
+  let gate = Arc::new(Singleton::new());
   let exec = SystemExec;
   let control_socket = control::socket_path(&paths.state_dir);
-  let control = ControlServer::spawn(control_socket, DEFAULT_PAUSE_TIMEOUT)?;
+  // `remotes[0]`, matching `sources_id` above: an `AdvanceNow` names no
+  // remote of its own, so the on-demand tick it triggers follows the same
+  // first-configured-remote precedent the identity above already does.
+  let advance_context = AdvanceContext {
+    sources_id:      sources_id.clone(),
+    sources_dir:     sources_dir.clone(),
+    state_dir:       paths.state_dir.clone(),
+    remote_url:      remotes[0].url.clone(),
+    branch:          remotes[0].branch.clone(),
+    require_signed:  resolved.require_signed,
+    allowed_signers: resolved.allowed_signers.clone(),
+    gpg_public_keys: resolved.gpg_public_keys.clone(),
+    on_advance:      resolved.on_advance.clone(),
+    sync_mode:       resolved.sync_mode,
+  };
+  let control = ControlServer::spawn(
+    control_socket,
+    DEFAULT_PAUSE_TIMEOUT,
+    Arc::clone(&gate),
+    Box::new(exec),
+    advance_context,
+  )?;
 
   // Resolved once: which concrete `xi <verb> switch` this host activates
   // through, the named profile that verb's registration lands on, and
@@ -349,6 +398,20 @@ fn main() -> Result<()> {
 
   control.shutdown();
 
+  Ok(())
+}
+
+/// `ctl`: relay one request frame from stdin to `scope`'s control socket,
+/// and one reply frame back to stdout, then exit.
+///
+/// Does not resolve remotes, check the sources dir, or start a
+/// [`ControlServer`] of its own - it only needs `scope` to find the
+/// already-running daemon's socket path, the same way the daemon's own
+/// `main` does above. See [`control::relay_stdio`].
+fn run_ctl(scope: Scope) -> Result<()> {
+  let paths = ScopePaths::resolve(scope);
+  let socket_path = control::socket_path(&paths.state_dir);
+  control::relay_stdio(&socket_path, &mut io::stdin(), &mut io::stdout())?;
   Ok(())
 }
 
