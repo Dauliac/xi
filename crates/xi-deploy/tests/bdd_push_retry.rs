@@ -269,6 +269,49 @@ fn a_local_spawn_failure_is_retried_the_same_number_of_times_as_a_255_exit() {
 
 #[test]
 #[serial]
+fn a_non_retryable_activation_command_is_not_retried_on_a_simulated_255() {
+  // xi-3i2g: an activation/switch command's ssh exit 255 can mean the
+  // connection dropped *after* activation already started, not only that
+  // it never connected - retrying would re-invoke the whole command (and,
+  // for `mode_sources::switch`'s systemd-run-wrapped equivalent, spin up a
+  // second concurrent activation). `RemoteCommand::non_retryable` must make
+  // `SshTransport::run` skip `xi_core::retry::retry` entirely, running
+  // exactly once regardless of `retry_attempts`.
+  let dir = tempfile::tempdir().expect("tempdir");
+  // Would succeed on the second attempt if this were retried at all.
+  write_scripted_ssh(dir.path(), 1);
+  let (logs, _guard) = capture_logs();
+
+  let outcome = with_scripted_ssh_on_path(dir.path(), || {
+    let transport = SshTransport;
+    transport.run(
+      &target(),
+      &RemoteCommand::elevated("true", false, 3).non_retryable(),
+    )
+  })
+  .expect("run does not error on a remote exit, only on a local spawn failure");
+
+  assert!(
+    !outcome.success,
+    "the first (and only) attempt's failure is final"
+  );
+  assert_eq!(
+    attempt_count(dir.path()),
+    1,
+    "a non-retryable activation command makes exactly one attempt regardless \
+     of retry_attempts"
+  );
+  assert_eq!(
+    logs.retry_log_line_count(),
+    0,
+    "a non-retryable command never calls into xi_core::retry::retry at all: \
+     got {:?}",
+    logs.contents()
+  );
+}
+
+#[test]
+#[serial]
 fn a_probe_never_retries_even_against_a_transiently_failing_host() {
   let dir = tempfile::tempdir().expect("tempdir");
   // Would succeed on a later attempt if the probe path retried at all.

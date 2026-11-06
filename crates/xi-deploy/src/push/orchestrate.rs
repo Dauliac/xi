@@ -452,7 +452,8 @@ fn push_one(
       let script = activation_script(target, &store_path);
       let outcome = transport.run(
         &target.addr,
-        &RemoteCommand::elevated(script, args.interactive_sudo, retry_attempts),
+        &RemoteCommand::elevated(script, args.interactive_sudo, retry_attempts)
+          .non_retryable(),
       )?;
       if !outcome.success {
         if args.fail_fast {

@@ -109,9 +109,11 @@ impl RetryPolicy {
 
 /// A uniformly random duration in `[0, upper]`.
 ///
-/// `RandomState`'s per-instance seed is sourced from the OS (it exists to
-/// make `HashMap`'s hasher unpredictable), which is enough entropy for
-/// spreading out retries without pulling in a `rand` dependency for it.
+/// `RandomState::new()` does not hit the OS on every call: each thread
+/// caches a seed pair drawn from the OS once, and every subsequent
+/// `RandomState::new()` on that thread just derives from the cached
+/// value - cheap, and different enough from one call to the next to
+/// spread out retries without pulling in a `rand` dependency for it.
 /// Scaling is done in integer arithmetic (`u128` headroom, no floats) so
 /// the result stays an exact fraction of `upper` rather than an
 /// approximation.

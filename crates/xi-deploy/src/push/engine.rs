@@ -61,6 +61,20 @@ pub struct RemoteCommand {
   /// regardless of this value (see [`SshTransport::run`]), so
   /// [`Self::probe`] sets it to a meaningless `1`.
   pub retry_attempts: u32,
+  /// Whether [`SshTransport::run`] may retry this command's `ssh` spawn
+  /// at all.
+  ///
+  /// `true` for everything constructed here, except activation/switch
+  /// commands (`nixos-rebuild`/`darwin-rebuild`/`home-manager switch`,
+  /// or `mode_sources::switch`'s `systemd-run`-wrapped equivalent),
+  /// which call sites set to `false` via [`Self::non_retryable`]. `ssh`
+  /// exit `255` means "could not establish or maintain the connection",
+  /// but for those commands it is also what a connection drop *after*
+  /// the remote activation already started looks like - retrying then
+  /// re-invokes the whole command, and for the `systemd-run`-wrapped one
+  /// (no stable `--unit=` name) that spins up a second, independent,
+  /// concurrent activation racing the first.
+  pub retryable: bool,
 }
 
 impl RemoteCommand {
@@ -73,6 +87,7 @@ impl RemoteCommand {
       elevate:   Elevate::No,
       streaming: false,
       retry_attempts: 1,
+      retryable: true,
     }
   }
 
@@ -93,7 +108,18 @@ impl RemoteCommand {
       },
       streaming: true,
       retry_attempts,
+      retryable: true,
     }
+  }
+
+  /// Mark this command as never retried by [`SshTransport::run`].
+  ///
+  /// For an activation/switch command: see [`Self::retryable`] for why
+  /// retrying one is unsafe.
+  #[must_use]
+  pub fn non_retryable(mut self) -> Self {
+    self.retryable = false;
+    self
   }
 }
 
@@ -345,10 +371,26 @@ impl Transport for SshTransport {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-      // Only this branch retries: it is the elevated/activation path, never
-      // a probe. A probe (the `!cmd.streaming` branch below) wants an
+      // Only this branch ever retries: it is the elevated/activation path,
+      // never a probe. A probe (the `!cmd.streaming` branch below) wants an
       // honest, immediate answer, not one that papers over the condition
       // it is testing for.
+      //
+      // Within this branch, `cmd.retryable` opts a command back out: an
+      // activation/switch command's `ssh` exit 255 can mean the connection
+      // dropped after activation already started, not only that it never
+      // connected, so retrying it risks re-running a non-idempotent
+      // mutation (see `RemoteCommand::retryable`).
+      if !cmd.retryable {
+        let status = ssh
+          .status()
+          .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))?;
+        return Ok(Outcome {
+          success: status.success(),
+          stdout:  String::new(),
+          stderr:  String::new(),
+        });
+      }
       let policy = RetryPolicy {
         max_attempts: cmd.retry_attempts,
         ..RetryPolicy::default()

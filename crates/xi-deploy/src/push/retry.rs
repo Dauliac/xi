@@ -21,13 +21,16 @@ use xi_core::retry::Transience;
 /// or maintain the connection" code and is classified transient; any other
 /// non-zero is the remote command's own failure and is never retried
 /// automatically, because the remote side may have already made a
-/// partial, non-idempotent change.
+/// partial, non-idempotent change. A signal-killed `ssh` (`status.code()`
+/// is `None`) is classified transient too: it is a local-side failure
+/// (something killed the client process), not a remote one, so there is
+/// no partial remote state to worry about preserving.
 #[must_use]
 pub fn classify_ssh_exit(result: &Result<ExitStatus>) -> Transience {
   result
     .as_ref()
     .map_or(Transience::Transient, |status| match status.code() {
-      Some(255) => Transience::Transient,
+      Some(255) | None => Transience::Transient,
       _ => Transience::Permanent,
     })
 }
@@ -60,6 +63,20 @@ mod tests {
   #[test]
   fn exit_255_is_transient() {
     let result: Result<ExitStatus> = Ok(exit_status(255));
+    assert_eq!(classify_ssh_exit(&result), Transience::Transient);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn a_signal_killed_ssh_is_transient() {
+    use std::os::unix::process::ExitStatusExt;
+
+    // Raw wait-status encoding for "terminated by signal 9 (SIGKILL)":
+    // the low 7 bits carry the signal number, which is what makes
+    // `ExitStatus::code()` return `None`.
+    let status = ExitStatus::from_raw(9);
+    assert_eq!(status.code(), None, "sanity: this encodes a signal death");
+    let result: Result<ExitStatus> = Ok(status);
     assert_eq!(classify_ssh_exit(&result), Transience::Transient);
   }
 

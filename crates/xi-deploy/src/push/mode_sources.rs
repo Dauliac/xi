@@ -146,7 +146,7 @@ pub fn switch(
   let script = wrap_in_systemd_run(&switch_script(target, scope));
   let outcome = transport.run(
     &target.addr,
-    &RemoteCommand::elevated(script, interactive_sudo, retry_attempts),
+    &RemoteCommand::elevated(script, interactive_sudo, retry_attempts).non_retryable(),
   )?;
   if !outcome.success {
     bail!(
