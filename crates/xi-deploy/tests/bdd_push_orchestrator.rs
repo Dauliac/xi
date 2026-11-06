@@ -180,6 +180,7 @@ fn push_args() -> PushArgs {
     fail_fast:        false,
     force_dirty:      false,
     scope:            PushScope::System,
+    reattach:         None,
   }
 }
 
