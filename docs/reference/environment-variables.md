@@ -116,6 +116,12 @@ Consumed by `xi develop` and its background daemon.
 | ------------------- | --------------------------------------------- |
 | `XI_REMOTE_CLEANUP` | Attempt to kill remote processes on interrupt |
 
+## Push
+
+| Variable                | Description                                                                                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `XI_BUILD_FLOOR_REMOTE` | One-release opt-in: unconfigured remote targets default to remote-build instead of closure. See the [remote build guide](../guides/remote-build.md#build-location-floor-opt-in). |
+
 ## Sources (`xi sources`)
 
 Every `[sources]` key in `.xi.toml` has a matching variable: uppercase the key
