@@ -5,7 +5,7 @@
 //! top-level verb, so unlike `xi <scope> sources` it has no parent verb
 //! to inherit the scope from and has to be able to say it.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use clap::Args;
 use color_eyre::{Result, eyre::eyre};
@@ -34,6 +34,24 @@ impl PushBackend {
       Self::DeployRs => "deploy-rs",
       Self::Colmena => "colmena",
       Self::Builtin => "builtin",
+    }
+  }
+
+  /// Every accepted `.xi.toml [push] backend` spelling, in the order
+  /// listed in errors.
+  pub const ALL: &'static [&'static str] =
+    &["auto", "deploy-rs", "colmena", "builtin"];
+
+  /// Parse from the `.xi.toml` spelling (the same strings [`Self::as_str`]
+  /// produces).
+  #[must_use]
+  pub fn from_config_str(raw: &str) -> Option<Self> {
+    match raw {
+      "auto" => Some(Self::Auto),
+      "deploy-rs" => Some(Self::DeployRs),
+      "colmena" => Some(Self::Colmena),
+      "builtin" => Some(Self::Builtin),
+      _ => None,
     }
   }
 }
@@ -144,16 +162,14 @@ impl FromStr for Phase {
       "disko" => Ok(Self::Disko),
       "install" => Ok(Self::Install),
       "activate" => Ok(Self::Activate),
-      other => {
-        Err(format!(
-          "unknown phase '{other}'; expected one of {}",
-          Self::ALL
-            .iter()
-            .map(|p| p.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-        ))
-      },
+      other => Err(format!(
+        "unknown phase '{other}'; expected one of {}",
+        Self::ALL
+          .iter()
+          .map(|p| p.as_str())
+          .collect::<Vec<_>>()
+          .join(", ")
+      )),
     }
   }
 }
@@ -249,6 +265,24 @@ pub struct PushArgs {
   #[arg(long, value_enum, default_value_t = BuildStrategy::Interleaved)]
   pub build_strategy: BuildStrategy,
 
+  /// Build every selected target upfront, write its manifest, and stop
+  /// before shipping anything
+  ///
+  /// Only meaningful with `--build-strategy batched`: there is nothing to
+  /// build upfront under the default interleaved strategy. The manifest
+  /// is written into the push's state dir, where a later `--from-manifest`
+  /// invocation reads it back.
+  #[arg(long)]
+  pub build_only: bool,
+
+  /// Ship a previously built manifest instead of building anything
+  ///
+  /// Skips `nix build` entirely: every target the manifest names is
+  /// copied and activated from its recorded store path. Written by an
+  /// earlier `--build-strategy batched --build-only` invocation.
+  #[arg(long, value_name = "PATH")]
+  pub from_manifest: Option<PathBuf>,
+
   /// Which half of the machine to push
   ///
   /// `push` is top-level, so it cannot take the scope from a parent verb
@@ -319,6 +353,27 @@ impl PushArgs {
       ));
     }
 
+    if self.build_only && self.from_manifest.is_some() {
+      return Err(eyre!(
+        "--build-only and --from-manifest cannot both be given: one \
+         builds without shipping, the other ships without building"
+      ));
+    }
+
+    if self.build_only && self.build_strategy != BuildStrategy::Batched {
+      return Err(eyre!(
+        "--build-only only makes sense with --build-strategy batched"
+      ));
+    }
+
+    if self.from_manifest.is_some()
+      && self.build_strategy != BuildStrategy::Batched
+    {
+      return Err(eyre!(
+        "--from-manifest only makes sense with --build-strategy batched"
+      ));
+    }
+
     Ok(())
   }
 }
@@ -372,6 +427,8 @@ mod tests {
       fail_fast: false,
       force_dirty: false,
       build_strategy: BuildStrategy::Interleaved,
+      build_only: false,
+      from_manifest: None,
       scope: PushScope::System,
     }
   }
@@ -426,6 +483,80 @@ mod tests {
       "the static check only fires on an explicit --mode sources; the \
        ladder's own answer is resolved later, with the sources context this \
        layer does not have"
+    );
+  }
+
+  // -- --build-only / --from-manifest ------------------------------------
+
+  #[test]
+  fn build_only_requires_the_batched_strategy() {
+    let mut push_args = args(None);
+    push_args.build_only = true;
+    let err = push_args
+      .validate()
+      .expect_err("interleaved + --build-only");
+    assert!(format!("{err}").contains("--build-only"), "got: {err}");
+  }
+
+  #[test]
+  fn from_manifest_requires_the_batched_strategy() {
+    let mut push_args = args(None);
+    push_args.from_manifest = Some(PathBuf::from("/tmp/push-manifest.json"));
+    let err = push_args
+      .validate()
+      .expect_err("interleaved + --from-manifest");
+    assert!(format!("{err}").contains("--from-manifest"), "got: {err}");
+  }
+
+  #[test]
+  fn build_only_and_from_manifest_conflict() {
+    let mut push_args = args(None);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.build_only = true;
+    push_args.from_manifest = Some(PathBuf::from("/tmp/push-manifest.json"));
+    let err = push_args.validate().expect_err("conflicting flags");
+    let message = format!("{err}");
+    assert!(message.contains("--build-only"), "got: {message}");
+    assert!(message.contains("--from-manifest"), "got: {message}");
+  }
+
+  #[test]
+  fn build_only_alone_under_batched_is_valid() {
+    let mut push_args = args(None);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.build_only = true;
+    assert!(push_args.validate().is_ok());
+  }
+
+  #[test]
+  fn from_manifest_alone_under_batched_is_valid() {
+    let mut push_args = args(None);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.from_manifest = Some(PathBuf::from("/tmp/push-manifest.json"));
+    assert!(push_args.validate().is_ok());
+  }
+
+  #[test]
+  fn build_only_and_from_manifest_parse_from_the_cli() {
+    let harness = PushArgsHarness::try_parse_from([
+      "push",
+      "--build-strategy",
+      "batched",
+      "--build-only",
+    ])
+    .expect("parses");
+    assert!(harness.push.build_only);
+    assert!(harness.push.from_manifest.is_none());
+
+    let harness = PushArgsHarness::try_parse_from([
+      "push",
+      "--from-manifest",
+      "/tmp/push-manifest.json",
+    ])
+    .expect("parses");
+    assert_eq!(
+      harness.push.from_manifest,
+      Some(PathBuf::from("/tmp/push-manifest.json"))
     );
   }
 }
