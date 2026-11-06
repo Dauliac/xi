@@ -44,6 +44,10 @@ impl SystemArgs {
 #[derive(Debug, Subcommand)]
 pub enum SystemSubcommand {
   /// Build and activate a system-manager configuration
+  ///
+  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
+  /// functional for the deprecation window, hidden from `--help`.
+  #[command(hide = true)]
   Switch(SystemRebuildArgs),
   /// Build a system-manager configuration
   Build(SystemRebuildArgs),

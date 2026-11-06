@@ -7,6 +7,7 @@ pub mod bootstrap;
 pub mod cache;
 pub mod clean;
 pub mod config;
+pub mod deploy;
 pub mod interface;
 pub mod logging;
 pub mod proxy;

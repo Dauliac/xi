@@ -61,14 +61,15 @@
           lib.filterAttrs (_: v: v != null) (lib.mapAttrs (_: v: if lib.isPath v then toString v else v) keys)
           // lib.optionalAttrs (credentials != { }) { inherit credentials; };
 
-        # The build-location ladder's Nix-module rung: a sibling
-        # `[push]` table in the same file, read by
+        # The build-location and backend ladders' Nix-module rung: a
+        # sibling `[push]` table in the same file, read by
         # `xi_deploy::push::config::PushConfig::from_toml_file` pointed
         # at this same per-scope path. `{ }` renders no `[push]` table
         # at all (`tomlFormat.generate` drops an empty attrset), which
-        # is what keeps the rung silent when `remoteBuild` is null.
+        # is what keeps a rung silent when its option is null.
         pushKeys = lib.filterAttrs (_: v: v != null) {
           "remote-build" = sources.push.remoteBuild;
+          backend = sources.push.backend;
         };
       in
       tomlFormat.generate "xi-sources.toml" (

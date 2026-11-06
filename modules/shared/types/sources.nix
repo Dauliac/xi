@@ -249,6 +249,12 @@ in
       # default, then `false` (closure: build on the pushing operator's
       # machine). Named to match deploy-rs's own `remote-build`
       # terminology rather than inventing new vocabulary.
+      #
+      # `backend` is the fourth (lowest) rung of a separate, same-shaped
+      # ladder: a `--backend` CLI flag, then a per-host `[[push.hosts]]`
+      # override, then the table-level `.xi.toml [push] backend`, then
+      # this Nix-module default, then `detect_backend`'s auto-detect
+      # floor.
       push = {
         remoteBuild = unpinned {
           type = lib.types.bool;
@@ -260,6 +266,23 @@ in
             locally. Left null so the CLI flag and `.xi.toml [push]
             remote-build` can still answer without this module pinning
             a value.
+          '';
+        };
+
+        backend = unpinned {
+          type = lib.types.enum [
+            "deploy-rs"
+            "colmena"
+            "builtin"
+          ];
+          description = ''
+            Default backend for `xi push` against this scope:
+            `deploy-rs`, `colmena`, or `builtin`. Left null so the CLI
+            `--backend` flag, a per-host `[[push.hosts]]` override, and
+            `.xi.toml [push] backend` can still answer without this
+            module pinning a value; when none of those answer either,
+            `detect_backend` picks one from exactly which outputs the
+            flake declares.
           '';
         };
       };
