@@ -52,6 +52,58 @@ pub enum PushMode {
   TargetPull,
 }
 
+/// How a push gets a target's sources onto it.
+///
+/// Orthogonal to [`PushMode`]'s `Closure`/`Sources` split (where the
+/// *build* happens): this picks whether the operator moves bytes to the
+/// target at all, or the target pulls them itself via its own
+/// `xi-sources-daemon` control socket
+/// ([`PushMode::TargetPull`], [[xi-push-target-pull]]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum SourcesTransport {
+  /// The operator copies a closure or syncs the sources dir to the
+  /// target, per the resolved [`PushMode`].
+  #[default]
+  OperatorCopy,
+  /// The target pulls its own sources via its `xi-sources-daemon`
+  /// control socket, instead of receiving anything from the operator.
+  TargetPull,
+}
+
+impl SourcesTransport {
+  /// The CLI/TOML spelling of this transport.
+  #[must_use]
+  pub const fn as_str(self) -> &'static str {
+    match self {
+      Self::OperatorCopy => "operator-copy",
+      Self::TargetPull => "target-pull",
+    }
+  }
+}
+
+impl fmt::Display for SourcesTransport {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl FromStr for SourcesTransport {
+  type Err = String;
+
+  fn from_str(raw: &str) -> Result<Self, String> {
+    match raw.trim() {
+      "operator-copy" => Ok(Self::OperatorCopy),
+      "target-pull" => Ok(Self::TargetPull),
+      other => {
+        Err(format!(
+          "unknown sources-transport '{other}'; expected one of \
+           operator-copy, target-pull"
+        ))
+      },
+    }
+  }
+}
+
 /// Who pulls the closure's store paths.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum CopyVia {
@@ -214,6 +266,17 @@ pub struct PushArgs {
   #[arg(long)]
   pub remote_build: Option<bool>,
 
+  /// Order the target to pull its own sources, or have the operator copy them
+  ///
+  /// Left unset, the sources-transport ladder decides instead: a per-host
+  /// `.xi.toml [[push.hosts]]` override, then the table-level `.xi.toml
+  /// [push] sources-transport` default, then the compiled floor
+  /// `operator-copy`. `target-pull` is only correct when the target's own
+  /// `xi-sources-daemon` can reach the configured remote directly; an
+  /// explicit `--mode` still outranks whatever this resolves to.
+  #[arg(long, value_enum)]
+  pub sources_transport: Option<SourcesTransport>,
+
   /// Seconds to confirm the new generation in before rolling back (0 = off)
   #[arg(long, default_value_t = 0, value_name = "SECONDS")]
   pub magic_rollback: u64,
@@ -263,19 +326,28 @@ impl PushArgs {
   }
 
   /// The mode this push actually runs under: `--mode` if given,
-  /// otherwise the build-location ladder's answer.
+  /// otherwise the sources-transport ladder's answer if it resolved to
+  /// `target-pull`, otherwise the build-location ladder's answer.
   ///
-  /// `remote_build` is the ladder's already-resolved verdict (see
-  /// `push::config::resolve_remote_build`), not re-derived here: this
-  /// method only owns the one remaining precedence rule the ladder
-  /// itself does not know about - an explicit `--mode` outranks every
-  /// rung of it.
+  /// `remote_build` and `sources_transport` are each ladder's
+  /// already-resolved verdict (see `push::config::resolve_remote_build`
+  /// and `push::config::resolve_sources_transport`), not re-derived
+  /// here: this method only owns the one remaining precedence rule
+  /// neither ladder knows about on its own - an explicit `--mode`
+  /// outranks every rung of both.
   #[must_use]
-  pub const fn effective_mode(&self, remote_build: bool) -> PushMode {
-    match self.mode {
-      Some(mode) => mode,
-      None if remote_build => PushMode::Sources,
-      None => PushMode::Closure,
+  pub const fn effective_mode(
+    &self,
+    remote_build: bool,
+    sources_transport: SourcesTransport,
+  ) -> PushMode {
+    if let Some(mode) = self.mode {
+      return mode;
+    }
+    match sources_transport {
+      SourcesTransport::TargetPull => PushMode::TargetPull,
+      SourcesTransport::OperatorCopy if remote_build => PushMode::Sources,
+      SourcesTransport::OperatorCopy => PushMode::Closure,
     }
   }
 
@@ -352,6 +424,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      sources_transport: None,
       magic_rollback: 0,
       parallel: 1,
       interactive_sudo: false,
@@ -365,21 +438,52 @@ mod tests {
   #[test]
   fn an_explicit_mode_outranks_the_build_location_ladder() {
     assert_eq!(
-      args(Some(PushMode::Closure)).effective_mode(true),
+      args(Some(PushMode::Closure))
+        .effective_mode(true, SourcesTransport::OperatorCopy),
       PushMode::Closure,
       "--mode closure must win even though the ladder says remote-build"
     );
     assert_eq!(
-      args(Some(PushMode::Sources)).effective_mode(false),
+      args(Some(PushMode::Sources))
+        .effective_mode(false, SourcesTransport::OperatorCopy),
       PushMode::Sources,
       "--mode sources must win even though the ladder says local-build"
     );
   }
 
   #[test]
+  fn an_explicit_mode_outranks_the_sources_transport_ladder() {
+    assert_eq!(
+      args(Some(PushMode::Closure))
+        .effective_mode(false, SourcesTransport::TargetPull),
+      PushMode::Closure,
+      "--mode closure must win even though the ladder says target-pull"
+    );
+  }
+
+  #[test]
   fn with_no_mode_flag_the_ladder_answer_picks_the_mode() {
-    assert_eq!(args(None).effective_mode(true), PushMode::Sources);
-    assert_eq!(args(None).effective_mode(false), PushMode::Closure);
+    assert_eq!(
+      args(None).effective_mode(true, SourcesTransport::OperatorCopy),
+      PushMode::Sources
+    );
+    assert_eq!(
+      args(None).effective_mode(false, SourcesTransport::OperatorCopy),
+      PushMode::Closure
+    );
+  }
+
+  #[test]
+  fn with_no_mode_flag_a_target_pull_transport_picks_target_pull_mode() {
+    assert_eq!(
+      args(None).effective_mode(true, SourcesTransport::TargetPull),
+      PushMode::TargetPull,
+      "target-pull must win over the build-location ladder's remote-build=true"
+    );
+    assert_eq!(
+      args(None).effective_mode(false, SourcesTransport::TargetPull),
+      PushMode::TargetPull
+    );
   }
 
   #[test]
