@@ -103,6 +103,10 @@ impl OsArgs {
 #[derive(Debug, Subcommand)]
 pub enum OsSubcommand {
   /// Build and activate the new configuration, and make it the boot default
+  ///
+  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
+  /// functional for the deprecation window, hidden from `--help`.
+  #[command(hide = true)]
   Switch(OsRebuildActivateArgs),
 
   /// Build the new configuration and make it the boot default
