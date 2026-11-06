@@ -43,7 +43,9 @@ use super::{
   discover::{self, PushTarget, ResolvedBackend},
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
-  mode_sources, preflight, rollback,
+  mode_sources,
+  preflight,
+  rollback,
 };
 use crate::{fleet_digest::FleetDigestInput, target::ProfileKind};
 
@@ -170,7 +172,7 @@ const ROLLBACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct TargetResult {
   /// The target's flake-attribute / inventory name.
-  pub name: String,
+  pub name:    String,
   /// `Ok(())` once the target is fully pushed (and, under
   /// `--magic-rollback`, confirmed); `Err` for any failure, including a
   /// magic-rollback that reverted the activation.
@@ -183,9 +185,9 @@ pub struct TargetResult {
 #[derive(Debug)]
 pub struct PushReport {
   /// Per-target results, in selection order.
-  pub results: Vec<TargetResult>,
+  pub results:        Vec<TargetResult>,
   /// The backend this run dispatched to.
-  pub backend: ResolvedBackend,
+  pub backend:        ResolvedBackend,
   /// The resolved build-location decision (`--mode`'s effective value),
   /// as a `fleet-digest` hash input.
   pub build_location: String,
@@ -287,16 +289,16 @@ pub fn run(args: &PushArgs) -> Result<()> {
 /// Cache `fleet-digest` next to `xi_toml_path`, after a successful
 /// rollout.
 ///
-/// Best-effort by design, matching [`xi_core::sources::switch::record_activation`]'s
-/// stance: the fleet has already been pushed by the time this runs, so
-/// a cache-write failure (an unwritable directory, a read-only repo
-/// checkout) must not turn a successful rollout into a failed command -
-/// it only costs the next run the re-evaluation skip this cache exists
-/// to grant.
+/// Best-effort by design, matching
+/// [`xi_core::sources::switch::record_activation`]'s stance: the fleet has
+/// already been pushed by the time this runs, so a cache-write failure (an
+/// unwritable directory, a read-only repo checkout) must not turn a successful
+/// rollout into a failed command - it only costs the next run the re-evaluation
+/// skip this cache exists to grant.
 fn cache_fleet_digest(xi_toml_path: &Path, report: &PushReport) {
   let input = FleetDigestInput {
-    targets: report.results.iter().map(|r| r.name.clone()).collect(),
-    backend: report.backend.as_str().to_owned(),
+    targets:        report.results.iter().map(|r| r.name.clone()).collect(),
+    backend:        report.backend.as_str().to_owned(),
     build_location: report.build_location.clone(),
   };
   if let Err(err) = crate::fleet_digest::store(xi_toml_path, &input) {
@@ -415,9 +417,11 @@ pub fn execute(
     } else {
       backend = resolved;
       delegate(resolved, flake_ref, args, &group)?;
-      results.extend(group.into_iter().map(|target| TargetResult {
-        name: target.addr.name,
-        outcome: Ok(()),
+      results.extend(group.into_iter().map(|target| {
+        TargetResult {
+          name:    target.addr.name,
+          outcome: Ok(()),
+        }
       }));
     }
   }
@@ -467,9 +471,11 @@ pub fn execute(
       )?;
       if args.build_only {
         write_manifest(&default_manifest_path(context), &built)?;
-        results.extend(built.keys().map(|name| TargetResult {
-          name: name.clone(),
-          outcome: Ok(()),
+        results.extend(built.keys().map(|name| {
+          TargetResult {
+            name:    name.clone(),
+            outcome: Ok(()),
+          }
         }));
         return Ok(PushReport {
           results,
@@ -644,21 +650,21 @@ fn delegate(
   targets: &[PushTarget],
 ) -> Result<()> {
   let deploy_args = crate::args::DeployArgs {
-    flake_ref: Some(flake_ref.to_owned()),
-    targets: targets.iter().map(|t| t.addr.name.clone()).collect(),
-    on: None,
-    backend: Some(backend.as_str().to_owned()),
-    dry: false,
-    no_nom: false,
-    skip_checks: false,
+    flake_ref:         Some(flake_ref.to_owned()),
+    targets:           targets.iter().map(|t| t.addr.name.clone()).collect(),
+    on:                None,
+    backend:           Some(backend.as_str().to_owned()),
+    dry:               false,
+    no_nom:            false,
+    skip_checks:       false,
     no_magic_rollback: args.magic_rollback == 0,
-    confirm_timeout: if args.magic_rollback > 0 {
+    confirm_timeout:   if args.magic_rollback > 0 {
       args.magic_rollback
     } else {
       30
     },
-    show_trace: false,
-    extra_args: Vec::new(),
+    show_trace:        false,
+    extra_args:        Vec::new(),
   };
   crate::detect_and_deploy(&deploy_args)
 }
@@ -949,16 +955,16 @@ mod tests {
   /// Answers flake evaluation from a fixture table keyed by attr, the
   /// same shape `bdd_push_builtin.rs` uses.
   struct FixtureNix {
-    outputs: Vec<(&'static str, serde_json::Value)>,
-    built: Mutex<Vec<String>>,
+    outputs:     Vec<(&'static str, serde_json::Value)>,
+    built:       Mutex<Vec<String>>,
     build_fails: bool,
   }
 
   impl FixtureNix {
     fn single_nixos_host(name: &'static str) -> Self {
       Self {
-        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
-        built: Mutex::new(Vec::new()),
+        outputs:     vec![(".#nixosConfigurations", serde_json::json!([name]))],
+        built:       Mutex::new(Vec::new()),
         build_fails: false,
       }
     }
@@ -996,10 +1002,10 @@ mod tests {
   /// fixture shape `bdd_push_builtin.rs` uses.
   #[derive(Default)]
   struct FixtureTransport {
-    run_calls: Mutex<Vec<RemoteCommand>>,
-    copy_calls: Mutex<Vec<(String, String)>>,
-    secret_calls: Mutex<Vec<String>>,
-    sync_calls: Mutex<Vec<String>>,
+    run_calls:        Mutex<Vec<RemoteCommand>>,
+    copy_calls:       Mutex<Vec<(String, String)>>,
+    secret_calls:     Mutex<Vec<String>>,
+    sync_calls:       Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -1326,8 +1332,8 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      backend: None,
-      hosts: Vec::new(),
+      backend:      None,
+      hosts:        Vec::new(),
     };
 
     let report = execute(
@@ -1361,8 +1367,8 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      backend: None,
-      hosts: Vec::new(),
+      backend:      None,
+      hosts:        Vec::new(),
     };
 
     let report = execute(
@@ -1419,18 +1425,15 @@ mod tests {
     let transport = FixtureTransport::default();
     let (root, context) = fixture_context();
     let mut secrets = BTreeMap::new();
-    secrets.insert(
-      "ssh-key".to_owned(),
-      SecretSpec {
-        name: "ssh-key".to_owned(),
-        source: std::path::PathBuf::from("./ssh-key"),
-        destination: std::path::PathBuf::from("/run/keys/ssh"),
-        owner: "root".to_owned(),
-        group: None,
-        mode: "0600".to_owned(),
-        upload_at: UploadAt::PreActivate,
-      },
-    );
+    secrets.insert("ssh-key".to_owned(), SecretSpec {
+      name:        "ssh-key".to_owned(),
+      source:      std::path::PathBuf::from("./ssh-key"),
+      destination: std::path::PathBuf::from("/run/keys/ssh"),
+      owner:       "root".to_owned(),
+      group:       None,
+      mode:        "0600".to_owned(),
+      upload_at:   UploadAt::PreActivate,
+    });
 
     let report = execute(
       &args(PushMode::Closure),
@@ -1455,11 +1458,11 @@ mod tests {
   #[test]
   fn a_failed_activation_is_reported_but_other_targets_still_run() {
     let nix = FixtureNix {
-      outputs: vec![(
+      outputs:     vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built: Mutex::new(Vec::new()),
+      built:       Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
@@ -1493,11 +1496,11 @@ mod tests {
   #[test]
   fn fail_fast_skips_targets_queued_after_the_first_failure() {
     let nix = FixtureNix {
-      outputs: vec![(
+      outputs:     vec![(
         ".#nixosConfigurations",
         serde_json::json!(["web1", "web2"]),
       )],
-      built: Mutex::new(Vec::new()),
+      built:       Mutex::new(Vec::new()),
       build_fails: false,
     };
     let transport = FixtureTransport {
@@ -1563,11 +1566,17 @@ mod tests {
     working_dir: std::path::PathBuf,
   ) -> SourcesContext {
     SourcesContext {
-      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir: working_dir.parent().expect("parent").join("sources"),
-      state_dir: working_dir.parent().expect("parent").join("state"),
-      working_dir: Some(working_dir),
-      refs: xi_core::sources::RefLineage::default(),
+      sources_id:          SourcesId::new(
+        Scope::System,
+        "https://example/repo",
+      ),
+      sources_dir:         working_dir
+        .parent()
+        .expect("parent")
+        .join("sources"),
+      state_dir:           working_dir.parent().expect("parent").join("state"),
+      working_dir:         Some(working_dir),
+      refs:                xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     }
   }
@@ -1691,11 +1700,14 @@ mod tests {
   fn no_recorded_working_dir_never_refuses() {
     let root = TempDir::new().expect("tempdir");
     let context = SourcesContext {
-      sources_id: SourcesId::new(Scope::System, "https://example/repo"),
-      sources_dir: root.path().join("sources"),
-      state_dir: root.path().join("state"),
-      working_dir: None,
-      refs: xi_core::sources::RefLineage::default(),
+      sources_id:          SourcesId::new(
+        Scope::System,
+        "https://example/repo",
+      ),
+      sources_dir:         root.path().join("sources"),
+      state_dir:           root.path().join("state"),
+      working_dir:         None,
+      refs:                xi_core::sources::RefLineage::default(),
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
@@ -1748,15 +1760,15 @@ mod tests {
   /// `&[PushTarget]` slice rather than a flake to evaluate.
   fn closure_target(name: &str) -> PushTarget {
     PushTarget {
-      addr: TargetAddr {
-        name: name.to_owned(),
+      addr:         TargetAddr {
+        name:     name.to_owned(),
         ssh_host: name.to_owned(),
         ssh_opts: Vec::new(),
       },
-      source: discover::TargetSource::NixosConfigurations,
-      tags: Vec::new(),
-      installable: format!(".#nixosConfigurations.{name}"),
-      kind: ProfileKind::NixOS,
+      source:       discover::TargetSource::NixosConfigurations,
+      tags:         Vec::new(),
+      installable:  format!(".#nixosConfigurations.{name}"),
+      kind:         ProfileKind::NixOS,
       profile_path: "/nix/var/nix/profiles/system".to_owned(),
       rebuild_tool: "nixos-rebuild",
     }
@@ -1800,12 +1812,12 @@ mod tests {
     // so only `web1` should end up in the manifest.
     let inventory = PushConfig {
       remote_build: None,
-      backend: None,
-      hosts: vec![config::PushHost {
-        name: "web2".to_owned(),
-        ssh: "web2".to_owned(),
+      backend:      None,
+      hosts:        vec![config::PushHost {
+        name:         "web2".to_owned(),
+        ssh:          "web2".to_owned(),
         remote_build: Some(true),
-        backend: None,
+        backend:      None,
       }],
     };
 
@@ -1827,8 +1839,8 @@ mod tests {
   #[test]
   fn build_batch_fails_on_the_first_build_failure() {
     let nix = FixtureNix {
-      outputs: Vec::new(),
-      built: Mutex::new(Vec::new()),
+      outputs:     Vec::new(),
+      built:       Mutex::new(Vec::new()),
       build_fails: true,
     };
     let targets = vec![closure_target("web1")];
