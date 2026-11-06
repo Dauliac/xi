@@ -1217,9 +1217,10 @@ mod tests {
       .script
       .clone();
     assert!(
-      switch_call.starts_with("systemd-run --wait --pipe --collect -- "),
+      switch_call.starts_with("systemd-run --wait --pipe --collect --unit=xi-push-web1-"),
       "got: {switch_call}"
     );
+    assert!(switch_call.contains(" -- "), "got: {switch_call}");
     assert!(
       switch_call
         .ends_with("nixos-rebuild switch --flake /etc/xi/sources#web1"),
