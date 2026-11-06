@@ -20,36 +20,42 @@ use std::path::Path;
 
 use color_eyre::{Result, eyre::eyre};
 
+use super::args::PushBackend;
+
 /// Every key the `[push]` table accepts, besides the `hosts` sub-table.
-pub const PUSH_KEYS: &[&str] = &["remote-build"];
+pub const PUSH_KEYS: &[&str] = &["remote-build", "backend"];
 
 /// Sub-tables the `[push]` table accepts, alongside [`PUSH_KEYS`].
 pub const PUSH_TABLE_KEYS: &[&str] = &["hosts"];
 
 /// Every key a `[[push.hosts]]` entry accepts.
-pub const PUSH_HOST_KEYS: &[&str] = &["name", "ssh", "remote-build"];
+pub const PUSH_HOST_KEYS: &[&str] = &["name", "ssh", "remote-build", "backend"];
 
 /// One `[[push.hosts]]` entry: an inventory name and the SSH target it
 /// resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushHost {
   /// The name `xi push <name>` matches against.
-  pub name:         String,
+  pub name: String,
   /// `[user@]hostname[:port]` to connect to for this host.
-  pub ssh:          String,
+  pub ssh: String,
   /// Per-host override of the `remote-build` rung.
   pub remote_build: Option<bool>,
+  /// Per-host override of the `backend` rung.
+  pub backend: Option<PushBackend>,
 }
 
-/// The parsed `[push]` table: the `remote-build` default and the flat
-/// host inventory.
+/// The parsed `[push]` table: the `remote-build` and `backend` defaults
+/// and the flat host inventory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PushConfig {
   /// `.xi.toml [push] remote-build`, the middle rung of the
   /// build-location ladder.
   pub remote_build: Option<bool>,
+  /// `.xi.toml [push] backend`, the middle rung of the backend ladder.
+  pub backend: Option<PushBackend>,
   /// `[[push.hosts]]` entries, in file order.
-  pub hosts:        Vec<PushHost>,
+  pub hosts: Vec<PushHost>,
 }
 
 impl PushConfig {
@@ -94,11 +100,25 @@ impl PushConfig {
 
     let remote_build = match table.get("remote-build") {
       None => None,
+      Some(item) => Some(item.as_bool().ok_or_else(|| {
+        eyre!(
+          "{}: 'remote-build' in [push] must be a boolean",
+          path.display()
+        )
+      })?),
+    };
+
+    let backend = match table.get("backend") {
+      None => None,
       Some(item) => {
-        Some(item.as_bool().ok_or_else(|| {
+        let raw = item.as_str().ok_or_else(|| {
+          eyre!("{}: 'backend' in [push] must be a string", path.display())
+        })?;
+        Some(PushBackend::from_config_str(raw).ok_or_else(|| {
           eyre!(
-            "{}: 'remote-build' in [push] must be a boolean",
-            path.display()
+            "{}: 'backend' in [push] must be one of {}, got '{raw}'",
+            path.display(),
+            PushBackend::ALL.join(", ")
           )
         })?)
       },
@@ -122,6 +142,7 @@ impl PushConfig {
 
     Ok(Self {
       remote_build,
+      backend,
       hosts,
     })
   }
@@ -176,12 +197,30 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     .to_owned();
   let remote_build = match entry.get("remote-build") {
     None => None,
-    Some(item) => {
-      Some(item.as_bool().ok_or_else(|| {
-        eyre!(
-          "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
+    Some(item) => Some(item.as_bool().ok_or_else(|| {
+      eyre!(
+        "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
            boolean",
+        path.display()
+      )
+    })?),
+  };
+
+  let backend = match entry.get("backend") {
+    None => None,
+    Some(item) => {
+      let raw = item.as_str().ok_or_else(|| {
+        eyre!(
+          "{}: 'backend' in [[push.hosts]] entry '{name}' must be a string",
           path.display()
+        )
+      })?;
+      Some(PushBackend::from_config_str(raw).ok_or_else(|| {
+        eyre!(
+          "{}: 'backend' in [[push.hosts]] entry '{name}' must be one of \
+             {}, got '{raw}'",
+          path.display(),
+          PushBackend::ALL.join(", ")
         )
       })?)
     },
@@ -191,6 +230,7 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     name,
     ssh,
     remote_build,
+    backend,
   })
 }
 
@@ -317,7 +357,7 @@ mod tests {
   /// restoring (or removing) it on drop - safe for `#[serial]` tests
   /// that read process-global env vars.
   struct EnvGuard {
-    key:   &'static str,
+    key: &'static str,
     value: Option<std::ffi::OsString>,
   }
 
@@ -387,6 +427,21 @@ mod tests {
   }
 
   #[test]
+  fn backend_parses_as_an_enum_string() {
+    let config = toml_config("[push]\nbackend = \"colmena\"\n");
+    assert_eq!(config.backend, Some(PushBackend::Colmena));
+  }
+
+  #[test]
+  fn an_invalid_backend_value_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(&path, "[push]\nbackend = \"openstack\"\n").expect("write");
+    let err = PushConfig::from_toml_file(&path).expect_err("invalid backend");
+    assert!(format!("{err}").contains("backend"), "got: {err}");
+  }
+
+  #[test]
   fn an_unknown_push_key_is_rejected() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join(".xi.toml");
@@ -400,14 +455,31 @@ mod tests {
     let config = toml_config(
       "[[push.hosts]]\nname = \"web1\"\nssh = \
        \"deploy@10.0.0.1\"\n\n[[push.hosts]]\nname = \"web2\"\nssh = \
-       \"deploy@10.0.0.2:2222\"\nremote-build = true\n",
+       \"deploy@10.0.0.2:2222\"\nremote-build = true\nbackend = \
+       \"deploy-rs\"\n",
     );
     assert_eq!(config.hosts.len(), 2);
     assert_eq!(config.hosts[0].name, "web1");
     assert_eq!(config.hosts[0].ssh, "deploy@10.0.0.1");
     assert_eq!(config.hosts[0].remote_build, None);
+    assert_eq!(config.hosts[0].backend, None);
     assert_eq!(config.hosts[1].ssh, "deploy@10.0.0.2:2222");
     assert_eq!(config.hosts[1].remote_build, Some(true));
+    assert_eq!(config.hosts[1].backend, Some(PushBackend::DeployRs));
+  }
+
+  #[test]
+  fn an_invalid_host_backend_value_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(
+      &path,
+      "[[push.hosts]]\nname = \"web1\"\nssh = \"a\"\nbackend = \"openstack\"\n",
+    )
+    .expect("write");
+    let err =
+      PushConfig::from_toml_file(&path).expect_err("invalid host backend");
+    assert!(format!("{err}").contains("backend"), "got: {err}");
   }
 
   #[test]
@@ -444,15 +516,15 @@ mod tests {
 
   fn target(name: &str) -> super::super::discover::PushTarget {
     super::super::discover::PushTarget {
-      addr:         TargetAddr {
-        name:     name.to_owned(),
+      addr: TargetAddr {
+        name: name.to_owned(),
         ssh_host: name.to_owned(),
         ssh_opts: Vec::new(),
       },
-      source:       TargetSource::NixosConfigurations,
-      tags:         Vec::new(),
-      installable:  String::new(),
-      kind:         ProfileKind::NixOS,
+      source: TargetSource::NixosConfigurations,
+      tags: Vec::new(),
+      installable: String::new(),
+      kind: ProfileKind::NixOS,
       profile_path: String::new(),
       rebuild_tool: "nixos-rebuild",
     }
