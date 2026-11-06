@@ -518,7 +518,10 @@ fn push_one(
 /// place, because `switch`'s `Result` does not distinguish "the remote
 /// told us it failed" from "we lost the connection and don't know": the
 /// signal a later `--reattach` needs (a sibling task, not read here) is
-/// exactly a receipt an ambiguous outcome did not remove.
+/// exactly a receipt an ambiguous outcome did not remove. `args.notify`
+/// travels with the receipt for the same reason: it only ever fires
+/// through [`receipt::remove_and_notify`], so it is gated on the exact
+/// same "did this process actually observe and remove" distinction.
 ///
 /// # Errors
 ///
@@ -536,7 +539,8 @@ fn switch_with_receipt(
     target.addr.name.clone(),
     unit_name,
     args.sources_scope(),
-  );
+  )
+  .with_notify(args.notify.clone());
   receipt::write(state_dir, &push_id, &receipt)?;
 
   let outcome = mode_sources::switch(
@@ -547,7 +551,7 @@ fn switch_with_receipt(
     &push_id,
   );
   if outcome.is_ok()
-    && let Err(remove_err) = receipt::remove(state_dir, &push_id)
+    && let Err(remove_err) = receipt::remove_and_notify(state_dir, &push_id, &receipt)
   {
     warn!(
       push_id,
@@ -631,7 +635,7 @@ mod tests {
   use super::*;
   use crate::push::{
     args::{CopyVia as PushCopyVia, PushBackend},
-    engine::{Outcome, TargetAddr},
+    engine::{Outcome, TargetAddr, shell_quote},
   };
 
   /// Answers flake evaluation from a fixture table keyed by attr, the
@@ -856,6 +860,7 @@ mod tests {
       force_dirty: false,
       scope: super::super::args::PushScope::System,
       reattach: None,
+      notify: None,
     }
   }
 
@@ -1027,6 +1032,40 @@ mod tests {
       leftover.is_empty(),
       "expected no receipts left in {}: {leftover:?}",
       receipts_dir.display()
+    );
+  }
+
+  #[test]
+  fn a_successful_mode_sources_push_runs_notify_exactly_once() {
+    // xi-enwe.3.1: --notify fires the moment this process observes (and
+    // removes the receipt for) a successful outcome.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let marker = context.state_dir.join("notified");
+
+    let mut push_args = args(PushMode::Sources);
+    push_args.notify =
+      Some(format!("touch {}", shell_quote(&marker.display().to_string())));
+
+    let report = execute(
+      &push_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert!(
+      marker.exists(),
+      "expected --notify to have run: {}",
+      marker.display()
     );
   }
 
