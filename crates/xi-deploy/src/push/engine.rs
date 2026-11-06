@@ -13,6 +13,7 @@
 //! describe the comparable tools doing.
 
 use std::{
+  fmt,
   io::Read,
   path::Path,
   process::{Command, Stdio},
@@ -262,6 +263,48 @@ pub trait Transport: Send + Sync {
     ))
   }
 }
+
+/// [`Transport::advance_now`] could not complete the `ctl` relay to a
+/// target, for any reason the local process observed.
+///
+/// A failed `ssh` spawn, a non-zero `ctl` exit, and an undecodable reply
+/// frame are three different failures in the underlying plumbing, but to
+/// an operator they mean the same thing: this invocation of target-pull
+/// did not reach the daemon, and `--sources-transport operator-copy` is
+/// the fallback. Routing all three through one named type - rather than
+/// three differently-worded `eyre!`/`bail!` call sites - means the
+/// operator-facing message is identical regardless of which step failed,
+/// and anything upstream that wants to recognise this failure class can
+/// match on one type instead of matching message text three ways.
+#[derive(Debug)]
+pub struct TargetPullUnreachable {
+  target: String,
+  cause:  String,
+}
+
+impl TargetPullUnreachable {
+  /// `target` is [`TargetAddr::name`]; `cause` is the specific failure
+  /// (spawn error, exit status plus stderr, or decode error).
+  fn new(target: &str, cause: impl fmt::Display) -> Self {
+    Self {
+      target: target.to_owned(),
+      cause:  cause.to_string(),
+    }
+  }
+}
+
+impl fmt::Display for TargetPullUnreachable {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+      f,
+      "target-pull on {} is unreachable ({}); fall back to \
+       --sources-transport operator-copy",
+      self.target, self.cause
+    )
+  }
+}
+
+impl std::error::Error for TargetPullUnreachable {}
 
 // ---------------------------------------------------------------------------
 // Real implementations
@@ -520,15 +563,21 @@ impl Transport for SshTransport {
     ssh.stderr(Stdio::piped());
 
     let mut child = ssh.spawn().map_err(|e| {
-      eyre!("failed to spawn the ctl relay on {}: {e}", target.name)
+      TargetPullUnreachable::new(
+        &target.name,
+        format!("failed to spawn ssh: {e}"),
+      )
     })?;
 
     {
       let mut stdin = child.stdin.take().ok_or_else(|| {
-        eyre!("ctl relay on {} has no stdin pipe", target.name)
+        TargetPullUnreachable::new(&target.name, "ctl relay has no stdin pipe")
       })?;
       control::write_message(&mut stdin, request).map_err(|e| {
-        eyre!("writing the AdvanceNow frame to {}: {e}", target.name)
+        TargetPullUnreachable::new(
+          &target.name,
+          format!("writing the AdvanceNow frame: {e}"),
+        )
       })?;
       // `stdin` drops here, closing the write half: `relay_stdio`'s own
       // `read_frame` only needs the exact length-prefixed bytes (no EOF
@@ -537,26 +586,29 @@ impl Transport for SshTransport {
     }
 
     let mut stdout = child.stdout.take().ok_or_else(|| {
-      eyre!("ctl relay on {} has no stdout pipe", target.name)
+      TargetPullUnreachable::new(&target.name, "ctl relay has no stdout pipe")
     })?;
     let reply: AdvanceReply =
       control::read_message(&mut stdout).map_err(|e| {
-        eyre!("reading the AdvanceReply frame from {}: {e}", target.name)
+        TargetPullUnreachable::new(
+          &target.name,
+          format!("decoding the AdvanceReply frame: {e}"),
+        )
       })?;
 
-    let status = child
-      .wait()
-      .map_err(|e| eyre!("waiting on the ctl relay on {}: {e}", target.name))?;
+    let status = child.wait().map_err(|e| {
+      TargetPullUnreachable::new(&target.name, format!("waiting on ssh: {e}"))
+    })?;
     if !status.success() {
       let mut stderr = String::new();
       if let Some(mut pipe) = child.stderr.take() {
         let _ignore_partial_read = pipe.read_to_string(&mut stderr);
       }
-      bail!(
-        "ctl relay on {} exited with {status}: {}",
-        target.name,
-        stderr.trim()
-      );
+      return Err(TargetPullUnreachable::new(
+        &target.name,
+        format!("ctl relay exited with {status}: {}", stderr.trim()),
+      )
+      .into());
     }
 
     Ok(reply)
@@ -745,6 +797,57 @@ mod tests {
     let spec = secret_spec(None);
     let script = install_secret_script(&spec, "/tmp/.staged");
     assert!(script.contains("mkdir -p '/run/keys'"), "got: {script}");
+  }
+
+  #[test]
+  fn target_pull_unreachable_names_operator_copy_as_the_fallback() {
+    let err = TargetPullUnreachable::new("web1", "failed to spawn ssh: oops");
+    let message = err.to_string();
+    assert!(
+      message.contains("--sources-transport operator-copy"),
+      "got: {message}"
+    );
+  }
+
+  #[test]
+  fn target_pull_unreachable_names_the_target_and_the_specific_cause() {
+    let err = TargetPullUnreachable::new(
+      "web1",
+      "decoding the AdvanceReply frame: eof",
+    );
+    let message = err.to_string();
+    assert!(message.contains("web1"), "got: {message}");
+    assert!(
+      message.contains("decoding the AdvanceReply frame: eof"),
+      "got: {message}"
+    );
+  }
+
+  #[test]
+  fn spawn_exit_and_decode_failures_all_report_the_same_error_type() {
+    // A failed spawn, a non-zero exit, and a decode failure are three
+    // distinct causes, but `advance_now` must surface all three as the
+    // same named type rather than three different shapes.
+    let spawn = TargetPullUnreachable::new("web1", "failed to spawn ssh: oops");
+    let exit = TargetPullUnreachable::new(
+      "web1",
+      "ctl relay exited with exit status: 1: ",
+    );
+    let decode = TargetPullUnreachable::new(
+      "web1",
+      "decoding the AdvanceReply frame: eof",
+    );
+    for err in [spawn, exit, decode] {
+      let message = err.to_string();
+      assert!(
+        message.starts_with("target-pull on web1 is unreachable"),
+        "got: {message}"
+      );
+      assert!(
+        message.ends_with("--sources-transport operator-copy"),
+        "got: {message}"
+      );
+    }
   }
 
   #[test]
