@@ -20,6 +20,15 @@
 //! reattach that races the original push process to the same terminal
 //! observation only fires the notify command once, from whichever side
 //! actually wins the receipt's removal.
+//!
+//! `xi-enwe.3.2` closes the gap that left: a confirmed *failure* is a
+//! terminal observation too (the spec's `--notify` requirement says
+//! "exactly once per terminal observation", not "per success"), but the
+//! failure path deliberately keeps the receipt in place for operator
+//! acknowledgment, so there is no `remove_file` race to gate a single
+//! fire on. [`notify_failure`] gates on [`receipt::mark_notified_and_notify`]
+//! instead, which creates a sibling `<push_id>.notified` marker file with
+//! the same `O_EXCL` atomicity `remove_file` gave the success path.
 
 use std::{collections::HashMap, path::Path};
 
@@ -27,6 +36,7 @@ use color_eyre::{
   Result,
   eyre::{bail, eyre},
 };
+use tracing::warn;
 
 use super::{
   engine::{RemoteCommand, TargetAddr, Transport, shell_quote},
@@ -372,6 +382,21 @@ fn stream_unit(
   Ok(outcome.success)
 }
 
+/// Fire `receipt.notify` for a confirmed failure without disturbing the
+/// receipt itself, logging rather than propagating a marker-file I/O
+/// error - the caller is already about to report the failure to the
+/// operator via its own `bail!`, and a broken notify marker must not
+/// swallow that.
+fn notify_failure(state_dir: &Path, push_id: &str, receipt: &PushReceipt) {
+  if let Err(err) = receipt::mark_notified_and_notify(state_dir, push_id, receipt) {
+    warn!(
+      push_id,
+      error = %err,
+      "failed to record --notify as fired for a failed unit"
+    );
+  }
+}
+
 /// Dispatch `xi push --reattach`.
 ///
 /// With an empty `id` (`xi push --reattach` on its own), lists every
@@ -419,6 +444,7 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
         println!("{} succeeded on {}", receipt.unit_name, receipt.target);
         receipt::remove_and_notify(state_dir, id, &receipt)
       } else {
+        notify_failure(state_dir, id, &receipt);
         bail!(
           "{} failed on {} (see the streamed journal above)",
           receipt.unit_name,
@@ -434,6 +460,7 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
       exec_main_status,
       detail,
     } => {
+      notify_failure(state_dir, id, &receipt);
       bail!(
         "{} failed on {} (ExecMainStatus={exec_main_status}): {detail}",
         receipt.unit_name,
@@ -455,6 +482,7 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
         receipt::remove_and_notify(state_dir, id, &receipt)
       },
       JournalOutcome::Failed { result } => {
+        notify_failure(state_dir, id, &receipt);
         bail!(
           "{} failed on {} (result={result}, recovered from journalctl - \
            the unit was already `--collect`ed)",
@@ -804,6 +832,99 @@ mod tests {
     );
   }
 
+  #[test]
+  fn reattaching_to_a_failed_unit_runs_notify_exactly_once() {
+    // xi-enwe.3.2: a confirmed failure is a terminal observation too (the
+    // spec says "exactly once per terminal observation", not "per
+    // success") - --notify must fire here even though the receipt itself
+    // stays in place.
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("notified");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
+      .with_notify(Some(format!(
+        "touch {}",
+        shell_quote(&marker.display().to_string())
+      )));
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
+       ExecMainCode=1\n",
+    ));
+
+    let _ = run("web1-push", tmp.path(), &transport)
+      .expect_err("a failed unit must still error");
+    assert!(
+      marker.exists(),
+      "expected --notify to run once the unit's failure was confirmed"
+    );
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_some(),
+      "notifying on failure must not remove the receipt"
+    );
+
+    std::fs::remove_file(&marker).expect("clear marker to detect a rerun");
+    let _ = run("web1-push", tmp.path(), &transport)
+      .expect_err("a second reattach against the same still-failed unit still errors");
+    assert!(
+      !marker.exists(),
+      "a second observation of the same confirmed failure must not refire --notify"
+    );
+  }
+
+  #[test]
+  fn notify_fires_exactly_once_under_a_race_between_two_concurrent_reattaches_on_failure()
+   {
+    // xi-enwe.3.2's own acceptance criteria: notify must not double-fire
+    // when two processes race to observe the same terminal state at
+    // nearly the same moment. The success side of this race is already
+    // covered by `remove_file`'s atomicity (xi-enwe.3.1); this exercises
+    // the failure side's marker-file gate under genuine thread
+    // concurrency rather than just sequential re-invocation.
+    let tmp = TempDir::new().expect("tempdir");
+    let fire_count = tmp.path().join("fire-count");
+    std::fs::write(&fire_count, "").expect("seed counter file");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
+      .with_notify(Some(format!(
+        "printf x >> {}",
+        shell_quote(&fire_count.display().to_string())
+      )));
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+
+    let state_dir = std::sync::Arc::new(tmp.path().to_owned());
+    let transport = std::sync::Arc::new(ScriptedTransport(Outcome::ok(
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
+       ExecMainCode=1\n",
+    )));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+    let runners: Vec<_> = (0..2)
+      .map(|_| {
+        let state_dir = std::sync::Arc::clone(&state_dir);
+        let transport = std::sync::Arc::clone(&transport);
+        let barrier = std::sync::Arc::clone(&barrier);
+        std::thread::spawn(move || {
+          barrier.wait();
+          run("web1-push", &state_dir, transport.as_ref())
+        })
+      })
+      .collect();
+
+    for handle in runners {
+      let _ = handle
+        .join()
+        .expect("thread")
+        .expect_err("both racing reattaches must still report the failure");
+    }
+
+    assert_eq!(
+      std::fs::read_to_string(&fire_count).expect("read counter"),
+      "x",
+      "--notify must have run exactly once across both racing reattaches"
+    );
+  }
+
   /// A [`Transport`] that answers a `systemctl show`, a captured
   /// `journalctl` query, or a streaming `journalctl -f` differently -
   /// for `run`'s with-id path, which chains more than one remote call
@@ -946,6 +1067,33 @@ mod tests {
   }
 
   #[test]
+  fn reattaching_to_a_collected_and_journal_failed_unit_runs_notify_exactly_once() {
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("notified");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
+      .with_notify(Some(format!(
+        "touch {}",
+        shell_quote(&marker.display().to_string())
+      )));
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(COLLECTED_SYSTEMCTL),
+      journal:   Outcome::ok(
+        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed \
+         with result 'exit-code'.\n",
+      ),
+      stream:    Outcome::ok(""),
+    };
+
+    let _ = run("web1-push", tmp.path(), &transport)
+      .expect_err("a failure recovered via journalctl must still error");
+    assert!(
+      marker.exists(),
+      "expected --notify to run once the collected unit's failure was recovered"
+    );
+  }
+
+  #[test]
   fn reattaching_to_a_collected_unit_with_no_terminal_journal_line_errors() {
     let tmp = TempDir::new().expect("tempdir");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
@@ -1014,6 +1162,87 @@ mod tests {
         .expect("read")
         .is_some(),
       "an operator must still acknowledge a failure before its receipt goes away"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_running_unit_that_streams_to_failure_runs_notify_exactly_once() {
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("notified");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
+      .with_notify(Some(format!(
+        "touch {}",
+        shell_quote(&marker.display().to_string())
+      )));
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = RoutedTransport {
+      systemctl: Outcome::ok(RUNNING_SYSTEMCTL),
+      journal:   Outcome::ok(""),
+      stream:    Outcome::failed(""),
+    };
+
+    let _ = run("web1-push", tmp.path(), &transport)
+      .expect_err("a stream that ends on the failure marker must still error");
+    assert!(
+      marker.exists(),
+      "expected --notify to run once the streamed unit's failure was confirmed"
+    );
+  }
+
+  #[test]
+  fn notify_fires_exactly_once_under_a_race_between_the_original_process_and_a_reattach_on_success()
+   {
+    // xi-enwe.3.2's named scenario: "the original push process reconnects
+    // and observes a terminal state at the same moment a concurrent
+    // --reattach also observes it." Simulate the original process's side
+    // with `receipt::remove_and_notify` directly (what
+    // `orchestrate::switch_with_receipt` calls on its own success path)
+    // racing a concurrent `--reattach` against the same receipt.
+    let tmp = TempDir::new().expect("tempdir");
+    let fire_count = tmp.path().join("fire-count");
+    std::fs::write(&fire_count, "").expect("seed counter file");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
+      .with_notify(Some(format!(
+        "printf x >> {}",
+        shell_quote(&fire_count.display().to_string())
+      )));
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+
+    let state_dir = std::sync::Arc::new(tmp.path().to_owned());
+    let transport = std::sync::Arc::new(ScriptedTransport(Outcome::ok(
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+       ExecMainCode=1\n",
+    )));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+    let original_process = {
+      let state_dir = std::sync::Arc::clone(&state_dir);
+      let barrier = std::sync::Arc::clone(&barrier);
+      std::thread::spawn(move || {
+        barrier.wait();
+        receipt::remove_and_notify(&state_dir, "web1-push", &receipt)
+      })
+    };
+    let reattach = {
+      let state_dir = std::sync::Arc::clone(&state_dir);
+      let transport = std::sync::Arc::clone(&transport);
+      let barrier = std::sync::Arc::clone(&barrier);
+      std::thread::spawn(move || {
+        barrier.wait();
+        run("web1-push", &state_dir, transport.as_ref())
+      })
+    };
+
+    original_process.join().expect("original process thread").expect("remove_and_notify");
+    // The loser of the race finds the receipt already gone, which
+    // `receipt::read` inside `run` reports as "no receipt found" - not a
+    // notify bug, just the expected shape of losing the removal race.
+    let _ = reattach.join().expect("reattach thread");
+
+    assert_eq!(
+      std::fs::read_to_string(&fire_count).expect("read counter"),
+      "x",
+      "--notify must have run exactly once across the original process and the reattach"
     );
   }
 }

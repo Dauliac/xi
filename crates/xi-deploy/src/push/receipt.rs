@@ -175,6 +175,58 @@ pub fn remove_and_notify(
   Ok(())
 }
 
+/// Path of the "already notified" marker for `push_id` under `state_dir`.
+///
+/// Only ever created by [`mark_notified_and_notify`]: the confirmed-failure
+/// path leaves the receipt itself in place for operator acknowledgment (see
+/// that function's docs), so there is no `remove_file` call for `--notify`
+/// to gate on the way [`remove_and_notify`] gates on the receipt's own
+/// removal. This sibling file is the stand-in - its *creation* is the
+/// atomic event instead.
+#[must_use]
+fn notified_marker_path(state_dir: &Path, push_id: &str) -> PathBuf {
+  state_dir
+    .join(RECEIPTS_DIR)
+    .join(format!("{push_id}.notified"))
+}
+
+/// Run `receipt.notify` (when set) exactly once for a terminal outcome
+/// that does *not* remove the receipt - a confirmed failure, where the
+/// receipt stays on disk for the operator to acknowledge.
+///
+/// [`remove_and_notify`] gates a single fire on `fs::remove_file`'s own
+/// atomicity: exactly one racing caller gets `Ok(())`. A failure never
+/// removes the receipt, so there is nothing there to race on - this
+/// function creates a sibling `<push_id>.notified` marker file with
+/// `OpenOptions::create_new`, which carries the same `O_EXCL` guarantee:
+/// exactly one of two racing callers (the original push reconnecting, and
+/// a concurrent `--reattach`, or two concurrent `--reattach`s) wins the
+/// create and fires `receipt.notify`; the other finds `AlreadyExists` and
+/// does nothing.
+///
+/// # Errors
+///
+/// Propagates an I/O error other than `AlreadyExists` creating the
+/// receipts directory or the marker file.
+pub fn mark_notified_and_notify(
+  state_dir: &Path,
+  push_id: &str,
+  receipt: &PushReceipt,
+) -> Result<()> {
+  std::fs::create_dir_all(state_dir.join(RECEIPTS_DIR))?;
+  let path = notified_marker_path(state_dir, push_id);
+  match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+    Ok(_) => {
+      if let Some(command) = &receipt.notify {
+        run_notify(command);
+      }
+      Ok(())
+    },
+    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+    Err(err) => Err(err.into()),
+  }
+}
+
 /// Run `command` through the shell, logging rather than propagating a
 /// spawn failure or a non-zero exit.
 fn run_notify(command: &str) {
@@ -403,6 +455,89 @@ mod tests {
     remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt())
       .expect("removes cleanly with no --notify to run");
     assert!(!receipt_path(tmp.path(), "web1-1700000000-abc123").exists());
+  }
+
+  #[test]
+  fn mark_notified_and_notify_fires_once_and_leaves_the_receipt_in_place() {
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("fired");
+    let receipt = receipt()
+      .with_notify(Some(format!("touch {}", shell_quote(&marker.display().to_string()))));
+    write(tmp.path(), "web1-1700000000-abc123", &receipt).expect("writes");
+
+    mark_notified_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
+      .expect("first call fires notify");
+    assert!(marker.exists(), "the winning call must have run --notify");
+    assert!(
+      receipt_path(tmp.path(), "web1-1700000000-abc123").exists(),
+      "a confirmed-failure notify must not remove the receipt"
+    );
+
+    std::fs::remove_file(&marker).expect("clear marker to detect a rerun");
+    mark_notified_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
+      .expect("second call finds the marker already there, which is not an error");
+    assert!(
+      !marker.exists(),
+      "a second call must not rerun --notify for the same push_id"
+    );
+  }
+
+  #[test]
+  fn mark_notified_and_notify_does_nothing_when_no_notify_command_is_set() {
+    let tmp = TempDir::new().expect("tempdir");
+    write(tmp.path(), "web1-1700000000-abc123", &receipt()).expect("writes");
+    mark_notified_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt())
+      .expect("marks cleanly with no --notify to run");
+  }
+
+  #[test]
+  fn mark_notified_and_notify_fires_exactly_once_under_a_concurrent_race() {
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("fired");
+    let fire_count = tmp.path().join("fire-count");
+    std::fs::write(&fire_count, "").expect("seed counter file");
+    // Each racing caller appends one byte on every invocation of the
+    // notify command, so a double-fire is visible as a longer file even
+    // though both racers target the same marker - this is the same
+    // distinction `remove_and_notify`'s own race test draws for the
+    // receipt-removal path, applied to the no-removal marker-file path.
+    let receipt = receipt().with_notify(Some(format!(
+      "printf x >> {} && touch {}",
+      shell_quote(&fire_count.display().to_string()),
+      shell_quote(&marker.display().to_string())
+    )));
+    write(tmp.path(), "web1-1700000000-abc123", &receipt).expect("writes");
+
+    let state_dir = tmp.path().to_owned();
+    let push_id = "web1-1700000000-abc123".to_owned();
+    let receipt_a = receipt.clone();
+    let receipt_b = receipt;
+    let state_dir_a = state_dir.clone();
+    let state_dir_b = state_dir;
+    let push_id_a = push_id.clone();
+    let push_id_b = push_id;
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let barrier_a = std::sync::Arc::clone(&barrier);
+    let barrier_b = std::sync::Arc::clone(&barrier);
+
+    let handle_a = std::thread::spawn(move || {
+      barrier_a.wait();
+      mark_notified_and_notify(&state_dir_a, &push_id_a, &receipt_a)
+    });
+    let handle_b = std::thread::spawn(move || {
+      barrier_b.wait();
+      mark_notified_and_notify(&state_dir_b, &push_id_b, &receipt_b)
+    });
+
+    handle_a.join().expect("thread a").expect("thread a notify");
+    handle_b.join().expect("thread b").expect("thread b notify");
+
+    assert_eq!(
+      std::fs::read_to_string(&fire_count).expect("read counter"),
+      "x",
+      "--notify must have run exactly once across both racing callers"
+    );
   }
 
   #[test]
