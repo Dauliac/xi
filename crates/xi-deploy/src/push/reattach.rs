@@ -1,20 +1,25 @@
 //! `xi push --reattach`: recover a remote-build push's outcome after an
 //! operator-side disconnect.
 //!
-//! Only the no-id listing path lives here (`xi-enwe.2.1`): list every
-//! local receipt under `<state_dir>/push-receipts`, newest first,
-//! probing each receipt's target reachability with a plain connectivity
-//! check. Reattaching to a specific unit - `systemctl show`, the
-//! `journalctl` fallback for an already-`--collect`ed unit, and
-//! `--notify` - is `xi-enwe.2.2`/`.2.3`, sibling tasks not implemented
-//! here.
+//! The no-id listing path (`xi-enwe.2.1`) lists every local receipt
+//! under `<state_dir>/push-receipts`, newest first, probing each
+//! receipt's target reachability with a plain connectivity check.
+//!
+//! The with-id path (`xi-enwe.2.2`) `SSH`s to that one receipt's target
+//! and asks `systemctl show` for the named unit's state. The
+//! `journalctl` fallback for an already-`--collect`ed unit, the
+//! live-streaming case for a still-running unit, and `--notify` are
+//! `xi-enwe.2.3`, a sibling task not implemented here.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
-use color_eyre::{Result, eyre::bail};
+use color_eyre::{
+  Result,
+  eyre::{bail, eyre},
+};
 
 use super::{
-  engine::{RemoteCommand, TargetAddr, Transport},
+  engine::{RemoteCommand, TargetAddr, Transport, shell_quote},
   receipt::{self, NamedReceipt, PushReceipt},
 };
 
@@ -107,29 +112,192 @@ pub fn format_rows(rows: &[ReceiptRow]) -> String {
     .join("\n")
 }
 
-/// Dispatch `xi push --reattach`.
-///
-/// With an empty `id` (`xi push --reattach` on its own), lists every
-/// local receipt newest first. A non-empty `id` names a specific unit to
-/// reattach to, which is `xi-enwe.2.2`'s `systemctl show` query, not
-/// implemented yet.
+/// What a `systemctl show` query against a receipted unit found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReattachOutcome {
+  /// The unit is still active (or on its way there, or on its way out);
+  /// nothing terminal to report yet. Streaming its journal live is
+  /// `xi-enwe.2.3`.
+  Running,
+  /// The unit ran to completion with a zero exit.
+  Succeeded,
+  /// The unit ran to completion with a non-zero exit, or was killed.
+  Failed {
+    /// The raw `ExecMainStatus` - an exit code, or (when `detail` says
+    /// the unit was killed/dumped/trapped) a signal number.
+    exec_main_status: i64,
+    /// `ActiveState`/`SubState`/`ExecMainCode`, for an operator-readable
+    /// failure message.
+    detail: String,
+  },
+  /// `systemctl show` has nothing live to report on this unit.
+  ///
+  /// This is read off `ExecMainCode` being unset rather than off a
+  /// missing/empty reply: `systemctl show` answers an unknown unit name
+  /// with all-default properties instead of erroring, and a unit whose
+  /// main process genuinely ran (to success or failure) always leaves
+  /// `ExecMainCode` set - so "unset" here only ever means `--collect`
+  /// already unloaded it. Falling back to `journalctl -u <unit_name>` is
+  /// `xi-enwe.2.3`, not implemented here.
+  Collected,
+}
+
+/// `ExecMainCode`'s `waitid(2)` `si_code`, as `systemctl show` reports
+/// it: `0` when systemd has never recorded an exit for the unit's main
+/// process, `1` (`CLD_EXITED`) when it has exited normally.
+const EXEC_MAIN_CODE_UNSET: i64 = 0;
+const EXEC_MAIN_CODE_EXITED: i64 = 1;
+
+/// `ActiveState` values that mean "not done yet" - including
+/// `deactivating`, since a unit mid-shutdown still has nothing terminal
+/// to report.
+fn is_unsettled(active_state: &str) -> bool {
+  matches!(
+    active_state,
+    "activating" | "active" | "reloading" | "deactivating"
+  )
+}
+
+/// Parse the `KEY=VALUE` lines `systemctl show --property=...` emits.
+fn parse_show_output(stdout: &str) -> HashMap<&str, &str> {
+  stdout.lines().filter_map(|line| line.split_once('=')).collect()
+}
+
+/// Look up `key` in `systemctl show`'s parsed output, or error naming
+/// which property was missing.
+fn field<'a>(
+  fields: &HashMap<&'a str, &'a str>,
+  unit_name: &str,
+  key: &'static str,
+) -> Result<&'a str> {
+  fields
+    .get(key)
+    .copied()
+    .ok_or_else(|| eyre!("systemctl show {unit_name} did not report {key}"))
+}
+
+/// Ask `target` for `unit_name`'s `systemctl show` properties and map
+/// the answer to a [`ReattachOutcome`].
 ///
 /// # Errors
 ///
-/// Propagates [`list`]'s error, or refuses outright for a non-empty
-/// `id`.
-pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> {
-  if !id.is_empty() {
+/// Returns an error if the local `ssh` could not be spawned, if
+/// `systemctl show` itself exited non-zero, or if its output is missing
+/// one of the four requested properties or reports a non-numeric
+/// `ExecMainStatus`/`ExecMainCode`.
+fn query_unit(
+  transport: &dyn Transport,
+  target: &TargetAddr,
+  unit_name: &str,
+) -> Result<ReattachOutcome> {
+  let outcome = transport.run(
+    target,
+    &RemoteCommand::probe(format!(
+      "systemctl show {} \
+       --property=ActiveState,SubState,ExecMainStatus,ExecMainCode",
+      shell_quote(unit_name)
+    )),
+  )?;
+  if !outcome.success {
     bail!(
-      "xi push --reattach {id} is not implemented yet; only `xi push \
-       --reattach` with no id (listing every local receipt) is available \
-       today - reattaching to a specific push is xi-enwe.2.2"
+      "systemctl show {unit_name} failed on {}: {}",
+      target.name,
+      outcome.message()
     );
   }
 
-  let rows = list(state_dir, transport)?;
-  println!("{}", format_rows(&rows));
-  Ok(())
+  let fields = parse_show_output(&outcome.stdout);
+  let active_state = field(&fields, unit_name, "ActiveState")?;
+  if is_unsettled(active_state) {
+    return Ok(ReattachOutcome::Running);
+  }
+
+  let exec_main_code = field(&fields, unit_name, "ExecMainCode")?
+    .parse::<i64>()
+    .map_err(|e| eyre!("{unit_name}'s ExecMainCode is not a number: {e}"))?;
+  if exec_main_code == EXEC_MAIN_CODE_UNSET {
+    return Ok(ReattachOutcome::Collected);
+  }
+
+  let exec_main_status = field(&fields, unit_name, "ExecMainStatus")?
+    .parse::<i64>()
+    .map_err(|e| eyre!("{unit_name}'s ExecMainStatus is not a number: {e}"))?;
+  if exec_main_code == EXEC_MAIN_CODE_EXITED && exec_main_status == 0 {
+    return Ok(ReattachOutcome::Succeeded);
+  }
+
+  let sub_state = field(&fields, unit_name, "SubState")?;
+  Ok(ReattachOutcome::Failed {
+    exec_main_status,
+    detail: format!(
+      "ActiveState={active_state} SubState={sub_state} \
+       ExecMainCode={exec_main_code}"
+    ),
+  })
+}
+
+/// Dispatch `xi push --reattach`.
+///
+/// With an empty `id` (`xi push --reattach` on its own), lists every
+/// local receipt newest first. With an id, `SSH`s to that receipt's
+/// target and asks `systemctl show` the named unit's state.
+///
+/// # Errors
+///
+/// Propagates [`list`]'s error for an empty `id`. For a non-empty `id`,
+/// errors if no receipt exists for it, if the `systemctl show` query
+/// itself fails (see [`query_unit`]), or if the unit is found to have
+/// failed - a failed reattach deliberately exits non-zero so the
+/// operator has to acknowledge it rather than it passing silently.
+pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> {
+  if id.is_empty() {
+    let rows = list(state_dir, transport)?;
+    println!("{}", format_rows(&rows));
+    return Ok(());
+  }
+
+  let Some(receipt) = receipt::read(state_dir, id)? else {
+    bail!("no push receipt found for {id}");
+  };
+
+  let addr = TargetAddr {
+    name:     receipt.target.clone(),
+    ssh_host: receipt.target.clone(),
+    ssh_opts: Vec::new(),
+  };
+
+  match query_unit(transport, &addr, &receipt.unit_name)? {
+    ReattachOutcome::Running => {
+      println!(
+        "{} is still running on {}",
+        receipt.unit_name, receipt.target
+      );
+      Ok(())
+    },
+    ReattachOutcome::Succeeded => {
+      println!("{} succeeded on {}", receipt.unit_name, receipt.target);
+      receipt::remove(state_dir, id)
+    },
+    ReattachOutcome::Failed {
+      exec_main_status,
+      detail,
+    } => {
+      bail!(
+        "{} failed on {} (ExecMainStatus={exec_main_status}): {detail}",
+        receipt.unit_name,
+        receipt.target,
+      );
+    },
+    ReattachOutcome::Collected => {
+      println!(
+        "{} is no longer tracked by systemd on {} - it was already \
+         `--collect`ed; a journalctl fallback by unit name is \
+         xi-enwe.2.3, not implemented yet",
+        receipt.unit_name, receipt.target
+      );
+      Ok(())
+    },
+  }
 }
 
 #[cfg(test)]
@@ -249,12 +417,12 @@ mod tests {
   }
 
   #[test]
-  fn dispatching_with_a_non_empty_id_refuses() {
+  fn dispatching_with_an_unknown_id_errors() {
     let tmp = TempDir::new().expect("tempdir");
     let transport = FixtureTransport::default();
     let err = run("some-push-id", tmp.path(), &transport)
-      .expect_err("not implemented yet");
-    assert!(format!("{err}").contains("xi-enwe.2.2"), "got: {err}");
+      .expect_err("no receipt for this id");
+    assert!(format!("{err}").contains("some-push-id"), "got: {err}");
   }
 
   #[test]
@@ -265,5 +433,225 @@ mod tests {
       ..FixtureTransport::default()
     };
     run("", tmp.path(), &transport).expect("lists cleanly");
+  }
+
+  /// A [`Transport`] that answers every `run` call with one scripted
+  /// `systemctl show`-shaped [`Outcome`], for the single-call scenarios
+  /// `query_unit`/`run`'s with-id path exercises.
+  struct ScriptedTransport(Outcome);
+
+  impl Transport for ScriptedTransport {
+    fn run(&self, _target: &TargetAddr, _cmd: &RemoteCommand) -> Result<Outcome> {
+      Ok(self.0.clone())
+    }
+
+    fn copy_closure(
+      &self,
+      _target: &TargetAddr,
+      _store_path: &str,
+      _via: super::super::args::CopyVia,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn upload_secret(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _spec: &xi_core::sources::secrets::SecretSpec,
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn sync_dir(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _remote: &str,
+      _excludes: &[&str],
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  fn addr() -> TargetAddr {
+    TargetAddr {
+      name:     "web1".to_owned(),
+      ssh_host: "web1".to_owned(),
+      ssh_opts: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn a_still_active_unit_is_running() {
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=active\nSubState=running\nExecMainStatus=0\n\
+       ExecMainCode=0\n",
+    ));
+    assert_eq!(
+      query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
+      ReattachOutcome::Running
+    );
+  }
+
+  #[test]
+  fn a_deactivating_unit_is_running() {
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=deactivating\nSubState=stop-sigterm\n\
+       ExecMainStatus=0\nExecMainCode=0\n",
+    ));
+    assert_eq!(
+      query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
+      ReattachOutcome::Running
+    );
+  }
+
+  #[test]
+  fn a_zero_exit_unit_succeeded() {
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+       ExecMainCode=1\n",
+    ));
+    assert_eq!(
+      query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
+      ReattachOutcome::Succeeded
+    );
+  }
+
+  #[test]
+  fn a_non_zero_exit_unit_failed() {
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
+       ExecMainCode=1\n",
+    ));
+    let outcome =
+      query_unit(&transport, &addr(), "xi-push-web1-1").expect("query");
+    assert_eq!(
+      outcome,
+      ReattachOutcome::Failed {
+        exec_main_status: 1,
+        detail: "ActiveState=failed SubState=failed ExecMainCode=1"
+          .to_owned(),
+      }
+    );
+  }
+
+  #[test]
+  fn a_killed_unit_failed() {
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=9\n\
+       ExecMainCode=2\n",
+    ));
+    let outcome =
+      query_unit(&transport, &addr(), "xi-push-web1-1").expect("query");
+    assert_eq!(
+      outcome,
+      ReattachOutcome::Failed {
+        exec_main_status: 9,
+        detail: "ActiveState=failed SubState=failed ExecMainCode=2"
+          .to_owned(),
+      }
+    );
+  }
+
+  #[test]
+  fn a_never_recorded_main_process_reads_as_collected() {
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+       ExecMainCode=0\n",
+    ));
+    assert_eq!(
+      query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
+      ReattachOutcome::Collected
+    );
+  }
+
+  #[test]
+  fn a_non_zero_exit_systemctl_show_errors() {
+    let transport = ScriptedTransport(Outcome::failed("permission denied"));
+    let err = query_unit(&transport, &addr(), "xi-push-web1-1")
+      .expect_err("ssh/systemctl failure must surface");
+    assert!(format!("{err}").contains("permission denied"), "got: {err}");
+  }
+
+  #[test]
+  fn reattaching_to_a_running_unit_leaves_the_receipt_and_does_not_error() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=active\nSubState=running\nExecMainStatus=0\n\
+       ExecMainCode=0\n",
+    ));
+
+    run("web1-push", tmp.path(), &transport).expect("still running is not an error");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_some(),
+      "a still-running unit's receipt must survive"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_succeeded_unit_removes_the_receipt() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+       ExecMainCode=1\n",
+    ));
+
+    run("web1-push", tmp.path(), &transport).expect("success is not an error");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_none(),
+      "a succeeded unit's receipt must be removed"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_failed_unit_errors_and_keeps_the_receipt() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
+       ExecMainCode=1\n",
+    ));
+
+    let err = run("web1-push", tmp.path(), &transport)
+      .expect_err("a failed unit must not pass silently");
+    assert!(format!("{err}").contains("ExecMainStatus=1"), "got: {err}");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_some(),
+      "an operator must still acknowledge a failure before its receipt goes away"
+    );
+  }
+
+  #[test]
+  fn reattaching_to_a_collected_unit_reports_it_without_erroring() {
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
+    receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
+    let transport = ScriptedTransport(Outcome::ok(
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+       ExecMainCode=0\n",
+    ));
+
+    run("web1-push", tmp.path(), &transport)
+      .expect("a collected unit is deferred work, not an error");
+    assert!(
+      receipt::read(tmp.path(), "web1-push")
+        .expect("read")
+        .is_some(),
+      "xi-enwe.2.3's journalctl fallback still needs this receipt"
+    );
   }
 }
