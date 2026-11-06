@@ -27,6 +27,7 @@ use xi_deploy::push::{
   args::{CopyVia, PushBackend},
   discover::{self, PushTarget, ResolvedBackend},
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
+  mode_sources,
   preflight,
   rollback,
 };
@@ -270,6 +271,58 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
     .script
     .clone();
   assert_eq!(last_script, activation);
+}
+
+#[test]
+fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_raw_script()
+ {
+  // xi-jhh4.2.3: the end-to-end counterpart of
+  // `a_clean_target_builds_copies_and_activates_in_one_pass` for `--mode
+  // sources`. No closure is built or copied under this mode, so this
+  // drives the real `mode_sources::switch` (not a hand-rolled copy)
+  // against the fixture `Transport` and asserts the recorded command is
+  // an `xi <scope> switch` invocation, not the old bare
+  // `nixos-rebuild switch --flake` script.
+  let nix = FixtureNix::single_nixos_host("web1");
+  let transport = FixtureTransport::default();
+
+  let targets = discover::discover(&nix, FLAKE).expect("discovers");
+  let selected =
+    discover::select(&targets, &["web1".to_owned()], None).expect("selects");
+  let target = selected[0];
+
+  mode_sources::switch(&transport, target, Scope::System, "operator-host", false)
+    .expect("activates via the remote switch entrypoint");
+
+  let last_script = transport
+    .run_calls
+    .lock()
+    .expect("lock")
+    .last()
+    .expect("ran")
+    .script
+    .clone();
+  assert_eq!(
+    last_script,
+    mode_sources::wrap_in_systemd_run(&mode_sources::switch_script(
+      target,
+      Scope::System,
+      "operator-host"
+    ))
+  );
+  assert!(last_script.contains("xi system switch"), "got: {last_script}");
+  assert!(
+    !last_script.contains("nixos-rebuild switch --flake"),
+    "the old raw rebuild script must not run: {last_script}"
+  );
+  assert!(
+    transport
+      .copy_closure_calls
+      .lock()
+      .expect("lock")
+      .is_empty(),
+    "--mode sources never copies a closure"
+  );
 }
 
 #[test]
