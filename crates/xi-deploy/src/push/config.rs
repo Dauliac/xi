@@ -36,13 +36,13 @@ pub const PUSH_HOST_KEYS: &[&str] = &["name", "ssh", "remote-build", "backend"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushHost {
   /// The name `xi push <name>` matches against.
-  pub name: String,
+  pub name:         String,
   /// `[user@]hostname[:port]` to connect to for this host.
-  pub ssh: String,
+  pub ssh:          String,
   /// Per-host override of the `remote-build` rung.
   pub remote_build: Option<bool>,
   /// Per-host override of the `backend` rung.
-  pub backend: Option<PushBackend>,
+  pub backend:      Option<PushBackend>,
 }
 
 /// The parsed `[push]` table: the `remote-build` and `backend` defaults
@@ -53,9 +53,9 @@ pub struct PushConfig {
   /// build-location ladder.
   pub remote_build: Option<bool>,
   /// `.xi.toml [push] backend`, the middle rung of the backend ladder.
-  pub backend: Option<PushBackend>,
+  pub backend:      Option<PushBackend>,
   /// `[[push.hosts]]` entries, in file order.
-  pub hosts: Vec<PushHost>,
+  pub hosts:        Vec<PushHost>,
 }
 
 impl PushConfig {
@@ -319,6 +319,34 @@ pub fn resolve_remote_build(
   )
 }
 
+/// Resolve the backend ladder for one target: `--backend` >
+/// `.xi.toml [push]` (a per-host `[[push.hosts]]` override first, then
+/// the table-level default) > the Nix-module-provided default >
+/// `detect_backend`'s auto-detect floor.
+///
+/// The floor is always [`PushBackend::Auto`]: this function does not
+/// probe the flake itself, it only decides which configured rung (if
+/// any) preempts that probe. A caller passing `PushBackend::Auto` as
+/// `cli` is saying "no explicit `--backend` flag was given" - the same
+/// convention `--backend`'s own `clap` default already uses - so it is
+/// treated as absent rather than as an explicit override.
+#[must_use]
+pub fn resolve_backend(
+  cli: PushBackend,
+  host_name: &str,
+  toml_config: &PushConfig,
+  nix_module_backend: Option<PushBackend>,
+) -> PushBackend {
+  let cli = (cli != PushBackend::Auto).then_some(cli);
+  resolve_ladder(
+    cli,
+    toml_config.host(host_name).and_then(|host| host.backend),
+    toml_config.backend,
+    nix_module_backend,
+    PushBackend::Auto,
+  )
+}
+
 /// Rewrite `targets`' SSH address from a matching `[[push.hosts]]` entry.
 ///
 /// A target whose name is not in `inventory` is untouched: that is the
@@ -357,7 +385,7 @@ mod tests {
   /// restoring (or removing) it on drop - safe for `#[serial]` tests
   /// that read process-global env vars.
   struct EnvGuard {
-    key: &'static str,
+    key:   &'static str,
     value: Option<std::ffi::OsString>,
   }
 
@@ -516,15 +544,15 @@ mod tests {
 
   fn target(name: &str) -> super::super::discover::PushTarget {
     super::super::discover::PushTarget {
-      addr: TargetAddr {
-        name: name.to_owned(),
+      addr:         TargetAddr {
+        name:     name.to_owned(),
         ssh_host: name.to_owned(),
         ssh_opts: Vec::new(),
       },
-      source: TargetSource::NixosConfigurations,
-      tags: Vec::new(),
-      installable: String::new(),
-      kind: ProfileKind::NixOS,
+      source:       TargetSource::NixosConfigurations,
+      tags:         Vec::new(),
+      installable:  String::new(),
+      kind:         ProfileKind::NixOS,
       profile_path: String::new(),
       rebuild_tool: "nixos-rebuild",
     }
@@ -651,6 +679,86 @@ mod tests {
     let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
     let toml = toml_config("[push]\nremote-build = false\n");
     assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  // -- resolve_backend: the five-rung backend ladder ---------------------
+
+  #[test]
+  fn the_cli_backend_flag_wins_over_every_other_rung() {
+    let toml = toml_config("[push]\nbackend = \"colmena\"\n");
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Builtin,
+        "web1",
+        &toml,
+        Some(PushBackend::DeployRs)
+      ),
+      PushBackend::Builtin
+    );
+  }
+
+  #[test]
+  fn without_a_cli_flag_the_toml_table_backend_default_answers() {
+    let toml = toml_config("[push]\nbackend = \"colmena\"\n");
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web1",
+        &toml,
+        Some(PushBackend::Builtin)
+      ),
+      PushBackend::Colmena
+    );
+  }
+
+  #[test]
+  fn a_per_host_backend_override_outranks_the_table_level_default() {
+    let toml = toml_config(
+      "[push]\nbackend = \"colmena\"\n\n[[push.hosts]]\nname = \"web1\"\nssh \
+       = \"deploy@web1\"\nbackend = \"deploy-rs\"\n",
+    );
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web1",
+        &toml,
+        Some(PushBackend::Builtin)
+      ),
+      PushBackend::DeployRs
+    );
+    // A different host falls through to the table-level default.
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web2",
+        &toml,
+        Some(PushBackend::Builtin)
+      ),
+      PushBackend::Colmena
+    );
+  }
+
+  #[test]
+  fn with_nothing_configured_the_nix_module_backend_default_answers() {
+    let toml = PushConfig::default();
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web1",
+        &toml,
+        Some(PushBackend::Colmena)
+      ),
+      PushBackend::Colmena
+    );
+  }
+
+  #[test]
+  fn with_every_rung_silent_the_floor_is_auto() {
+    let toml = PushConfig::default();
+    assert_eq!(
+      resolve_backend(PushBackend::Auto, "web1", &toml, None),
+      PushBackend::Auto
+    );
   }
 
   // -- build_floor_remote_opt_in: the floor flip's one-release gate ------
