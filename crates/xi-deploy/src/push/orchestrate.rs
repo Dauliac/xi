@@ -43,6 +43,7 @@ use super::{
   limits::PhaseLimits,
   mode_sources,
   preflight,
+  reattach,
   receipt,
   rollback,
 };
@@ -101,11 +102,26 @@ impl PushReport {
 ///
 /// # Errors
 ///
-/// Refuses before any discovery if the sources context is `Missing` or
-/// the working dir is dirty without `--force-dirty`. Otherwise returns an
-/// error naming how many targets failed once every target has been
-/// attempted (preflight and `--fail-fast` both run to completion first).
+/// With `--reattach` set, propagates [`reattach::run`]'s error instead of
+/// anything below - a reattach does not resolve a sources context or
+/// discover targets at all. Otherwise refuses before any discovery if the
+/// sources context is `Missing` or the working dir is dirty without
+/// `--force-dirty`, and otherwise returns an error naming how many
+/// targets failed once every target has been attempted (preflight and
+/// `--fail-fast` both run to completion first).
 pub fn run(args: &PushArgs) -> Result<()> {
+  if let Some(id) = &args.reattach {
+    // A reattach's receipts live under the scope's state dir regardless
+    // of whether that scope currently has sources configured, so this
+    // reads `ScopePaths` directly rather than going through
+    // `context::resolve_context`, which would refuse on a `Missing`
+    // sources status a reattach has no reason to care about.
+    let state_dir =
+      xi_core::sources::config::ScopePaths::resolve(args.sources_scope())
+        .state_dir;
+    return reattach::run(id, &state_dir, &SshTransport);
+  }
+
   args.validate()?;
 
   let scope = args.sources_scope();
@@ -839,6 +855,7 @@ mod tests {
       fail_fast: false,
       force_dirty: false,
       scope: super::super::args::PushScope::System,
+      reattach: None,
     }
   }
 
