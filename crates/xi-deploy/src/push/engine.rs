@@ -23,9 +23,12 @@ use color_eyre::{
 };
 use nix_command::{CommandKind, NixCommand};
 use tracing::debug;
-use xi_core::sources::secrets::SecretSpec;
+use xi_core::{
+  retry::{retry, RetryPolicy},
+  sources::secrets::SecretSpec,
+};
 
-use super::args::CopyVia;
+use super::{args::CopyVia, retry::classify_ssh_exit};
 
 /// A target as the transport needs to address it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,9 +330,15 @@ impl Transport for SshTransport {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-      let status = ssh
-        .status()
-        .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))?;
+      // Only this branch retries: it is the elevated/activation path, never
+      // a probe. A probe (the `!cmd.streaming` branch below) wants an
+      // honest, immediate answer, not one that papers over the condition
+      // it is testing for.
+      let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+        ssh
+          .status()
+          .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))
+      })?;
       return Ok(Outcome {
         success: status.success(),
         stdout:  String::new(),
@@ -359,27 +368,34 @@ impl Transport for SshTransport {
       // `substituteOnDestination` behaviour and the only sensible choice
       // when the operator's link is the bottleneck.
       CopyVia::Target => {
-        let status = Command::new("nix-copy-closure")
-          .args(nix_copy_closure_args(target, store_path))
-          .status()
-          .map_err(|e| eyre!("failed to run nix-copy-closure: {e}"))?;
+        let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+          Command::new("nix-copy-closure")
+            .args(nix_copy_closure_args(target, store_path))
+            .status()
+            .map_err(|e| eyre!("failed to run nix-copy-closure: {e}"))
+        })?;
         if !status.success() {
           bail!("nix-copy-closure to {} failed", target.name);
         }
         Ok(())
       },
       CopyVia::Local => {
-        let output = NixCommand::new(CommandKind::Copy)
-          .arg("--to")
-          .arg(format!("ssh://{}", target.ssh_host))
-          .arg(store_path)
-          .output()
-          .map_err(|e| eyre!("failed to run nix copy: {e}"))?;
-        if !output.status.success() {
+        let last_stderr = std::cell::RefCell::new(String::new());
+        let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+          let output = NixCommand::new(CommandKind::Copy)
+            .arg("--to")
+            .arg(format!("ssh://{}", target.ssh_host))
+            .arg(store_path)
+            .output()
+            .map_err(|e| eyre!("failed to run nix copy: {e}"))?;
+          *last_stderr.borrow_mut() = String::from_utf8_lossy(&output.stderr).into_owned();
+          Ok(output.status)
+        })?;
+        if !status.success() {
           bail!(
             "nix copy to {} failed:\n{}",
             target.name,
-            String::from_utf8_lossy(&output.stderr)
+            last_stderr.into_inner()
           );
         }
         Ok(())
@@ -444,25 +460,27 @@ impl Transport for SshTransport {
       "sudo -n rsync"
     };
 
-    let mut rsync = Command::new("rsync");
-    rsync.arg("--archive").arg("--delete").arg("--compress");
-    for exclude in excludes {
-      rsync.arg(format!("--exclude={exclude}"));
-    }
-    rsync.arg(format!("--rsync-path={rsync_path}"));
-    rsync.arg("-e");
-    rsync.arg(format!(
-      "ssh {}",
-      Self::base_opts(target, interactive_sudo).join(" ")
-    ));
-    // The trailing slash is load-bearing: without it rsync nests the
-    // source directory inside the destination.
-    rsync.arg(format!("{}/", local.display()));
-    rsync.arg(format!("{}:{remote}", target.ssh_host));
+    let status = retry(&RetryPolicy::default(), classify_ssh_exit, || {
+      let mut rsync = Command::new("rsync");
+      rsync.arg("--archive").arg("--delete").arg("--compress");
+      for exclude in excludes {
+        rsync.arg(format!("--exclude={exclude}"));
+      }
+      rsync.arg(format!("--rsync-path={rsync_path}"));
+      rsync.arg("-e");
+      rsync.arg(format!(
+        "ssh {}",
+        Self::base_opts(target, interactive_sudo).join(" ")
+      ));
+      // The trailing slash is load-bearing: without it rsync nests the
+      // source directory inside the destination.
+      rsync.arg(format!("{}/", local.display()));
+      rsync.arg(format!("{}:{remote}", target.ssh_host));
 
-    let status = rsync
-      .status()
-      .map_err(|e| eyre!("failed to run rsync: {e}"))?;
+      rsync
+        .status()
+        .map_err(|e| eyre!("failed to run rsync: {e}"))
+    })?;
     if !status.success() {
       bail!("rsync of {} to {} failed", local.display(), target.name);
     }
