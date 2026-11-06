@@ -1177,6 +1177,106 @@ mod tests {
     );
   }
 
+  /// A [`Transport`] that answers any `systemctl show` query with a
+  /// terminal "succeeded" reply, for the reattach half of the
+  /// disconnect-then-reattach round trip below - the receipt's unit
+  /// name is only known once the disconnect has actually written one,
+  /// so this does not need to match it by name.
+  struct ReattachSucceedsTransport;
+
+  impl Transport for ReattachSucceedsTransport {
+    fn run(
+      &self,
+      _target: &TargetAddr,
+      _cmd: &RemoteCommand,
+    ) -> Result<Outcome> {
+      Ok(Outcome::ok(
+        "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
+         ExecMainCode=1\n",
+      ))
+    }
+
+    fn copy_closure(
+      &self,
+      _target: &TargetAddr,
+      _store_path: &str,
+      _via: PushCopyVia,
+    ) -> Result<()> {
+      unreachable!("reattach never copies a closure")
+    }
+
+    fn upload_secret(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _spec: &SecretSpec,
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      unreachable!("reattach never uploads a secret")
+    }
+
+    fn sync_dir(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _remote: &str,
+      _excludes: &[&str],
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      unreachable!("reattach never syncs a directory")
+    }
+  }
+
+  #[test]
+  fn a_simulated_disconnect_then_reattach_to_success_round_trips_the_receipt()
+   {
+    // xi-enwe.2.5: the full lifecycle a disconnect is supposed to
+    // survive - write the receipt before the switch call, lose the
+    // connection so it is left behind, then `--reattach` to a unit that
+    // actually succeeded must remove it again.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let (_root, context) = fixture_context();
+    let transport = SwitchObservingTransport {
+      inner:                  FixtureTransport::default(),
+      state_dir:              context.state_dir.clone(),
+      receipt_seen_at_switch: Mutex::new(None),
+      fail_switch_with_error: true,
+    };
+    let secrets = BTreeMap::new();
+
+    let report = execute(
+      &args(PushMode::Sources),
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+    assert!(!report.ok(), "the simulated disconnect must be reported");
+
+    let receipts = receipt::list(&context.state_dir).expect("list receipts");
+    assert_eq!(
+      receipts.len(),
+      1,
+      "the disconnect must have left exactly one receipt behind"
+    );
+    let push_id = receipts[0].push_id.clone();
+
+    reattach::run(&push_id, &context.state_dir, &ReattachSucceedsTransport)
+      .expect("reattaching to a unit that actually succeeded is not an error");
+
+    assert!(
+      receipt::read(&context.state_dir, &push_id)
+        .expect("read")
+        .is_none(),
+      "reattaching to a succeeded unit must remove the receipt the \
+       disconnect left behind"
+    );
+  }
+
   #[test]
   fn with_no_mode_flag_a_toml_remote_build_default_picks_sources_mode() {
     let nix = FixtureNix::single_nixos_host("web1");
