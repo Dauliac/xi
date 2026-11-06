@@ -109,10 +109,19 @@ in
                 toml = cratesDir + "/${name}/Cargo.toml";
                 libRs = cratesDir + "/${name}/src/lib.rs";
                 mainRs = cratesDir + "/${name}/src/main.rs";
+                testsDir = cratesDir + "/${name}/tests";
+                benchesDir = cratesDir + "/${name}/benches";
+                examplesDir = cratesDir + "/${name}/examples";
               in
               [ toml ]
               ++ lib.optional (builtins.pathExists libRs) libRs
               ++ lib.optional (builtins.pathExists mainRs) mainRs
+              # Cargo must find every file a [[test]]/[[bench]]/[[example]]
+              # target points at just to PARSE the manifest, even for a
+              # crate that isn't being built in this per-member source tree.
+              ++ lib.optional (builtins.pathExists testsDir) testsDir
+              ++ lib.optional (builtins.pathExists benchesDir) benchesDir
+              ++ lib.optional (builtins.pathExists examplesDir) examplesDir
             ) names;
 
           rootDir = builtins.dirOf cfg.workspace.root;

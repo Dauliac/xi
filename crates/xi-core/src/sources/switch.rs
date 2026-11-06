@@ -7,6 +7,7 @@
 //! identically. See `openspec/changes/xi-sources-config/design.md`.
 
 use std::{
+  io::{self, IsTerminal},
   path::{Path, PathBuf},
   process::Command,
 };
@@ -16,19 +17,64 @@ use color_eyre::{Result, eyre::eyre};
 use tracing::{debug, info, warn};
 
 use super::{
+  RefLineage,
   Scope,
   config::{
-    DEFAULT_BRANCH,
     Installer,
     PositionalKind,
     ScopePaths,
     SourcesConfig,
     classify_positional,
   },
+  conflict::{
+    AutoSync,
+    DIRTY_SOURCE_MARKER,
+    EvaluationInput,
+    EvaluationSource,
+    apply_auto_sync,
+    inspect_working_tree,
+    resolve_evaluation_source,
+  },
+  lock::{ActorName, LockOptions, SourcesLock},
   read_state_file,
+  shadow::{ShadowFetch, remove_if_present},
+  transaction::Transaction,
   write_state_file,
 };
 use crate::installable::{Installable, InstallableArgs};
+
+/// A switch that has taken the sources lock, with the installable it
+/// resolved.
+///
+/// The lock covers the whole switch rather than just the adoption
+/// fetch: build, activate and the generation record all write state
+/// another actor would also write, so holding it only for the fetch
+/// would serialise the cheapest step and leave the rest racing. The
+/// caller therefore keeps this value alive until after
+/// [`record_activation`], and a failure anywhere in between releases
+/// the lock by dropping it, which is why no error path has to clean up.
+///
+/// A scope with no adopted source takes no lock: there is nothing to
+/// serialise, and [`record_activation`] writes nothing for it either.
+#[must_use = "the sources lock is released when this is dropped, so it has to \
+              outlive activation"]
+pub struct PreparedSwitch {
+  installable: InstallableArgs,
+  /// `None` when this scope has no source to contend over.
+  _lock:       Option<SourcesLock>,
+}
+
+impl PreparedSwitch {
+  /// The installable this switch should build.
+  ///
+  /// Borrowed rather than moved out: taking it by value would drop the
+  /// lock at the point the caller starts using it, which is exactly
+  /// backwards.
+  #[must_use]
+  pub const fn installable(&self) -> &InstallableArgs {
+    &self.installable
+  }
+}
 
 /// Source-related flags shared by every scope's `switch`.
 #[derive(Debug, Clone, Args)]
@@ -53,6 +99,25 @@ pub struct SwitchSourcesArgs {
   /// Allow re-pointing this scope at a different remote.
   #[arg(long)]
   pub force: bool,
+
+  /// Evaluate the working dir even when its tree is dirty.
+  ///
+  /// Owned by `xi-sources-conflict`. Without it, uncommitted edits are a
+  /// refusal: building from a tree that no sha describes produces a
+  /// generation nobody can reproduce, so xi makes the operator say they
+  /// meant it. The resulting generation is marked `dirty-source`.
+  #[arg(long)]
+  pub force_dirty: bool,
+
+  /// Build from an explicit positional that disagrees with this scope's
+  /// configured `working_dir`, without the interactive prompt.
+  ///
+  /// Without this, a case-3 [`WorkingDirMismatch`] warns and asks
+  /// (`inquire::Confirm`, the same shape `--ask` already uses) before
+  /// building from the positional; with no TTY attached, it refuses
+  /// rather than guessing which tree the operator meant.
+  #[arg(long)]
+  pub force_working_dir: bool,
 }
 
 impl SwitchSourcesArgs {
@@ -74,8 +139,9 @@ impl SwitchSourcesArgs {
 ///
 /// 1. The positional is a config-repo remote: adopt it, then build from the
 ///    sources dir.
-/// 2. No positional, but this scope has a recorded source: build from the
-///    sources dir.
+/// 2. No positional, but this scope has a recorded source: build from whichever
+///    tree the conflict policy nominates - the working dir when one is
+///    configured and usable, the sources dir otherwise.
 /// 3. Anything else: hand back the installable untouched, so `xi <scope> switch
 ///    .` and `xi <scope> switch github:you/cfg` behave exactly as they did
 ///    before this capability existed.
@@ -84,15 +150,22 @@ impl SwitchSourcesArgs {
 /// because reaching a switch without Nix is the same problem however
 /// the user spelled the argument.
 ///
+/// Cases 1 and 2 take the sources lock before their first write and
+/// hand it back inside the [`PreparedSwitch`], which the caller must
+/// keep alive until after [`record_activation`]. Case 3 takes no lock.
+///
 /// # Errors
 ///
-/// Propagates config-load errors, the installer pre-check failure, and
-/// clone or state-write failures.
+/// Propagates config-load errors, the installer pre-check failure, clone
+/// or state-write failures, a sources lock held by another actor (the
+/// message names the holder and the estimated wait), and the conflict
+/// policy's refusals: a dirty working dir without `--force-dirty`, a
+/// diverged working dir, and a force-pushed remote.
 pub fn prepare(
   scope: Scope,
   installable: InstallableArgs,
   opts: &SwitchSourcesArgs,
-) -> Result<InstallableArgs> {
+) -> Result<PreparedSwitch> {
   let paths = ScopePaths::resolve(scope);
   // `--branch` is the top rung for that key. It has to be reachable from
   // the command line: a machine being adopted for the first time has no
@@ -105,6 +178,8 @@ pub fn prepare(
 
   ensure_nix_available(resolved.installer)?;
 
+  let working_dir = super::args::working_dir_for(&resolved, &paths);
+
   // Case 1: an explicit remote on the command line.
   if let InstallableArgs::Specified(Installable::Flake {
     ref reference,
@@ -112,8 +187,15 @@ pub fn prepare(
   }) = installable
     && opts.kind_of(reference) == PositionalKind::ConfigRemote
   {
+    // Before `adopt`, which fetches into the sources dir: the lock has
+    // to be held before the first write, not after it.
+    let lock = take_lock(scope, &paths)?;
+    warn_on_dirty_adoption(reference, working_dir.as_deref());
     adopt(scope, reference, &resolved.branch, &paths, opts.force)?;
-    return Ok(sources_installable(&paths.sources_dir, attribute.clone()));
+    return Ok(PreparedSwitch {
+      installable: sources_installable(&paths.sources_dir, attribute.clone()),
+      _lock:       Some(lock),
+    });
   }
 
   // Case 2: nothing on the command line, but this scope is adopted.
@@ -121,19 +203,395 @@ pub fn prepare(
     && let Some(recorded) = recorded_remote(&paths.state_dir)?
   {
     debug!("using recorded source for {scope}: {recorded}");
-    if paths.sources_dir.join(".git").is_dir() {
-      return Ok(sources_installable(&paths.sources_dir, Vec::new()));
+    if !paths.sources_dir.join(".git").is_dir() {
+      warn!(
+        "{scope} records {recorded} but {} is not a clone; run `xi {} switch \
+         {recorded}` to restore it",
+        paths.sources_dir.display(),
+        scope.as_str()
+      );
+      // Case 3 fallthrough: with no clone there is nothing to apply the
+      // conflict policy to.
+      return Ok(PreparedSwitch {
+        installable,
+        _lock: None,
+      });
     }
-    warn!(
-      "{scope} records {recorded} but {} is not a clone; run `xi {} switch \
-       {recorded}` to restore it",
-      paths.sources_dir.display(),
-      scope.as_str()
+
+    // Before the auto-copy sync, which writes the working dir.
+    let lock = take_lock(scope, &paths)?;
+
+    // `auto-copy` reconciles before the main action, by spec, so the
+    // evaluation below sees the tree the operator asked xi to maintain.
+    apply_queued_sync(
+      scope,
+      resolved.sync_mode,
+      &paths,
+      working_dir.as_deref(),
     );
+
+    return Ok(PreparedSwitch {
+      installable: evaluate_from(scope, &paths, working_dir.as_deref(), opts)?,
+      _lock:       Some(lock),
+    });
   }
 
-  // Case 3: unchanged.
-  Ok(installable)
+  // Case 3: this scope has no source, so there is nothing to serialise.
+  if let Some(mismatch) =
+    working_dir_mismatch(&installable, working_dir.as_deref())
+  {
+    confirm_working_dir_mismatch(scope, &mismatch, opts.force_working_dir)?;
+  }
+
+  Ok(PreparedSwitch {
+    installable,
+    _lock: None,
+  })
+}
+
+/// A local positional passed to `xi <scope> switch` that disagrees with
+/// this scope's configured `working_dir`.
+///
+/// Both paths are already canonicalised, so xi-jhh4.4.2's prompt can
+/// display or compare them without touching the filesystem again.
+#[derive(Debug, PartialEq, Eq)]
+struct WorkingDirMismatch {
+  /// The canonicalised positional the operator passed.
+  positional:  PathBuf,
+  /// The canonicalised, scope-configured `working_dir`.
+  working_dir: PathBuf,
+}
+
+/// Compare an explicit switch positional against `working_dir`, when both
+/// name real local paths.
+///
+/// `None` covers every case that is not a mismatch worth a prompt: no
+/// configured `working_dir`, a positional that is not a local path (a
+/// flake registry ref, a remote, a store path, a `--file`/`--expr`
+/// installable), or either side failing to canonicalise. That last case
+/// is deliberate: whether the positional actually exists is the resolver's
+/// job once this guard is done, not this comparison's.
+///
+/// Pure and read-only - canonicalising both paths is the only filesystem
+/// contact it makes, and it never prompts. That is what makes the
+/// comparison testable on its own, ahead of the prompt xi-jhh4.4.2 wires
+/// in.
+fn working_dir_mismatch(
+  installable: &InstallableArgs,
+  working_dir: Option<&Path>,
+) -> Option<WorkingDirMismatch> {
+  let working_dir = working_dir?;
+  let InstallableArgs::Specified(Installable::Flake { reference, .. }) =
+    installable
+  else {
+    return None;
+  };
+  let positional = crate::installable::local_flake_reference_path(reference)?;
+
+  let positional = positional.canonicalize().ok()?;
+  let working_dir = working_dir.canonicalize().ok()?;
+
+  if positional == working_dir {
+    return None;
+  }
+
+  Some(WorkingDirMismatch {
+    positional,
+    working_dir,
+  })
+}
+
+/// Warn about a [`WorkingDirMismatch`] and get the operator's go-ahead
+/// before building from the positional, or refuse.
+///
+/// `--force-working-dir` skips both the warning and the prompt: the
+/// operator has already said which tree they meant, on this call and
+/// (per its own doc) every one after. Otherwise this warns and prompts
+/// exactly as `--ask` does elsewhere in xi, except with no TTY attached
+/// there is no one to ask, so it refuses rather than guessing which tree
+/// the operator meant.
+///
+/// # Errors
+///
+/// Returns an error naming the mismatch and `--force-working-dir` when no
+/// TTY is attached, and when the operator declines the prompt.
+fn confirm_working_dir_mismatch(
+  scope: Scope,
+  mismatch: &WorkingDirMismatch,
+  force: bool,
+) -> Result<()> {
+  if force {
+    return Ok(());
+  }
+
+  let positional = mismatch.positional.display();
+  let working_dir = mismatch.working_dir.display();
+  warn!(
+    "{positional} differs from the {scope} scope's configured working_dir \
+     {working_dir}"
+  );
+
+  if !io::stdin().is_terminal() {
+    return Err(eyre!(
+      "{positional} does not match the {scope} scope's configured working_dir \
+       {working_dir}; rerun with --force-working-dir to build from \
+       {positional} anyway, or with no positional to build from {working_dir}"
+    ));
+  }
+
+  let proceed = inquire::Confirm::new(&format!(
+    "Build and activate from {positional} anyway?"
+  ))
+  .with_default(false)
+  .prompt()?;
+
+  if !proceed {
+    return Err(eyre!(
+      "switch cancelled: {positional} does not match the {scope} scope's \
+       configured working_dir {working_dir}"
+    ));
+  }
+
+  Ok(())
+}
+
+/// Take the sources lock for the whole switch, or say who has it.
+///
+/// `ActorName::Switch` is the top of the spec's priority order, so an
+/// operator waiting at a terminal is granted ahead of a daemon tick
+/// that queues behind them. The wait budget is the library default of
+/// one lease unless the operator overrides it with `XI_SOURCES_LOCK_WAIT`
+/// (see xi-aiw7); a switch that cannot get the lock inside that reports
+/// the holder's record and the estimated wait rather than failing bare.
+/// While it waits, a status line naming the holder repeats every couple
+/// of seconds rather than leaving the terminal silent for the whole
+/// budget.
+fn take_lock(scope: Scope, paths: &ScopePaths) -> Result<SourcesLock> {
+  let intent = format!("xi {} switch", scope.as_str());
+  let opts = LockOptions::from_env(ActorName::Switch, intent)
+    .map_err(|err| eyre!("{err}"))?
+    .with_progress();
+  SourcesLock::acquire(&paths.state_dir, &opts).map_err(|err| eyre!("{err}"))
+}
+
+/// Ask the conflict policy which tree to build, and turn it into an
+/// installable.
+///
+/// This is where "the current sources are always right" meets "a local
+/// non-pushed version is a normal state": the policy answers with the
+/// working dir whenever one is usable, so unpushed commits are deployed
+/// rather than treated as a conflict to resolve.
+fn evaluate_from(
+  scope: Scope,
+  paths: &ScopePaths,
+  working_dir: Option<&Path>,
+  opts: &SwitchSourcesArgs,
+) -> Result<InstallableArgs> {
+  let recorded = recorded_refs(&paths.state_dir)?;
+  let what = format!("xi {} switch", scope.as_str());
+
+  match resolve_evaluation_source(&EvaluationInput {
+    sources_dir: &paths.sources_dir,
+    working_dir,
+    recorded: &recorded,
+    force_dirty: opts.force_dirty,
+    what: &what,
+  }) {
+    EvaluationSource::WorkingDir { path, dirty_source } => {
+      if dirty_source {
+        // The generation about to be built is not reproducible from any
+        // sha, so the state dir has to say so; a later `sources status`
+        // naming a sha that never produced the running system would be
+        // worse than naming nothing.
+        mark_dirty_source(&paths.state_dir);
+      }
+      Ok(sources_installable(&path, Vec::new()))
+    },
+    EvaluationSource::SourcesDir { path } => {
+      Ok(sources_installable(&path, Vec::new()))
+    },
+    EvaluationSource::Error { reason } => Err(eyre!(reason)),
+  }
+}
+
+/// The three refs as last recorded in the state dir.
+fn recorded_refs(state_dir: &Path) -> Result<RefLineage> {
+  Ok(RefLineage {
+    remote_head:       read_state_file(state_dir, "remote-head")?,
+    working_head:      read_state_file(state_dir, "working-head")?,
+    sources_head:      read_state_file(state_dir, "sources-head")?,
+    active_generation: read_state_file(state_dir, "active-generation")?,
+  })
+}
+
+/// Record that the next generation came from uncommitted edits.
+///
+/// Best-effort on purpose: a state dir xi cannot write to is a problem
+/// worth a warning, but refusing the switch over a marker would make
+/// `--force-dirty` useless exactly where it is needed - on a machine
+/// whose state dir is not set up yet.
+fn mark_dirty_source(state_dir: &Path) {
+  let existing = read_state_file(state_dir, "active-generation")
+    .ok()
+    .flatten()
+    .unwrap_or_default();
+  let marked = if existing.is_empty() {
+    DIRTY_SOURCE_MARKER.to_owned()
+  } else if existing.contains(DIRTY_SOURCE_MARKER) {
+    existing
+  } else {
+    format!("{existing} ({DIRTY_SOURCE_MARKER})")
+  };
+
+  if let Err(err) = write_state_file(state_dir, "active-generation", &marked) {
+    warn!(
+      "could not mark the generation as {DIRTY_SOURCE_MARKER} in {}: {err}",
+      state_dir.display()
+    );
+  }
+}
+
+/// Run the sync `sync_mode = "auto-copy"` queued, if any.
+///
+/// Never fatal: the operator ran a switch, not a sync, and a failed
+/// reconciliation must not take down the command they asked for. Every
+/// outcome is logged instead.
+fn apply_queued_sync(
+  scope: Scope,
+  sync_mode: super::config::SyncMode,
+  paths: &ScopePaths,
+  working_dir: Option<&Path>,
+) {
+  let what = format!("xi {} sources sync", scope.as_str());
+  match apply_auto_sync(
+    sync_mode,
+    &paths.sources_dir,
+    &paths.state_dir,
+    working_dir,
+    &what,
+  ) {
+    Ok(AutoSync::Applied(outcome)) => {
+      info!(
+        "auto-copy synced {} file(s) into {}; HEAD now {}",
+        outcome.written.len(),
+        working_dir.map_or_else(
+          || "the working dir".to_owned(),
+          |dir| dir.display().to_string()
+        ),
+        outcome.sources_head
+      );
+    },
+    Ok(
+      AutoSync::DeferredDirty | AutoSync::NotRequested | AutoSync::UpToDate,
+    ) => {},
+    Err(err) => warn!("auto-copy sync failed, continuing anyway: {err}"),
+  }
+}
+
+/// Warn when adopting a remote whose local checkout has uncommitted work.
+///
+/// Adoption deploys the *committed* state of the remote. An operator
+/// with a staged-but-uncommitted fix in their own checkout has already
+/// been burned by this: `xi home build` passed in the working tree while
+/// the adopted clone of the same branch failed, because the fix was
+/// never committed. The divergence being fatal was luck; a merely
+/// different branch would have silently activated a configuration
+/// nobody was looking at.
+///
+/// Warning only, no prompt: adoption is often the first command on a
+/// fresh machine, and a blocking question there would be worse than the
+/// surprise it prevents. `sync_mode` is what resolves this properly once
+/// the machine is managed.
+fn warn_on_dirty_adoption(remote: &str, working_dir: Option<&Path>) {
+  if let Some(message) = dirty_adoption_warning(remote, working_dir) {
+    warn!("{message}");
+  }
+}
+
+/// The candidates checked for a dirty checkout tracking `remote`.
+///
+/// `working_dir` first, when configured, then the process's own CWD -
+/// adoption is frequently run from inside the checkout being adopted,
+/// before any `.xi.toml` has recorded a working dir at all.
+fn dirty_adoption_candidates(working_dir: Option<&Path>) -> [Option<&Path>; 2] {
+  [working_dir, Some(Path::new("."))]
+}
+
+/// The warning text for [`warn_on_dirty_adoption`], or `None` when
+/// nothing qualifies.
+///
+/// Separated from the `tracing` call so the detection logic - which
+/// candidate tracks `remote`, and whether it is dirty - is testable
+/// without capturing log output. Returns the *first* matching candidate
+/// only: `working_dir` and CWD are usually the same checkout, and
+/// stacking two warnings about one tree would read as two problems
+/// instead of one.
+///
+/// # Errors
+///
+/// None returned as an error: a candidate that is not a readable git
+/// checkout, or whose `origin` cannot be read, is silently skipped
+/// rather than surfaced, because adoption itself is what is being
+/// attempted and a probe of an unrelated directory failing is not its
+/// business.
+fn dirty_adoption_warning(
+  remote: &str,
+  working_dir: Option<&Path>,
+) -> Option<String> {
+  for dir in dirty_adoption_candidates(working_dir).into_iter().flatten() {
+    if !tracks_remote(dir, remote) {
+      continue;
+    }
+    let Ok(tree) = inspect_working_tree(dir) else {
+      continue;
+    };
+    if !tree.is_dirty() {
+      continue;
+    }
+
+    return Some(format_dirty_adoption_warning(dir, remote, tree.paths.len()));
+  }
+  None
+}
+
+/// Render the dirty-adoption warning for one checkout.
+///
+/// `count` is the number of dirty paths rather than the full
+/// [`super::conflict::DirtyTree`], so this stays a pure string builder a
+/// test can call without a filesystem.
+fn format_dirty_adoption_warning(
+  dir: &Path,
+  remote: &str,
+  count: usize,
+) -> String {
+  format!(
+    "{} has {count} uncommitted change(s) against {remote}.\nAdoption deploys \
+     the committed state of that remote, not what is in that tree. Commit and \
+     push first if the difference matters.",
+    dir.display()
+  )
+}
+
+/// Whether `dir` is a git checkout whose `origin` is `remote`.
+///
+/// Compared through the model's canonicalisation, so `git@host:o/r.git`
+/// and `ssh://host/o/r` are recognised as the same remote rather than
+/// silently skipping the warning.
+fn tracks_remote(dir: &Path, remote: &str) -> bool {
+  let Ok(out) = Command::new("git")
+    .arg("-C")
+    .arg(dir)
+    .args(["remote", "get-url", "origin"])
+    .output()
+  else {
+    return false;
+  };
+  if !out.status.success() {
+    return false;
+  }
+
+  let origin = String::from_utf8_lossy(&out.stdout);
+  super::canonicalize_url(origin.trim()) == super::canonicalize_url(remote)
 }
 
 /// A flake installable rooted at the managed sources dir.
@@ -159,6 +617,22 @@ fn recorded_remote(state_dir: &Path) -> Result<Option<String>> {
 /// machine and on a managed one. A *different* remote is refused
 /// without `force`, because silently repointing what a host deploys
 /// from is not something to do on a typo.
+///
+/// Runs inside a [`Transaction`], per the `xi-sources-crash-recovery`
+/// capability's transaction-boundary rule: the caller already holds the
+/// sources lock (see [`prepare`]), so this only has to open the
+/// transaction, do the work against shadow paths, and commit. The fetch
+/// itself lands in `<sources_dir>.incoming` via [`ShadowFetch`] rather
+/// than touching the live clone directly - on `--force` re-pointing,
+/// that also makes "set the new origin" and "fetch from it" a single
+/// atomic step instead of two, so a crash between them cannot leave the
+/// live clone's origin pointed at a remote its working tree never came
+/// from.
+///
+/// A crash anywhere in this function - mid-fetch, or between the
+/// promote and the state writes - leaves the sentinel this opens for
+/// `xi sources repair` to find and roll back; nothing here is visible at
+/// its final path until [`Transaction::commit`] runs.
 fn adopt(
   scope: Scope,
   remote: &str,
@@ -183,24 +657,196 @@ fn adopt(
     create_private_dir(dir)?;
   }
 
+  let mut txn = Transaction::begin(
+    &paths.state_dir,
+    ActorName::Switch.as_str(),
+    format!("xi {} switch: adopt {remote}", scope.as_str()),
+  )
+  .map_err(|err| eyre!("could not open transaction for adoption: {err}"))?;
+
+  let shadow = ShadowFetch::begin(&paths.sources_dir)
+    .map_err(|err| eyre!("could not stage fetch for adoption: {err}"))?;
+  // Registered before the fetch runs, so a fetch failure rolls the
+  // transaction back on the way out via `?` and `Drop` removes the
+  // half-populated shadow rather than leaving it dangling for repair to
+  // find later.
+  txn.promote(shadow.incoming(), shadow.target());
+
   if paths.sources_dir.join(".git").is_dir() {
-    // Under --force the existing clone still points at the old origin.
-    // Recording the new URL without moving origin would leave the two
-    // silently disagreeing, and every later fetch would quietly keep
-    // pulling the remote the operator just replaced.
-    if repointing {
-      info!("re-pointing origin at {remote}");
-      set_origin(&paths.sources_dir, remote)?;
-    }
     info!("updating {}", paths.sources_dir.display());
-    fetch_and_reset(&paths.sources_dir, branch)?;
   } else {
     info!("cloning {remote} into {}", paths.sources_dir.display());
-    clone(remote, branch, &paths.sources_dir)?;
+  }
+  shadow.fetch(remote, branch).map_err(|err| eyre!("{err}"))?;
+  let head = shadow.head_sha().ok();
+
+  txn.stage_state("remote-url", remote);
+  // The model says `sources_head` is `None` "only on a freshly-
+  // initialised sources dir before any clone", so the clone that just
+  // landed has to record it here.
+  //
+  // `active-generation` is deliberately *not* written: adoption is
+  // steps 1-5 of the entrypoint and activation is step 6. Until step 6
+  // succeeds the honest answer from `xi <scope> sources status` is
+  // `Pending` - see [`record_activation`].
+  if let Some(head) = &head {
+    txn.stage_state("sources-head", head);
   }
 
-  write_state_file(&paths.state_dir, "remote-url", remote)?;
+  txn
+    .commit()
+    .map_err(|err| eyre!("could not commit adoption: {err}"))?;
   Ok(())
+}
+
+/// Record a successful activation against this scope's adopted source.
+///
+/// This is the only writer of `active-generation`, and therefore the
+/// only thing that moves `xi <scope> sources status` from `Pending` to
+/// `Ready`. Adoption clones and records the remote but does not claim a
+/// generation, so the window between a successful clone and a
+/// successful activation - a build that fails, a user who declines the
+/// `--ask` prompt - reports `Pending`, which is exactly the model's
+/// "sources dir exists but `active_generation` is unknown".
+///
+/// A no-op on a scope with no recorded remote: a one-off
+/// `xi home switch .` is not a sources-managed deployment, and minting
+/// state for it would make `status` describe a source nobody adopted.
+///
+/// Best-effort by design. The machine is switched whether or not the
+/// metadata lands, so a write failure warns rather than turning a
+/// successful activation into a failed command.
+pub fn record_activation(scope: Scope, activated_profile: &Path) {
+  let paths = ScopePaths::resolve(scope);
+
+  match recorded_remote(&paths.state_dir) {
+    Ok(Some(_)) => {},
+    Ok(None) => {
+      debug!("{scope} has no recorded source; not recording a generation");
+      return;
+    },
+    Err(err) => {
+      warn!("could not read {scope} sources state: {err}");
+      return;
+    },
+  }
+
+  if let Err(err) = record_activation_at(&paths, activated_profile) {
+    warn!(
+      "activation succeeded but recording it under {} failed: {err}",
+      paths.state_dir.display()
+    );
+  }
+}
+
+/// The writer half of [`record_activation`], against an explicit path
+/// table rather than the process environment.
+///
+/// Separated so the state it produces is testable without mutating
+/// `$HOME` or `$XDG_*` in a process shared with other tests.
+///
+/// # Errors
+///
+/// Propagates state-write failures and `git rev-parse` failures.
+pub fn record_activation_at(
+  paths: &ScopePaths,
+  activated_profile: &Path,
+) -> Result<()> {
+  // The out-link normally lives in a tempdir that is gone by the time
+  // anyone reads this file, so resolve it to the store path behind it.
+  let generation = activated_profile
+    .canonicalize()
+    .unwrap_or_else(|_| activated_profile.to_path_buf());
+
+  write_state_file(
+    &paths.state_dir,
+    "active-generation",
+    &generation.display().to_string(),
+  )?;
+
+  // Best-effort provenance: an SSH-session env var present at the
+  // moment of activation means this process is running over SSH,
+  // whether that is `xi <scope> switch --target-host` or a target
+  // executing a push-assembled remote command. Its absence means a
+  // genuinely local, interactive switch. This cannot see a push that
+  // bypasses xi entirely (the native-rebuild-tool path in
+  // `xi-deploy`'s `--mode sources`, which never calls this function),
+  // so "local" here means "this process's own invocation was local",
+  // not "no push has ever touched this host".
+  let applied_via = if std::env::var_os("SSH_CONNECTION").is_some()
+    || std::env::var_os("SSH_CLIENT").is_some()
+    || std::env::var_os("SSH_TTY").is_some()
+  {
+    "remote"
+  } else {
+    "local"
+  };
+  write_state_file(&paths.state_dir, "applied-via", applied_via)?;
+
+  // `XI_APPLIED_ORIGIN` is the authoritative trigger when a caller sets
+  // it: the gitops daemon tags its own activations `daemon`, and an
+  // inbound push tags its target-side activation `push:<operator
+  // host>`. Its absence means neither of those triggered this call, so
+  // the existing SSH-env-var inference above stands in - unchanged
+  // meaning, just reused for this marker too.
+  let applied_origin = std::env::var("XI_APPLIED_ORIGIN")
+    .ok()
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| applied_via.to_string());
+  write_state_file(&paths.state_dir, "applied-origin", &applied_origin)?;
+
+  // `XI_INVENTORY_ROLE` carries this host's own `[[push.hosts]]` name,
+  // set only when the triggering push matched an inventory entry for
+  // it. A local switch or a daemon tick leaves it unset, and a push
+  // against a host with no inventory entry leaves it unset too - in
+  // both cases any `inventory-role` marker left by an earlier push is
+  // cleared, so a later non-matching activation does not keep
+  // reporting a role nothing just claimed.
+  match std::env::var("XI_INVENTORY_ROLE")
+    .ok()
+    .filter(|v| !v.is_empty())
+  {
+    Some(role) => write_state_file(&paths.state_dir, "inventory-role", &role)?,
+    None => remove_if_present(&paths.state_dir.join("inventory-role"))?,
+  }
+
+  write_state_file(
+    &paths.state_dir,
+    "applied-at",
+    &chrono::Utc::now().to_rfc3339(),
+  )?;
+
+  // The activated closure was built from whatever the clone pointed at,
+  // so the two refs belong to the same moment and are written together.
+  if let Some(head) = git_head(&paths.sources_dir)? {
+    write_state_file(&paths.state_dir, "sources-head", &head)?;
+  }
+  Ok(())
+}
+
+/// HEAD of a clone, or `None` when the path is not one.
+///
+/// "Not a clone" is not an error here: both callers reach this on paths
+/// that are legitimately absent on a machine mid-adoption.
+fn git_head(repo: &Path) -> Result<Option<String>> {
+  if !repo.join(".git").is_dir() {
+    return Ok(None);
+  }
+
+  let out = Command::new("git")
+    .arg("-C")
+    .arg(repo)
+    .args(["rev-parse", "HEAD"])
+    .output()?;
+  if !out.status.success() {
+    return Err(eyre!(
+      "git rev-parse HEAD failed in {}: {}",
+      repo.display(),
+      String::from_utf8_lossy(&out.stderr).trim()
+    ));
+  }
+
+  Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_owned()))
 }
 
 /// Create a directory owner-only, not whatever the umask allows.
@@ -216,77 +862,6 @@ fn create_private_dir(dir: &Path) -> Result<()> {
   {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-  }
-  Ok(())
-}
-
-/// `git clone` into a directory that may already exist but is empty.
-fn clone(remote: &str, branch: &str, dest: &Path) -> Result<()> {
-  // `GIT_TERMINAL_PROMPT=0` is deliberate: without it a missing
-  // credential makes git block on a prompt, turning a scripted switch
-  // into a hang instead of a clean failure.
-  let out = Command::new("git")
-    .env("GIT_TERMINAL_PROMPT", "0")
-    .args(["clone", "--branch", branch, "--"])
-    .arg(remote)
-    .arg(dest)
-    .output()?;
-  if out.status.success() {
-    return Ok(());
-  }
-
-  let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-  // A missing branch is the single most likely adoption failure, because
-  // xi defaults to `main` and plenty of repos are still on `master`.
-  // Git's own message never says where the branch name came from.
-  if stderr.contains("Remote branch") && stderr.contains("not found") {
-    return Err(eyre!(
-      "the remote has no branch `{branch}`.\n\n{stderr}\n\nxi tracks \
-       `{DEFAULT_BRANCH}` unless told otherwise. Pick the branch with \
-       `--branch <name>`, `XI_SOURCES_BRANCH`, or `[sources] branch` in \
-       .xi.toml."
-    ));
-  }
-  Err(eyre!("git clone failed: {stderr}"))
-}
-
-/// Point an existing clone at a different origin.
-fn set_origin(repo: &Path, remote: &str) -> Result<()> {
-  let out = Command::new("git")
-    .arg("-C")
-    .arg(repo)
-    .args(["remote", "set-url", "origin"])
-    .arg(remote)
-    .output()?;
-  if out.status.success() {
-    return Ok(());
-  }
-  Err(eyre!(
-    "git remote set-url failed: {}",
-    String::from_utf8_lossy(&out.stderr).trim()
-  ))
-}
-
-/// Fast-forward an existing clone to the tracked branch.
-fn fetch_and_reset(repo: &Path, branch: &str) -> Result<()> {
-  for args in [
-    vec!["fetch", "origin", branch],
-    vec!["checkout", branch],
-    vec!["reset", "--hard", &format!("origin/{branch}")],
-  ] {
-    let out = Command::new("git")
-      .env("GIT_TERMINAL_PROMPT", "0")
-      .arg("-C")
-      .arg(repo)
-      .args(&args)
-      .output()?;
-    if !out.status.success() {
-      return Err(eyre!(
-        "git {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&out.stderr).trim()
-      ));
-    }
   }
   Ok(())
 }
@@ -370,4 +945,685 @@ pub const fn install_command(backend: Installer) -> &'static str {
 #[must_use]
 pub fn sources_dir_for(scope: Scope) -> PathBuf {
   ScopePaths::resolve(scope).sources_dir
+}
+
+// ---------------------------------------------------------------------------
+// Tests  -  xi-6lla: adoption runs inside a transaction; xi-zbll: warn on
+// dirty adoption
+// ---------------------------------------------------------------------------
+//
+// `adopt` is the actor `xi-xhsn` ("Blocked on wiring, not on
+// implementation... Start here: switch.rs adopt()") names as the one not
+// yet wired into `xi-sources-crash-recovery`'s transaction boundary. These
+// prove it now is: a successful adoption commits and leaves no trace, a
+// failed fetch rolls back and leaves no trace either, and - the
+// acceptance criterion itself - a kill between the transaction opening
+// and its commit leaves an `AbandonedTransaction` finding that names the
+// `switch` actor, exactly as `xi sources repair` reports it.
+
+#[cfg(test)]
+#[expect(clippy::expect_used, clippy::unwrap_used, reason = "Fine in tests")]
+mod tests {
+  use std::fs;
+
+  use serial_test::serial;
+  use tempfile::TempDir;
+
+  use super::*;
+  use crate::sources::{
+    repair::{self, Finding, RepairContext},
+    shadow::incoming_path,
+    transaction::{SENTINEL_NAME, Sentinel},
+  };
+
+  fn scope_paths(root: &Path) -> ScopePaths {
+    ScopePaths {
+      sources_dir: root.join("sources"),
+      state_dir:   root.join("state"),
+      config_file: root.join("sources.toml"),
+    }
+  }
+
+  fn repair_ctx(paths: &ScopePaths) -> RepairContext {
+    RepairContext {
+      scope:            Scope::User,
+      sources_dir:      paths.sources_dir.clone(),
+      state_dir:        paths.state_dir.clone(),
+      nix_conf:         None,
+      xi_conf:          None,
+      receipt_evidence: Vec::new(),
+      resume_sync:      false,
+    }
+  }
+
+  /// A git repo at `dir` with one commit on `main`, as a remote would
+  /// look. Returns the commit it produced.
+  fn remote_repo(dir: &Path) -> String {
+    fs::create_dir_all(dir).expect("mkdir remote");
+    fs::write(dir.join("flake.nix"), "# cfg\n").expect("write flake");
+    for args in [vec!["init", "-q", "-b", "main"], vec!["add", "-A"], vec![
+      "commit", "-q", "-m", "init",
+    ]] {
+      let ok = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.email=t@e", "-c", "user.name=t"])
+        .args(&args)
+        .status()
+        .expect("run git")
+        .success();
+      assert!(ok, "git {args:?} failed in {}", dir.display());
+    }
+    let out = Command::new("git")
+      .arg("-C")
+      .arg(dir)
+      .args(["rev-parse", "HEAD"])
+      .output()
+      .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+  }
+
+  #[test]
+  fn a_successful_adoption_commits_and_leaves_no_transaction_or_shadow() {
+    let tmp = TempDir::new().expect("tempdir");
+    let remote = tmp.path().join("remote");
+    let head = remote_repo(&remote);
+    let paths = scope_paths(tmp.path());
+
+    adopt(
+      Scope::User,
+      &remote.display().to_string(),
+      "main",
+      &paths,
+      false,
+    )
+    .expect("adopt");
+
+    assert!(
+      paths.sources_dir.join(".git").is_dir(),
+      "the clone must land"
+    );
+    assert_eq!(
+      fs::read_to_string(paths.state_dir.join("sources-head"))
+        .expect("read sources-head")
+        .trim(),
+      head
+    );
+    assert_eq!(
+      fs::read_to_string(paths.state_dir.join("remote-url"))
+        .expect("read remote-url")
+        .trim(),
+      remote.display().to_string()
+    );
+    assert!(
+      !paths.state_dir.join(SENTINEL_NAME).exists(),
+      "a committed adoption leaves no transaction sentinel"
+    );
+    assert!(
+      !incoming_path(&paths.sources_dir).exists(),
+      "a committed adoption leaves no shadow fetch"
+    );
+  }
+
+  /// A fetch that fails (unknown branch) must roll the whole transaction
+  /// back: no half-made clone, no shadow, no sentinel, no recorded
+  /// remote - satisfying task 3.3 ("on fetch failure, remove `.incoming`")
+  /// as a side effect of the transaction boundary rather than a
+  /// special-cased cleanup.
+  #[test]
+  fn a_failed_fetch_rolls_the_whole_adoption_back() {
+    let tmp = TempDir::new().expect("tempdir");
+    let remote = tmp.path().join("remote");
+    remote_repo(&remote); // only `main` exists.
+    let paths = scope_paths(tmp.path());
+
+    let err = adopt(
+      Scope::User,
+      &remote.display().to_string(),
+      "no-such-branch",
+      &paths,
+      false,
+    )
+    .expect_err("an unknown branch must fail adoption");
+    assert!(
+      err.to_string().to_lowercase().contains("branch"),
+      "error should name the branch problem: {err}"
+    );
+
+    assert!(
+      !paths.sources_dir.join(".git").is_dir(),
+      "a failed adoption must not leave a clone"
+    );
+    assert!(
+      !incoming_path(&paths.sources_dir).exists(),
+      "a failed fetch's shadow must be rolled back, not left dangling"
+    );
+    assert!(
+      !paths.state_dir.join(SENTINEL_NAME).exists(),
+      "a rolled-back transaction leaves no sentinel"
+    );
+    assert_eq!(
+      read_state_file(&paths.state_dir, "remote-url").expect("read"),
+      None,
+      "a failed adoption must not record the remote it never adopted"
+    );
+  }
+
+  /// The acceptance criterion behind xi-6lla: a crash during `switch`'s
+  /// adoption leaves an `AbandonedTransaction` finding that names the
+  /// `switch` actor, which `xi sources repair` then clears along with the
+  /// shadow fetch it left dangling.
+  ///
+  /// `adopt` is driven for real up to the point a SIGKILL would land -
+  /// transaction open, shadow fetched and registered for promotion, state
+  /// staged - and then `mem::forget` stands in for the kill: it is the
+  /// one way short of an actual fork and signal to skip `Transaction`'s
+  /// own `Drop` rollback the way a killed process would. The owner pid is
+  /// then flipped to a dead one, because this test process is itself
+  /// alive and a live owner's sentinel must never be reported abandoned
+  /// (see `an_abandoned_sentinel_is_cleared_and_a_live_one_is_not` in
+  /// `bdd_sources_crash_recovery.rs`) - that substitution is the only
+  /// part a real kill does not need, since a real kill leaves the pid
+  /// dead on its own.
+  #[test]
+  fn a_kill_before_commit_leaves_an_abandoned_transaction_naming_switch() {
+    let tmp = TempDir::new().expect("tempdir");
+    let remote = tmp.path().join("remote");
+    remote_repo(&remote);
+    let paths = scope_paths(tmp.path());
+
+    create_private_dir(&paths.sources_dir).expect("mkdir sources");
+    create_private_dir(&paths.state_dir).expect("mkdir state");
+
+    let mut txn = Transaction::begin(
+      &paths.state_dir,
+      ActorName::Switch.as_str(),
+      format!("xi user switch: adopt {}", remote.display()),
+    )
+    .expect("begin transaction");
+    let shadow =
+      ShadowFetch::begin(&paths.sources_dir).expect("begin shadow fetch");
+    txn.promote(shadow.incoming(), shadow.target());
+    shadow
+      .fetch(&remote.display().to_string(), "main")
+      .expect("fetch");
+    txn.stage_state("remote-url", &remote.display().to_string());
+    std::mem::forget(txn);
+
+    let ctx = repair_ctx(&paths);
+
+    // Still a live owner at this point: must not be reported abandoned.
+    assert!(
+      !repair::discover(&ctx)
+        .expect("discover")
+        .findings
+        .iter()
+        .any(|f| matches!(f, Finding::AbandonedTransaction { .. })),
+      "a live switch's transaction must not be reported abandoned"
+    );
+
+    let mut sentinel = Sentinel::load(&paths.state_dir)
+      .expect("load sentinel")
+      .expect("sentinel present");
+    assert_eq!(
+      sentinel.actor, "switch",
+      "adopt must open its transaction under the switch actor name"
+    );
+    sentinel.pid = 0x7FFF_FFFF; // Above any real pid: stands in for "gone".
+    fs::write(
+      paths.state_dir.join(SENTINEL_NAME),
+      serde_json::to_vec_pretty(&sentinel).expect("serialise sentinel"),
+    )
+    .expect("rewrite sentinel as abandoned");
+
+    let findings = repair::discover(&ctx).expect("discover").findings;
+    let abandoned = findings
+      .iter()
+      .find_map(|f| {
+        match f {
+          Finding::AbandonedTransaction { actor, .. } => Some(actor.clone()),
+          _ => None,
+        }
+      })
+      .expect("an abandoned transaction finding");
+    assert_eq!(abandoned, "switch");
+
+    let report = repair::execute(&ctx, false).expect("repair");
+    assert!(report.is_clean(), "failures: {:?}", report.failures);
+    assert!(
+      !paths.state_dir.join(SENTINEL_NAME).exists(),
+      "repair clears the abandoned sentinel"
+    );
+    assert!(
+      !incoming_path(&paths.sources_dir).exists(),
+      "repair also sweeps the shadow the abandoned adoption left dangling"
+    );
+  }
+
+  // -- xi-zbll: warn on dirty adoption ------------------------------------
+
+  const REMOTE: &str = "https://git.example/config";
+
+  fn git(at: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+      .arg("-C")
+      .arg(at)
+      .args([
+        "-c",
+        "user.email=t@e",
+        "-c",
+        "user.name=t",
+        "-c",
+        "commit.gpgsign=false",
+      ])
+      .args(args)
+      .output()
+      .expect("run git");
+    assert!(
+      out.status.success(),
+      "git {args:?} failed in {}: {}",
+      at.display(),
+      String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+  }
+
+  /// A git checkout with one commit, `origin` pointed at `origin_url`.
+  fn checkout(root: &Path, origin_url: &str) -> PathBuf {
+    let dir = root.join("checkout");
+    fs::create_dir_all(&dir).expect("mkdir checkout");
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { }; }\n")
+      .expect("write flake");
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["remote", "add", "origin", origin_url]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "base"]);
+    dir
+  }
+
+  // -- format_dirty_adoption_warning: pure formatting --------------------
+
+  #[test]
+  fn the_warning_names_the_remote_and_the_file_count() {
+    let message =
+      format_dirty_adoption_warning(Path::new("/home/op/dotfiles"), REMOTE, 3);
+    assert!(message.contains(REMOTE), "{message}");
+    assert!(message.contains('3'), "{message}");
+    assert!(message.contains("/home/op/dotfiles"), "{message}");
+    assert!(
+      message.contains("deploys"),
+      "must say adoption deploys committed state, got: {message}"
+    );
+  }
+
+  // -- tracks_remote -------------------------------------------------------
+
+  #[test]
+  fn tracks_remote_is_true_for_the_exact_origin() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert!(tracks_remote(&dir, REMOTE));
+  }
+
+  #[test]
+  fn tracks_remote_canonicalises_equivalent_url_shapes() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), "git@git.example:config.git");
+    assert!(
+      tracks_remote(&dir, "ssh://git.example/config"),
+      "scp-style and ssh:// spellings of the same remote must match"
+    );
+  }
+
+  #[test]
+  fn tracks_remote_is_false_for_a_different_remote() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert!(!tracks_remote(&dir, "https://git.example/other"));
+  }
+
+  #[test]
+  fn tracks_remote_is_false_for_a_non_repository() {
+    let tmp = TempDir::new().unwrap();
+    let not_a_repo = tmp.path().join("not-a-repo");
+    fs::create_dir_all(&not_a_repo).unwrap();
+    assert!(!tracks_remote(&not_a_repo, REMOTE));
+  }
+
+  // -- dirty_adoption_warning: the end-to-end check -----------------------
+
+  #[test]
+  fn a_dirty_checkout_tracking_the_remote_produces_a_warning() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { v = 2; }; }\n")
+      .expect("dirty the checkout");
+
+    let message = dirty_adoption_warning(REMOTE, Some(&dir))
+      .expect("a dirty checkout tracking the remote must warn");
+    assert!(message.contains(REMOTE), "{message}");
+    assert!(message.contains("1 uncommitted"), "{message}");
+  }
+
+  #[test]
+  fn a_clean_checkout_tracking_the_remote_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), REMOTE);
+    assert_eq!(dirty_adoption_warning(REMOTE, Some(&dir)), None);
+  }
+
+  #[test]
+  fn a_dirty_checkout_tracking_a_different_remote_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = checkout(tmp.path(), "https://git.example/unrelated");
+    fs::write(dir.join("flake.nix"), "{ outputs = _: { v = 2; }; }\n")
+      .expect("dirty the checkout");
+
+    assert_eq!(
+      dirty_adoption_warning(REMOTE, Some(&dir)),
+      None,
+      "adoption of `{REMOTE}` must not warn about an unrelated checkout"
+    );
+  }
+
+  #[test]
+  fn with_no_working_dir_and_a_non_tracking_cwd_nothing_warns() {
+    // The CWD fallback is exercised by passing `None`; the test process's
+    // own CWD does not track a fake `https://git.example` remote, so this
+    // must fall through to `None` rather than panic or false-positive.
+    assert_eq!(dirty_adoption_warning(REMOTE, None), None);
+  }
+
+  // -- working_dir_mismatch ------------------------------------------------
+
+  #[test]
+  fn no_mismatch_when_no_working_dir_is_configured() {
+    let tmp = TempDir::new().unwrap();
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: tmp.path().display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(working_dir_mismatch(&installable, None), None);
+  }
+
+  #[test]
+  fn no_mismatch_when_the_installable_is_unspecified() {
+    let tmp = TempDir::new().unwrap();
+
+    assert_eq!(
+      working_dir_mismatch(&InstallableArgs::Unspecified, Some(tmp.path())),
+      None
+    );
+  }
+
+  #[test]
+  fn no_mismatch_for_a_non_local_flake_reference() {
+    let tmp = TempDir::new().unwrap();
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: String::from("github:example/config"),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(
+      working_dir_mismatch(&installable, Some(tmp.path())),
+      None,
+      "a registry/URL-style flake ref is not a local path to compare"
+    );
+  }
+
+  #[test]
+  fn no_mismatch_when_the_positional_does_not_exist() {
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("does-not-exist");
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: missing.display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(
+      working_dir_mismatch(&installable, Some(tmp.path())),
+      None,
+      "a positional that fails to canonicalise is not this guard's job to \
+       report; the resolver that builds it does that"
+    );
+  }
+
+  #[test]
+  fn no_mismatch_when_the_canonical_paths_agree() {
+    let tmp = TempDir::new().unwrap();
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: tmp.path().display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    assert_eq!(working_dir_mismatch(&installable, Some(tmp.path())), None);
+  }
+
+  #[test]
+  fn mismatch_names_both_canonicalised_paths() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: positional_dir.display().to_string(),
+      attribute: Vec::new(),
+    });
+
+    let mismatch = working_dir_mismatch(&installable, Some(&working_dir))
+      .expect("differing canonical paths must be reported as a mismatch");
+    assert_eq!(mismatch.positional, positional_dir.canonicalize().unwrap());
+    assert_eq!(mismatch.working_dir, working_dir.canonicalize().unwrap());
+  }
+
+  #[test]
+  fn mismatch_recognises_the_path_scheme_prefix() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let installable = InstallableArgs::Specified(Installable::Flake {
+      reference: format!("path:{}", positional_dir.display()),
+      attribute: Vec::new(),
+    });
+
+    assert!(
+      working_dir_mismatch(&installable, Some(&working_dir)).is_some(),
+      "a `path:` prefixed reference is still a local path to compare"
+    );
+  }
+
+  // -- confirm_working_dir_mismatch -----------------------------------------
+
+  #[test]
+  fn force_working_dir_skips_the_warning_and_the_prompt() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+    let mismatch = WorkingDirMismatch {
+      positional:  positional_dir.canonicalize().unwrap(),
+      working_dir: working_dir.canonicalize().unwrap(),
+    };
+
+    confirm_working_dir_mismatch(Scope::User, &mismatch, true)
+      .expect("--force-working-dir must build without prompting");
+  }
+
+  #[test]
+  fn no_tty_and_no_force_refuses_naming_the_mismatch_and_the_flag() {
+    let root = TempDir::new().unwrap();
+    let positional_dir = root.path().join("positional");
+    let working_dir = root.path().join("working-dir");
+    fs::create_dir_all(&positional_dir).unwrap();
+    fs::create_dir_all(&working_dir).unwrap();
+    let mismatch = WorkingDirMismatch {
+      positional:  positional_dir.canonicalize().unwrap(),
+      working_dir: working_dir.canonicalize().unwrap(),
+    };
+
+    // `cargo test`/`nextest` run with no TTY attached to stdin, so this
+    // exercises the same refusal an operator with no terminal would hit,
+    // without having to fake one.
+    let err = confirm_working_dir_mismatch(Scope::User, &mismatch, false)
+      .expect_err("no TTY and no --force-working-dir must refuse");
+    let message = err.to_string();
+    assert!(
+      message.contains(&mismatch.positional.display().to_string()),
+      "got: {message}"
+    );
+    assert!(
+      message.contains(&mismatch.working_dir.display().to_string()),
+      "got: {message}"
+    );
+    assert!(message.contains("--force-working-dir"), "got: {message}");
+  }
+
+  /// Saves, clears, and restores the env vars `record_activation_at`
+  /// reads for `applied-origin` and `inventory-role`, so the cases
+  /// below do not race each other or leak into other tests in the
+  /// same process.
+  struct OriginEnvGuard {
+    saved: [(&'static str, Option<String>); 5],
+  }
+
+  impl OriginEnvGuard {
+    fn clear() -> Self {
+      let names = [
+        "XI_APPLIED_ORIGIN",
+        "XI_INVENTORY_ROLE",
+        "SSH_CONNECTION",
+        "SSH_CLIENT",
+        "SSH_TTY",
+      ];
+      let saved = [
+        (names[0], std::env::var(names[0]).ok()),
+        (names[1], std::env::var(names[1]).ok()),
+        (names[2], std::env::var(names[2]).ok()),
+        (names[3], std::env::var(names[3]).ok()),
+        (names[4], std::env::var(names[4]).ok()),
+      ];
+      unsafe {
+        for (name, _) in &saved {
+          std::env::remove_var(name);
+        }
+      }
+      Self { saved }
+    }
+
+    fn set(&self, name: &str, value: &str) {
+      debug_assert!(
+        self.saved.iter().any(|(saved_name, _)| *saved_name == name)
+      );
+      unsafe {
+        std::env::set_var(name, value);
+      }
+    }
+  }
+
+  impl Drop for OriginEnvGuard {
+    fn drop(&mut self) {
+      unsafe {
+        for (name, value) in &self.saved {
+          match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  #[serial]
+  fn record_activation_at_writes_applied_origin_for_local_daemon_and_push() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = scope_paths(tmp.path());
+    create_private_dir(&paths.state_dir).expect("mkdir state");
+    let profile = tmp.path().join("profile");
+    fs::write(&profile, "generation").expect("write profile");
+
+    // Case 1: no `XI_APPLIED_ORIGIN` and no SSH session var -> "local",
+    // reusing today's `applied-via` inference.
+    let guard = OriginEnvGuard::clear();
+    record_activation_at(&paths, &profile).expect("record local");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "applied-origin")
+        .expect("read")
+        .as_deref(),
+      Some("local")
+    );
+
+    // Case 2: the gitops daemon tags its own activation explicitly.
+    guard.set("XI_APPLIED_ORIGIN", "daemon");
+    record_activation_at(&paths, &profile).expect("record daemon");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "applied-origin")
+        .expect("read")
+        .as_deref(),
+      Some("daemon")
+    );
+
+    // Case 3: an inbound push tags its target-side activation with the
+    // operator's hostname.
+    guard.set("XI_APPLIED_ORIGIN", "push:operator-host");
+    record_activation_at(&paths, &profile).expect("record push");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "applied-origin")
+        .expect("read")
+        .as_deref(),
+      Some("push:operator-host")
+    );
+
+    drop(guard);
+  }
+
+  #[test]
+  #[serial]
+  fn record_activation_at_writes_inventory_role_only_when_a_push_supplied_one()
+  {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = scope_paths(tmp.path());
+    create_private_dir(&paths.state_dir).expect("mkdir state");
+    let profile = tmp.path().join("profile");
+    fs::write(&profile, "generation").expect("write profile");
+
+    // Case 1: no `XI_INVENTORY_ROLE` -> no marker is written.
+    let guard = OriginEnvGuard::clear();
+    record_activation_at(&paths, &profile).expect("record without role");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "inventory-role").expect("read"),
+      None
+    );
+
+    // Case 2: an inbound push matched a `[[push.hosts]]` entry for
+    // this host and tagged its activation with that name.
+    guard.set("XI_INVENTORY_ROLE", "web1");
+    record_activation_at(&paths, &profile).expect("record with role");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "inventory-role")
+        .expect("read")
+        .as_deref(),
+      Some("web1")
+    );
+
+    // Case 3: a later activation with no role clears the stale marker
+    // rather than leaving `web1` for a local switch to keep reporting.
+    unsafe {
+      std::env::remove_var("XI_INVENTORY_ROLE");
+    }
+    record_activation_at(&paths, &profile).expect("record clears role");
+    assert_eq!(
+      read_state_file(&paths.state_dir, "inventory-role").expect("read"),
+      None
+    );
+
+    drop(guard);
+  }
 }

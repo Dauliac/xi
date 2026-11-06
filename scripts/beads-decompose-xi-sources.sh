@@ -44,60 +44,57 @@
 set -euo pipefail
 
 if ! command -v beads-plan >/dev/null 2>&1; then
-    echo "FATAL: beads-plan not on PATH. Install from the nix profile." >&2
-    exit 1
+  echo "FATAL: beads-plan not on PATH. Install from the nix profile." >&2
+  exit 1
 fi
 
 if ! bd dolt status 2>&1 | grep -qE "running|reachable|embedded"; then
-    echo "FATAL: bd dolt status does not report a live backend." >&2
-    echo "       See the Dolt remediation section at the top of this file." >&2
-    exit 1
+  echo "FATAL: bd dolt status does not report a live backend." >&2
+  echo "       See the Dolt remediation section at the top of this file." >&2
+  exit 1
 fi
 
 if ! bd stats 2>&1 | grep -q "Total Issues:"; then
-    echo "FATAL: bd stats failed; database not reachable." >&2
-    exit 1
+  echo "FATAL: bd stats failed; database not reachable." >&2
+  exit 1
 fi
 
 FORCE=${FORCE:-0}
 
 changes=(
-    xi-sources-model
-    xi-sources-config
-    xi-sources-conflict
-    xi-sources-gitops
-    xi-sources-push
-    xi-sources-cache-prestage
-    xi-sources-bootstrap
-    xi-sources-nix-modules
-    xi-sources-credentials
-    xi-sources-race
-    xi-sources-crash-recovery
-    xi-sources-observability
+  xi-sources-model
+  xi-sources-config
+  xi-sources-conflict
+  xi-sources-gitops
+  xi-sources-push
+  xi-sources-cache-prestage
+  xi-sources-bootstrap
+  xi-sources-nix-modules
+  xi-sources-credentials
+  xi-sources-race
+  xi-sources-crash-recovery
+  xi-sources-observability
 )
 
-total_epics=0
-total_tasks=0
-
 for change in "${changes[@]}"; do
-    dir="openspec/changes/$change"
-    if [ ! -d "$dir" ]; then
-        echo "SKIP: $change (dir missing)"
-        continue
-    fi
+  dir="openspec/changes/$change"
+  if [ ! -d "$dir" ]; then
+    echo "SKIP: $change (dir missing)"
+    continue
+  fi
 
-    if [ "$FORCE" != "1" ] && bd list --json 2>/dev/null | grep -q "\"change:$change\""; then
-        echo "SKIP: $change (already stamped; pass FORCE=1 to re-stamp)"
-        continue
-    fi
+  if [ "$FORCE" != "1" ] && bd list --json 2>/dev/null | grep -q "\"change:$change\""; then
+    echo "SKIP: $change (already stamped; pass FORCE=1 to re-stamp)"
+    continue
+  fi
 
-    echo "==> $change"
-    beads-plan plan "$dir"
+  echo "==> $change"
+  beads-plan plan "$dir"
 
-    # Collect a per-change post-stamp count for the summary.
-    counts=$(beads-plan plan "$dir" --dry-run 2>&1 | grep -E "^Sections:|^Dependencies:")
-    echo "    $counts"
-    echo
+  # Collect a per-change post-stamp count for the summary.
+  counts=$(beads-plan plan "$dir" --dry-run 2>&1 | grep -E "^Sections:|^Dependencies:")
+  echo "    $counts"
+  echo
 done
 
 echo "=== xi-sources decomposition complete ==="

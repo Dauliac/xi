@@ -8,6 +8,7 @@
 
 pub mod args;
 pub mod backend;
+pub mod push;
 pub mod target;
 
 use color_eyre::{Result, eyre::bail};
@@ -15,7 +16,15 @@ use color_eyre::{Result, eyre::bail};
 pub use target::{DeployProfile, DeployTarget, ProfileKind};
 use tracing::info;
 
-use crate::{args::DeployArgs, backend::DeployBackend};
+use crate::{
+  args::DeployArgs,
+  backend::DeployBackend,
+  push::{
+    args::PushBackend,
+    discover::{self, ResolvedBackend},
+    engine::{CliNix, Nix},
+  },
+};
 
 /// Detect the deployment backend from the flake and run the deployment.
 ///
@@ -24,6 +33,14 @@ use crate::{args::DeployArgs, backend::DeployBackend};
 /// 2. `deploy` output → deploy-rs
 /// 3. `colmenaHive` output → colmena
 /// 4. `nixosConfigurations` with `--target-host` → builtin
+///
+/// `push::orchestrate::delegate` calls this same function for a push
+/// that resolves to `deploy-rs` or `colmena`, with `args.backend` always
+/// `Some` (its own [`push::discover::detect_backend`] call already
+/// picked the backend against push's own filtered target list, so this
+/// entrypoint's detection path is only exercised by the standalone `xi
+/// deploy` verb). This is the one dispatch path both entrypoints share,
+/// not two independently maintained ones (xi-jhh4.5.1/5.2).
 ///
 /// # Errors
 ///
@@ -64,18 +81,142 @@ fn resolve_explicit_backend(
   }
 }
 
-/// Auto-detect backend by probing flake outputs.
+/// Auto-detect backend by discovering the flake's targets and applying
+/// the one precedence table `push::discover::detect_backend` owns, so
+/// this entrypoint and `xi push`'s never disagree on the same flake.
 fn detect_backend(flake_ref: &str) -> Box<dyn DeployBackend> {
-  // 1. deploy-rs: check for `deploy` output
-  if let Ok(backend) = backend::deploy_rs::DeployRsBackend::new(flake_ref) {
-    return Box::new(backend);
+  detect_backend_with(&CliNix, flake_ref)
+}
+
+/// [`detect_backend`], parameterized over [`Nix`] so a test double can
+/// stand in for the real `nix` CLI and prove this flake-probing
+/// entrypoint resolves the same backend `push::discover::detect_backend`
+/// (the target-list entrypoint) does for the same flake.
+fn detect_backend_with(nix: &dyn Nix, flake_ref: &str) -> Box<dyn DeployBackend> {
+  match resolve_backend(nix, flake_ref) {
+    ResolvedBackend::DeployRs => {
+      if let Ok(backend) = backend::deploy_rs::DeployRsBackend::new(flake_ref) {
+        return Box::new(backend);
+      }
+    },
+    ResolvedBackend::Colmena => {
+      if let Ok(backend) = backend::colmena::ColmenaBackend::new() {
+        return Box::new(backend);
+      }
+    },
+    ResolvedBackend::Builtin => {},
   }
 
-  // 2. colmena: check for `colmenaHive` output
-  if let Ok(backend) = backend::colmena::ColmenaBackend::new() {
-    return Box::new(backend);
-  }
-
-  // 3. builtin: always available as fallback
+  // Always available as a fallback, including when the detected
+  // backend's own construction fails (e.g. a malformed `deploy`
+  // config, or `colmena` missing from `PATH`).
   Box::new(backend::builtin::BuiltinBackend)
+}
+
+/// The one shared backend-precedence decision: discover `flake_ref`'s
+/// targets through `nix` and hand them to
+/// [`discover::detect_backend`] exactly as the target-list entrypoint
+/// (`xi push`) does. Kept separate from backend *construction* above,
+/// which can fail independently of this decision (a malformed `deploy`
+/// output, `colmena` missing from `PATH`) and is not what the
+/// collapsed precedence table is about.
+fn resolve_backend(nix: &dyn Nix, flake_ref: &str) -> ResolvedBackend {
+  let targets = discover::discover(nix, flake_ref).unwrap_or_default();
+  let colmena_hive_present =
+    discover::has_colmena_hive(nix, flake_ref).unwrap_or(false);
+  discover::detect_backend(PushBackend::Auto, &targets, colmena_hive_present)
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
+mod tests {
+  use super::*;
+
+  /// Answers flake evaluation from a fixture table keyed by attr,
+  /// mirroring `bdd_push_builtin.rs`'s `FixtureNix`: absence from the
+  /// table reads as "no such output", not an error.
+  struct FixtureNix {
+    outputs: Vec<(&'static str, serde_json::Value)>,
+  }
+
+  impl FixtureNix {
+    fn only_deploy_node(name: &'static str) -> Self {
+      Self {
+        outputs: vec![(
+          ".#deploy",
+          serde_json::json!({
+            "nodes": { name: { "hostname": name } }
+          }),
+        )],
+      }
+    }
+
+    fn only_nixos_configuration(name: &'static str) -> Self {
+      Self {
+        outputs: vec![(".#nixosConfigurations", serde_json::json!([name]))],
+      }
+    }
+  }
+
+  impl Nix for FixtureNix {
+    fn eval_json(
+      &self,
+      installable: &str,
+      _apply: Option<&str>,
+    ) -> Result<Option<serde_json::Value>> {
+      Ok(
+        self
+          .outputs
+          .iter()
+          .find(|(attr, _)| *attr == installable)
+          .map(|(_, value)| value.clone()),
+      )
+    }
+
+    fn build(&self, installable: &str) -> Result<String> {
+      Ok(format!("/nix/store/fake-{installable}"))
+    }
+  }
+
+  /// SC-UA-005 / the spec's "Both callers agree on the same fleet"
+  /// scenario: the flake-probing entrypoint (this crate's own
+  /// `detect_backend`, used by the legacy `xi deploy` verb) and the
+  /// target-list entrypoint (`push::discover::detect_backend`, used by
+  /// `xi push`) must resolve the same backend for the same flake,
+  /// because the former is now a thin wrapper over the latter rather
+  /// than a second, independently maintained precedence check.
+  #[test]
+  fn flake_probing_and_target_list_resolve_the_same_backend_for_a_deploy_node() {
+    let nix = FixtureNix::only_deploy_node("web1");
+
+    let targets = discover::discover(&nix, ".").expect("discovers");
+    let colmena_hive_present =
+      discover::has_colmena_hive(&nix, ".").expect("checks colmena hive");
+    let target_list_backend =
+      discover::detect_backend(PushBackend::Auto, &targets, colmena_hive_present);
+    assert_eq!(target_list_backend, ResolvedBackend::DeployRs);
+
+    let flake_probing_backend = resolve_backend(&nix, ".");
+    assert_eq!(flake_probing_backend, target_list_backend);
+  }
+
+  #[test]
+  fn flake_probing_and_target_list_resolve_the_same_backend_for_a_bare_nixos_configuration()
+   {
+    let nix = FixtureNix::only_nixos_configuration("web2");
+
+    let targets = discover::discover(&nix, ".").expect("discovers");
+    let colmena_hive_present =
+      discover::has_colmena_hive(&nix, ".").expect("checks colmena hive");
+    let target_list_backend =
+      discover::detect_backend(PushBackend::Auto, &targets, colmena_hive_present);
+    assert_eq!(target_list_backend, ResolvedBackend::Builtin);
+
+    let flake_probing_backend = resolve_backend(&nix, ".");
+    assert_eq!(flake_probing_backend, target_list_backend);
+
+    // Builtin never fails to construct, so the full wrapper agrees too.
+    let flake_probing_backend_boxed = detect_backend_with(&nix, ".");
+    assert_eq!(flake_probing_backend_boxed.name(), "builtin");
+  }
 }

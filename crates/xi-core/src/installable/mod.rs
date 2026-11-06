@@ -729,7 +729,7 @@ where
   res
 }
 
-fn local_flake_reference_path(reference: &str) -> Option<PathBuf> {
+pub(crate) fn local_flake_reference_path(reference: &str) -> Option<PathBuf> {
   // Only preflight references that are unmistakably filesystem paths. Bare
   // names like `nixpkgs`, plus URL/registry-style refs, stay in Nix's hands.
   if let Some(path) = reference.strip_prefix("path:") {

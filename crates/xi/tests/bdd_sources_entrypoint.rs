@@ -11,6 +11,8 @@
 
 use std::{path::PathBuf, process::Command};
 
+use xi_core::sources::lock::{ActorName, LockOptions, SourcesLock};
+
 /// Path to the binary under test, as cargo built it for this run.
 fn xi() -> PathBuf {
   let mut p = std::env::current_exe().expect("test exe path");
@@ -185,7 +187,19 @@ impl Machine {
   /// which the discrimination rule correctly reads as an installable.
   /// The adoption behaviour under test is the same either way.
   fn switch(&self, extra: &[&str]) -> (String, bool) {
-    let out = Command::new(xi())
+    self.switch_with(extra, &[])
+  }
+
+  /// As [`Machine::switch`], with extra environment variables - for
+  /// `XI_SOURCES_LOCK_WAIT`, which a contention scenario needs to set
+  /// short enough that the test does not block for a full lease.
+  fn switch_with(
+    &self,
+    extra: &[&str],
+    extra_env: &[(&str, &str)],
+  ) -> (String, bool) {
+    let mut cmd = Command::new(xi());
+    cmd
       .args(["home", "switch", "--adopt"])
       .args(extra)
       .env("XI_NO_CHECKS", "1")
@@ -194,9 +208,11 @@ impl Machine {
       .env("XDG_STATE_HOME", self.home.join(".local/state"))
       .env("XDG_CONFIG_HOME", self.home.join(".config"))
       .env_remove("XI_SOURCES_REMOTE")
-      .current_dir(self.home.join("proj"))
-      .output()
-      .expect("spawn xi");
+      .current_dir(self.home.join("proj"));
+    for (key, value) in extra_env {
+      cmd.env(key, value);
+    }
+    let out = cmd.output().expect("spawn xi");
     let merged = format!(
       "{}{}",
       String::from_utf8_lossy(&out.stdout),
@@ -205,12 +221,55 @@ impl Machine {
     (merged, out.status.success())
   }
 
+  /// Run `xi home sources sync` with extra environment variables, e.g.
+  /// `XI_SOURCES_WORKING_DIR` to name the clone to sync into.
+  fn sync_with(&self, extra_env: &[(&str, &str)]) -> (String, bool) {
+    let mut cmd = Command::new(xi());
+    cmd
+      .args(["home", "sources", "sync"])
+      .env("XI_NO_CHECKS", "1")
+      .env("HOME", &self.home)
+      .env("XDG_DATA_HOME", self.home.join(".local/share"))
+      .env("XDG_STATE_HOME", self.home.join(".local/state"))
+      .env("XDG_CONFIG_HOME", self.home.join(".config"))
+      .env_remove("XI_SOURCES_REMOTE")
+      .current_dir(self.home.join("proj"));
+    for (key, value) in extra_env {
+      cmd.env(key, value);
+    }
+    let out = cmd.output().expect("spawn xi");
+    let merged = format!(
+      "{}{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
+    (merged, out.status.success())
+  }
+
+  fn state_dir(&self) -> PathBuf {
+    self.home.join(".local/state/xi")
+  }
+
   fn sources_dir(&self) -> PathBuf {
     self.home.join(".local/share/xi/sources")
   }
 
   fn recorded_remote(&self) -> Option<String> {
     std::fs::read_to_string(self.home.join(".local/state/xi/remote-url")).ok()
+  }
+
+  fn recorded_head(&self) -> Option<String> {
+    std::fs::read_to_string(self.home.join(".local/state/xi/sources-head")).ok()
+  }
+
+  fn git_head(&self) -> String {
+    let out = Command::new("git")
+      .arg("-C")
+      .arg(self.sources_dir())
+      .args(["rev-parse", "HEAD"])
+      .output()
+      .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
   }
 
   fn origin(&self) -> String {
@@ -231,6 +290,22 @@ impl Machine {
       .output()
       .expect("git log");
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
+  }
+
+  /// The `xi home sources status` envelope, as JSON on stdout.
+  fn status(&self) -> String {
+    let out = Command::new(xi())
+      .args(["home", "sources", "status"])
+      .env("XI_NO_CHECKS", "1")
+      .env("HOME", &self.home)
+      .env("XDG_DATA_HOME", self.home.join(".local/share"))
+      .env("XDG_STATE_HOME", self.home.join(".local/state"))
+      .env("XDG_CONFIG_HOME", self.home.join(".config"))
+      .env_remove("XI_SOURCES_REMOTE")
+      .current_dir(self.home.join("proj"))
+      .output()
+      .expect("spawn xi");
+    String::from_utf8_lossy(&out.stdout).into_owned()
   }
 }
 
@@ -348,18 +423,7 @@ fn status_reports_the_adopted_remote_without_any_config_file() {
   let remote = fixture_repo(&m.tmp.path().join("upstream"), "adopted");
   m.switch(&[&remote]);
 
-  let out = Command::new(xi())
-    .args(["home", "sources", "status"])
-    .env("XI_NO_CHECKS", "1")
-    .env("HOME", &m.home)
-    .env("XDG_DATA_HOME", m.home.join(".local/share"))
-    .env("XDG_STATE_HOME", m.home.join(".local/state"))
-    .env("XDG_CONFIG_HOME", m.home.join(".config"))
-    .env_remove("XI_SOURCES_REMOTE")
-    .current_dir(m.home.join("proj"))
-    .output()
-    .expect("spawn xi");
-  let stdout = String::from_utf8_lossy(&out.stdout);
+  let stdout = m.status();
 
   assert!(
     stdout.contains(&remote),
@@ -368,5 +432,364 @@ fn status_reports_the_adopted_remote_without_any_config_file() {
   assert!(
     !stdout.contains("\"canonical_url\": \"\""),
     "identity must not be empty after adoption: {stdout}"
+  );
+}
+
+/// The status a freshly adopted source reports, decided on bead xi-4p3h.
+///
+/// The fixture flake has no `homeConfigurations`, so this switch clones
+/// and then fails to build  -  which is precisely the window the bead
+/// asks about. xi-sources-model maps "sources dir exists but
+/// `active_generation` is unknown (never switched)" to `Pending`, and
+/// adoption must not claim a generation it did not produce. The clone's
+/// HEAD *is* recorded, because the model says `sources_head` is unknown
+/// only "before any clone".
+#[test]
+fn status_after_a_fresh_adopt_is_pending_not_ready() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "adopted");
+  m.switch(&[&remote]);
+
+  let stdout = m.status();
+
+  assert!(
+    stdout.contains("\"status\": \"pending\""),
+    "a clone that has not activated is Pending, got: {stdout}"
+  );
+  assert!(
+    stdout.contains("\"active_generation\": null"),
+    "adoption must not claim a generation: {stdout}"
+  );
+  assert!(
+    !stdout.contains("\"sources_head\": null"),
+    "adoption must record the clone's HEAD: {stdout}"
+  );
+  assert_eq!(
+    m.recorded_head().as_deref(),
+    Some(m.git_head().as_str()),
+    "the recorded sources-head must be the clone's real HEAD"
+  );
+}
+
+// -- Requirement: a switch serialises against other sources actors -------
+
+/// A switch takes the sources lock, which is what serialises it against
+/// a daemon tick or an inbound push.
+///
+/// Asserted on the lock's own on-disk footprint rather than on
+/// contention: `crates/xi-core/tests/bdd_sources_race.rs` already proves
+/// `flock` excludes and that the refusal names the holder, so what is
+/// left to check here is that the *command* reaches for it at all. That
+/// is also the half that was missing - the primitive had no callers.
+///
+/// Contention itself, driven through the binary, is
+/// `a_contended_switch_reports_the_holder_and_gives_up` below - it needs
+/// `XI_SOURCES_LOCK_WAIT` (xi-aiw7) to stay bounded, which did not exist
+/// when this test was written.
+#[test]
+fn a_switch_takes_the_sources_lock() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "locked");
+
+  // The command fails after the clone, because the fixture flake has no
+  // `homeConfigurations` to build; the adoption side effects are what
+  // matter, as in the scenarios above.
+  m.switch(&[&remote]);
+  assert!(
+    m.recorded_remote().is_some(),
+    "adoption must have recorded the remote"
+  );
+
+  let state_dir = m.home.join(".local/state/xi");
+  assert!(
+    state_dir.join("lock").is_file(),
+    "the switch must have taken the lock, which creates {}",
+    state_dir.join("lock").display()
+  );
+  assert!(
+    state_dir.join("lock.waiters").is_dir(),
+    "acquisition registers the caller as a waiter first, so the queue \
+     directory must exist too"
+  );
+  assert_eq!(
+    std::fs::read_to_string(state_dir.join("lock"))
+      .expect("read the lock file")
+      .trim(),
+    "",
+    "a released lock leaves an empty record, so a later reader reports free \
+     rather than naming a process that has exited"
+  );
+}
+
+/// Task 6.2 / xi-aiw7, end to end: a switch that loses the sources lock
+/// reports the holder and gives up, rather than hanging.
+///
+/// The holder is this test process itself, taking the lock directly
+/// through `xi-core` rather than spawning a second `xi` process: the test
+/// only needs *a* live pid that out-survives the contended switch, and its
+/// own pid is the cheapest one available. `XI_SOURCES_LOCK_WAIT` keeps the
+/// switch's wait well under a second instead of the spec's 15-minute
+/// default, which is what makes driving real contention through the
+/// binary affordable in a test suite at all.
+#[test]
+fn a_contended_switch_reports_the_holder_and_gives_up() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "contended");
+  let state_dir = m.home.join(".local/state/xi");
+
+  let held = SourcesLock::acquire(
+    &state_dir,
+    &LockOptions::new(ActorName::Daemon, "simulated tick")
+      // Nothing here runs long enough to need the keeper thread, and not
+      // spawning it keeps this test's thread count honest.
+      .without_refresh(),
+  )
+  .expect("the test process takes the free lock first");
+
+  let (out, ok) =
+    m.switch_with(&[&remote], &[("XI_SOURCES_LOCK_WAIT", "300ms")]);
+
+  assert!(!ok, "a switch must not take a held lock: {out}");
+  assert!(
+    !m.sources_dir().join(".git").is_dir(),
+    "the lock is taken before the clone, so a lost race must not have cloned \
+     anything: {out}"
+  );
+  assert!(
+    m.recorded_remote().is_none(),
+    "a switch that never adopted must not have recorded a remote: {out}"
+  );
+
+  // SC-E-001 / SC-E-007: the refusal names the holder, not a bare "busy".
+  for needle in ["daemon", "simulated tick", "estimated completion"] {
+    assert!(out.contains(needle), "{needle} missing from: {out}");
+  }
+  assert!(
+    out.contains(&std::process::id().to_string()),
+    "the holder's pid should appear in the refusal: {out}"
+  );
+
+  // xi-aiw7: the wait is not silent. The same holder-naming line that the
+  // final refusal carries is also printed while the switch is still
+  // polling, which is the part that actually fixes "looks wedged" - a
+  // message only at the very end would still read as a hang the whole
+  // time it is waiting.
+  assert!(
+    out.contains("waiting for the sources lock"),
+    "a contended wait must print progress, not stay silent until it gives up: \
+     {out}"
+  );
+
+  held.release().expect("release the test process's lock");
+}
+
+// -- Requirement: sync serialises against other sources actors ------------
+
+/// xi-wtrq: `xi sources sync` (`ActorName::Sync`) takes the sources lock
+/// too, the same way `switch` does.
+///
+/// As with `a_switch_takes_the_sources_lock`, this checks the lock's
+/// on-disk footprint rather than contention: `bdd_sources_race.rs`
+/// already proves `flock` excludes. What was missing before xi-wtrq is
+/// that `sync` reached for the lock at all.
+#[test]
+fn a_sync_takes_the_sources_lock() {
+  let m = Machine::new();
+  let remote = fixture_repo(&m.tmp.path().join("upstream"), "synced");
+  m.switch(&[&remote]);
+  assert!(
+    m.sources_dir().join(".git").is_dir(),
+    "adoption must have cloned"
+  );
+
+  // A second clone of the same remote stands in for the operator's
+  // editable working dir: `sync` only needs something with the remote's
+  // objects to copy-with-erase onto, not anything `switch` produced.
+  let working = m.tmp.path().join("working");
+  let ok = Command::new("git")
+    .args(["clone", "-q"])
+    .arg(&remote)
+    .arg(&working)
+    .status()
+    .expect("git clone")
+    .success();
+  assert!(ok, "cloning the working dir fixture failed");
+
+  let (out, ok) = m.sync_with(&[(
+    "XI_SOURCES_WORKING_DIR",
+    working.to_str().expect("utf8 path"),
+  )]);
+  assert!(ok, "sync against a matching clone must succeed: {out}");
+
+  let state_dir = m.state_dir();
+  assert!(
+    state_dir.join("lock").is_file(),
+    "sync must have taken the lock, which creates {}",
+    state_dir.join("lock").display()
+  );
+  assert_eq!(
+    std::fs::read_to_string(state_dir.join("lock"))
+      .expect("read the lock file")
+      .trim(),
+    "",
+    "a released lock leaves an empty record"
+  );
+}
+
+// -- Requirement: the cache prestage/unstage/status verbs are reachable ---
+// (openspec/changes/xi-sources-cache-prestage, bead xi-d1xr)
+
+/// A flake declaring one cache via the `nixCache.settings` fallback
+/// attribute, which is the one well-known path that needs neither a
+/// NixOS/home-manager module nor a guessed hostname.
+fn fixture_cache_flake(at: &std::path::Path) -> String {
+  std::fs::create_dir_all(at).expect("mkdir flake");
+  std::fs::write(
+    at.join("flake.nix"),
+    r#"{
+  outputs = _: {
+    nixCache.settings = {
+      substituters = [ "https://cache.example.org" ];
+      trusted-public-keys = [ "cache.example.org-1:QmFzZTY0S2V5VmFsdWVIZXJlRm9yVGVzdGluZz0=" ];
+    };
+  };
+}
+"#,
+  )
+  .expect("write flake");
+  format!("path:{}#nixCache.settings", at.display())
+}
+
+impl Machine {
+  /// Run `xi home sources cache <args...>`, merging stdout and stderr
+  /// like [`Machine::switch`].
+  fn cache(&self, args: &[&str]) -> (String, bool) {
+    let out = Command::new(xi())
+      .args(["home", "sources", "cache"])
+      .args(args)
+      .env("XI_NO_CHECKS", "1")
+      .env("HOME", &self.home)
+      .env("XDG_DATA_HOME", self.home.join(".local/share"))
+      .env("XDG_STATE_HOME", self.home.join(".local/state"))
+      .env("XDG_CONFIG_HOME", self.home.join(".config"))
+      .env_remove("XI_SOURCES_REMOTE")
+      .current_dir(self.home.join("proj"))
+      .output()
+      .expect("spawn xi");
+    let merged = format!(
+      "{}{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    );
+    (merged, out.status.success())
+  }
+
+  fn xi_conf(&self) -> Option<String> {
+    std::fs::read_to_string(self.home.join(".config/nix/xi.conf")).ok()
+  }
+}
+
+/// Every scope verb mounts `sources cache` with all three verbs.
+#[test]
+fn cache_subcommands_are_reachable_from_every_scope_verb() {
+  for verb in ["home", "system", "nixos", "darwin"] {
+    let (out, ok) = run(&[verb, "sources", "cache", "--help"]);
+    assert!(ok, "`xi {verb} sources cache --help` failed: {out}");
+    for sub in ["prestage", "unstage", "status"] {
+      assert!(
+        out.contains(sub),
+        "`xi {verb} sources cache` should expose `{sub}`, got: {out}"
+      );
+    }
+  }
+}
+
+/// SC-K-004 half: a machine that was never prestaged reports inactive
+/// rather than erroring, under `--json`.
+#[test]
+fn cache_status_on_an_untouched_machine_is_inactive() {
+  let m = Machine::new();
+  let (out, ok) = m.cache(&["status", "--json"]);
+  assert!(ok, "`cache status` on a clean machine must not fail: {out}");
+  assert!(out.contains("\"active\": false"), "got: {out}");
+  assert!(out.contains("\"receipt_present\": false"), "got: {out}");
+}
+
+/// `cache unstage` with no prior prestage has nothing to reverse and
+/// says so, rather than silently succeeding.
+#[test]
+fn cache_unstage_without_a_prior_prestage_fails() {
+  let m = Machine::new();
+  let (out, ok) = m.cache(&["unstage"]);
+  assert!(!ok, "unstage with no receipt must fail: {out}");
+  assert!(out.contains("no cache prestage to reverse"), "got: {out}");
+}
+
+/// SC-K-001/002/003/006: the full prestage -> status -> unstage round
+/// trip through the binary, exercising the fallback attribute path and
+/// the `!include` amend together with the CLI wiring.
+#[test]
+fn cache_prestage_status_unstage_round_trip() {
+  let m = Machine::new();
+  let target = fixture_cache_flake(&m.tmp.path().join("cache-flake"));
+
+  let (out, ok) =
+    m.cache(&["prestage", &target, "--trust-declared-keys", "--json"]);
+  assert!(ok, "`cache prestage` failed: {out}");
+  assert!(out.contains("\"status\": \"applied\""), "got: {out}");
+  assert!(
+    out.contains("cache.example.org"),
+    "the envelope should name the discovered substituter: {out}"
+  );
+  let xi_conf = m.xi_conf().expect("xi.conf written");
+  assert!(xi_conf.contains("extra-substituters = https://cache.example.org"));
+
+  let (status_out, status_ok) = m.cache(&["status", "--json"]);
+  assert!(status_ok, "`cache status` failed: {status_out}");
+  assert!(status_out.contains("\"active\": true"), "got: {status_out}");
+
+  let (unstage_out, unstage_ok) = m.cache(&["unstage", "--json"]);
+  assert!(unstage_ok, "`cache unstage` failed: {unstage_out}");
+  assert!(
+    unstage_out.contains("\"include_removed\": true"),
+    "got: {unstage_out}"
+  );
+  assert!(
+    unstage_out.contains("\"xi_conf_removed\": true"),
+    "got: {unstage_out}"
+  );
+  assert!(m.xi_conf().is_none(), "xi.conf must be gone after unstage");
+
+  let (after_out, after_ok) = m.cache(&["status", "--json"]);
+  assert!(after_ok, "`cache status` after unstage failed: {after_out}");
+  assert!(after_out.contains("\"active\": false"), "got: {after_out}");
+}
+
+/// A prestage takes the sources lock, like switch and sync do: it
+/// writes `nix.conf` and the state dir, both of which other sources
+/// actors also write. Asserted on the lock's on-disk footprint, as
+/// `a_switch_takes_the_sources_lock` does above, for the same reason -
+/// contention cannot be driven through the binary within a bounded test.
+#[test]
+fn cache_prestage_takes_the_sources_lock() {
+  let m = Machine::new();
+  let target = fixture_cache_flake(&m.tmp.path().join("cache-flake"));
+
+  let (out, ok) =
+    m.cache(&["prestage", &target, "--trust-declared-keys", "--json"]);
+  assert!(ok, "`cache prestage` failed: {out}");
+
+  let state_dir = m.home.join(".local/state/xi");
+  assert!(
+    state_dir.join("lock").is_file(),
+    "the prestage must have taken the lock, which creates {}",
+    state_dir.join("lock").display()
+  );
+  assert_eq!(
+    std::fs::read_to_string(state_dir.join("lock"))
+      .expect("read the lock file")
+      .trim(),
+    "",
+    "a released lock leaves an empty record"
   );
 }

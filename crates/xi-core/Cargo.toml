@@ -8,6 +8,7 @@ rust-version.workspace = true
 publish                = true
 
 [dependencies]
+chrono                  = { features = [ "serde" ], workspace = true }
 clap.workspace          = true
 clap_complete.workspace = true
 color-eyre.workspace    = true
@@ -17,10 +18,13 @@ inquire.workspace       = true
 nix.workspace           = true
 nix-command.workspace   = true
 regex.workspace         = true
+reqwest.workspace       = true
+rusqlite.workspace      = true
 secrecy.workspace       = true
 semver.workspace        = true
 serde.workspace         = true
 serde_json.workspace    = true
+sha2.workspace          = true
 shlex.workspace         = true
 strsim.workspace        = true
 subprocess.workspace    = true

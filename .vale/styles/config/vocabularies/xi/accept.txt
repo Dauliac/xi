@@ -328,5 +328,8 @@ direnv
 Direnv
 zsh
 GitOps
-unparseable
+unparsable
 disambiguates
+distro
+distro's
+dotfiles

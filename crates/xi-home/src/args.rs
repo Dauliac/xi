@@ -33,6 +33,10 @@ pub enum HomeSubcommand {
 
   /// Inspect and manage the config repo this scope deploys from
   Sources(xi_core::sources::args::SourcesProxy),
+
+  /// Report this scope's deployment: xi's version, sources git hashes,
+  /// and the active generation
+  Status(xi_core::sources::deployment::DeploymentStatusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -60,9 +64,11 @@ impl HomeArgs {
           Box::new(LegacyFeatures)
         }
       },
-      // `sources` only reads config and the state dir; it never
-      // evaluates a flake, so it needs no Nix features.
-      HomeSubcommand::Sources(_) => Box::new(FlakeFeatures),
+      // `sources` and `status` only read config and the state dir;
+      // neither evaluates a flake, so they need no Nix features.
+      HomeSubcommand::Sources(_) | HomeSubcommand::Status(_) => {
+        Box::new(FlakeFeatures)
+      },
     }
   }
 }
@@ -142,7 +148,9 @@ impl HasCacheArgs for HomeArgs {
       HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
         Some(&mut a.common.cache)
       },
-      HomeSubcommand::Repl(_) | HomeSubcommand::Sources(_) => None,
+      HomeSubcommand::Repl(_)
+      | HomeSubcommand::Sources(_)
+      | HomeSubcommand::Status(_) => None,
     }
   }
 }
@@ -153,7 +161,9 @@ impl HasBuildArgs for HomeArgs {
       HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
         Some(&mut a.common.passthrough)
       },
-      HomeSubcommand::Repl(_) | HomeSubcommand::Sources(_) => None,
+      HomeSubcommand::Repl(_)
+      | HomeSubcommand::Sources(_)
+      | HomeSubcommand::Status(_) => None,
     }
   }
 
@@ -162,7 +172,9 @@ impl HasBuildArgs for HomeArgs {
       HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
         Some(&mut a.common.no_nom)
       },
-      HomeSubcommand::Repl(_) | HomeSubcommand::Sources(_) => None,
+      HomeSubcommand::Repl(_)
+      | HomeSubcommand::Sources(_)
+      | HomeSubcommand::Status(_) => None,
     }
   }
 }
