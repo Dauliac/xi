@@ -207,6 +207,7 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     &secrets,
     &PushConfig::default(),
     None,
+    None,
     &nix,
     &transport,
   )
@@ -295,6 +296,7 @@ fn omitting_build_strategy_dispatches_identically_to_interleaved_given_explicitl
       &secrets,
       &PushConfig::default(),
       None,
+      None,
       &nix,
       &transport,
     )
@@ -349,6 +351,7 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
     &flake_ref,
     &secrets,
     &PushConfig::default(),
+    None,
     None,
     &nix,
     &transport,
