@@ -7,11 +7,11 @@
 //! still matches skips re-evaluation and reuses the cached decisions
 //! directly (`Facts::fleet_digest_unchanged` in [`crate::decision`]).
 //!
-//! This module only owns the cache file's shape and its hash input; it
-//! does not read the filesystem for anything else, and it does not
-//! decide when to write or when to trust the cache  -  that is task 4.2
-//! (write after a successful rollout) and 4.3 (wire the decision
-//! tree's read) wiring on top of this.
+//! This module owns the cache file's shape and its hash input, plus
+//! the two wiring points layered on top of it: task 4.2 writes it
+//! after a successful rollout ([`crate::push::orchestrate`]), and task
+//! 4.3 reads it back via [`resolve_fleet_digest_unchanged`] to decide
+//! whether the decision tree can skip re-evaluation.
 
 use std::{
   fs,
@@ -101,6 +101,33 @@ pub fn store(xi_toml_path: &Path, input: &FleetDigestInput) -> io::Result<()> {
 #[must_use]
 pub fn is_unchanged(xi_toml_path: &Path, input: &FleetDigestInput) -> bool {
   matches!(load(xi_toml_path), Ok(Some(cached)) if cached == input.digest())
+}
+
+/// Resolve `decision::Facts::fleet_digest_unchanged` (task 4.3): whether
+/// the `fleet-digest` cached next to `xi_toml_path` still matches the
+/// target set, backend, and build-location a fleet rollout would
+/// otherwise have to rediscover from scratch.
+///
+/// This is the one fact in [`crate::decision::Facts`] that requires
+/// reading the filesystem, so it is wired here  -  alongside [`load`]
+/// and [`store`]  -  rather than inside `decision` itself, which stays
+/// filesystem-free. A caller recomputes `targets`/`backend`/
+/// `build_location` the same way a rollout would (e.g. from the
+/// current inventory) and passes them in; any difference from what was
+/// cached at the last successful rollout is a miss, which is exactly
+/// what forces the tree to re-evaluate instead of reusing the cache.
+#[must_use]
+pub fn resolve_fleet_digest_unchanged(
+  xi_toml_path: &Path,
+  targets: &[String],
+  backend: &str,
+  build_location: &str,
+) -> bool {
+  is_unchanged(xi_toml_path, &FleetDigestInput {
+    targets:        targets.to_vec(),
+    backend:        backend.to_owned(),
+    build_location: build_location.to_owned(),
+  })
 }
 
 #[cfg(test)]
@@ -206,5 +233,50 @@ mod tests {
 
     assert!(!is_unchanged(&xi_toml, &first));
     assert!(is_unchanged(&xi_toml, &second));
+  }
+
+  // -- resolve_fleet_digest_unchanged (xi-fxgx.4.3) -----------------------
+
+  #[test]
+  fn resolve_fleet_digest_unchanged_is_a_hit_on_the_same_inventory() {
+    let dir = tempdir().expect("tempdir");
+    let xi_toml = dir.path().join(".xi.toml");
+    store(&xi_toml, &input(&["web1", "web2"], "deploy-rs", "remote"))
+      .expect("store");
+
+    assert!(resolve_fleet_digest_unchanged(
+      &xi_toml,
+      &["web1".to_owned(), "web2".to_owned()],
+      "deploy-rs",
+      "remote",
+    ));
+  }
+
+  #[test]
+  fn resolve_fleet_digest_unchanged_is_a_miss_on_a_changed_inventory() {
+    let dir = tempdir().expect("tempdir");
+    let xi_toml = dir.path().join(".xi.toml");
+    store(&xi_toml, &input(&["web1"], "deploy-rs", "remote")).expect("store");
+
+    // A target added to the inventory since the last cached rollout.
+    assert!(!resolve_fleet_digest_unchanged(
+      &xi_toml,
+      &["web1".to_owned(), "web2".to_owned()],
+      "deploy-rs",
+      "remote",
+    ));
+  }
+
+  #[test]
+  fn resolve_fleet_digest_unchanged_is_a_miss_with_no_cache_file() {
+    let dir = tempdir().expect("tempdir");
+    let xi_toml = dir.path().join(".xi.toml");
+
+    assert!(!resolve_fleet_digest_unchanged(
+      &xi_toml,
+      &["web1".to_owned()],
+      "deploy-rs",
+      "remote",
+    ));
   }
 }
