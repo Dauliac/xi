@@ -36,7 +36,7 @@ use xi_core::sources::{
 };
 
 use super::{
-  args::{BuildStrategy, PushArgs, PushMode},
+  args::{BuildStrategy, PushArgs, PushBackend, PushMode},
   config::{self, PushConfig},
   context,
   discover::{self, PushTarget, ResolvedBackend},
@@ -229,14 +229,13 @@ pub fn run(args: &PushArgs) -> Result<()> {
   // *other* machines, so it has no per-scope Nix-module rung of its own
   // and is read once, from the operator's own config repo.
   let inventory = PushConfig::from_toml_file(std::path::Path::new(".xi.toml"))?;
-  // The build-location ladder's third rung: a `[push] remote-build`
-  // table the Nix module wrote into the same per-scope file
+  // The build-location and backend ladders' Nix-module rung: the
+  // `[push]` table the Nix module wrote into the same per-scope file
   // `[sources]`'s own Nix-module rung reads
   // (`xi_core::sources::config::ScopePaths::resolve(scope).config_file`).
-  let nix_module_remote_build = PushConfig::from_toml_file(
+  let nix_module_config = PushConfig::from_toml_file(
     &xi_core::sources::config::ScopePaths::resolve(scope).config_file,
-  )?
-  .remote_build;
+  )?;
   let nix = CliNix;
   let transport = SshTransport;
 
@@ -246,7 +245,8 @@ pub fn run(args: &PushArgs) -> Result<()> {
     &flake_ref,
     &secrets,
     &inventory,
-    nix_module_remote_build,
+    nix_module_config.remote_build,
+    nix_module_config.backend,
     &nix,
     &transport,
   )?;
@@ -320,6 +320,7 @@ pub fn execute(
   secrets: &BTreeMap<String, SecretSpec>,
   inventory: &PushConfig,
   nix_module_remote_build: Option<bool>,
+  nix_module_backend: Option<PushBackend>,
   nix: &dyn Nix,
   transport: &dyn Transport,
 ) -> Result<PushReport> {
@@ -330,20 +331,46 @@ pub fn execute(
     config::apply_inventory(selected.into_iter().cloned().collect(), inventory);
 
   let colmena_present = discover::has_colmena_hive(nix, flake_ref)?;
-  let backend =
-    discover::detect_backend(args.backend, &targets, colmena_present);
 
-  if backend != ResolvedBackend::Builtin {
-    delegate(backend, flake_ref, args, &targets)?;
-    return Ok(PushReport {
-      results: targets
-        .iter()
-        .map(|target| TargetResult {
-          name: target.addr.name.clone(),
-          outcome: Ok(()),
-        })
-        .collect(),
-    });
+  // Group by the backend ladder's resolved rung (`config::resolve_backend`,
+  // not `args.backend` read directly) before auto-detecting: a fleet with
+  // nothing configured resolves every target to the same rung it always
+  // has (`args.backend` itself), so this degenerates to one group and one
+  // `detect_backend` call, exactly as before this ladder existed. A
+  // per-host `backend` override can split the fleet into more than one
+  // group, each delegated (or run through the `builtin` pipeline below)
+  // independently.
+  let mut groups: Vec<(PushBackend, Vec<PushTarget>)> = Vec::new();
+  for target in targets {
+    let requested = config::resolve_backend(
+      args.backend,
+      &target.addr.name,
+      inventory,
+      nix_module_backend,
+    );
+    match groups.iter_mut().find(|(key, _)| *key == requested) {
+      Some((_, group)) => group.push(target),
+      None => groups.push((requested, vec![target])),
+    }
+  }
+
+  let mut results = Vec::new();
+  let mut targets = Vec::new();
+  for (requested, group) in groups {
+    let backend = discover::detect_backend(requested, &group, colmena_present);
+    if backend == ResolvedBackend::Builtin {
+      targets.extend(group);
+    } else {
+      delegate(backend, flake_ref, args, &group)?;
+      results.extend(group.into_iter().map(|target| TargetResult {
+        name: target.addr.name,
+        outcome: Ok(()),
+      }));
+    }
+  }
+
+  if targets.is_empty() {
+    return Ok(PushReport { results });
   }
 
   let limits = PhaseLimits::new(args.parallel);
@@ -375,22 +402,18 @@ pub fn execute(
       )?;
       if args.build_only {
         write_manifest(&default_manifest_path(context), &built)?;
-        return Ok(PushReport {
-          results: built
-            .keys()
-            .map(|name| TargetResult {
-              name: name.clone(),
-              outcome: Ok(()),
-            })
-            .collect(),
-        });
+        results.extend(built.keys().map(|name| TargetResult {
+          name: name.clone(),
+          outcome: Ok(()),
+        }));
+        return Ok(PushReport { results });
       }
       Some(built)
     } else {
       None
     };
 
-  let results: Vec<TargetResult> = std::thread::scope(|scope| {
+  let dispatched: Vec<TargetResult> = std::thread::scope(|scope| {
     let handles: Vec<_> = targets
       .iter()
       .map(|target| {
@@ -437,6 +460,7 @@ pub fn execute(
       .collect()
   });
 
+  results.extend(dispatched);
   Ok(PushReport { results })
 }
 
@@ -1044,6 +1068,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      None,
       &nix,
       &transport,
     )
@@ -1081,6 +1106,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      None,
       &nix,
       &transport,
     )
@@ -1103,6 +1129,7 @@ mod tests {
       ".",
       &secrets,
       &PushConfig::default(),
+      None,
       None,
       &nix,
       &transport,
@@ -1138,6 +1165,7 @@ mod tests {
       ".",
       &secrets,
       &PushConfig::default(),
+      None,
       None,
       &nix,
       &transport,
@@ -1183,6 +1211,7 @@ mod tests {
       &secrets,
       &inventory,
       None,
+      None,
       &nix,
       &transport,
     )
@@ -1216,6 +1245,7 @@ mod tests {
       &secrets,
       &inventory,
       None,
+      None,
       &nix,
       &transport,
     )
@@ -1244,6 +1274,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       Some(true),
+      None,
       &nix,
       &transport,
     )
@@ -1278,6 +1309,7 @@ mod tests {
       ".",
       &secrets,
       &PushConfig::default(),
+      None,
       None,
       &nix,
       &transport,
@@ -1316,6 +1348,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      None,
       &nix,
       &transport,
     )
@@ -1353,6 +1386,7 @@ mod tests {
       ".",
       &secrets,
       &PushConfig::default(),
+      None,
       None,
       &nix,
       &transport,
@@ -1636,6 +1670,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      None,
       &nix,
       &transport,
     )
@@ -1685,6 +1720,7 @@ mod tests {
       &secrets,
       &PushConfig::default(),
       None,
+      None,
       &nix,
       &build_transport,
     )
@@ -1708,6 +1744,7 @@ mod tests {
       ".",
       &secrets,
       &PushConfig::default(),
+      None,
       None,
       &nix,
       &ship_transport,
@@ -1755,6 +1792,7 @@ mod tests {
       ".",
       &secrets,
       &PushConfig::default(),
+      None,
       None,
       &nix,
       &transport,
