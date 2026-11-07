@@ -46,7 +46,9 @@ use xi_core::sources::{
   switch::record_activation_at,
 };
 use xi_deploy::push::{
-  args::{CopyVia, PushArgs, PushBackend, PushMode, PushScope},
+  args::{
+    BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope,
+  },
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate::execute,
@@ -257,6 +259,9 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
     copy_via:         CopyVia::Local,
     fail_fast:        false,
     force_dirty:      false,
+    build_strategy:   BuildStrategy::Interleaved,
+    build_only:       false,
+    from_manifest:    None,
     scope:            PushScope::System,
     retry:            None,
   };
@@ -267,6 +272,7 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
     FLAKE,
     &secrets,
     &PushConfig::default(),
+    None,
     None,
     &nix,
     &transport,

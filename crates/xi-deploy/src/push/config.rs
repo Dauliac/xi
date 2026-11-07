@@ -21,15 +21,18 @@ use std::path::Path;
 
 use color_eyre::{Result, eyre::eyre};
 
+use super::args::PushBackend;
+
 /// Every key the `[push]` table accepts, besides the `hosts` sub-table.
-pub const PUSH_KEYS: &[&str] = &["remote-build", "retry-attempts"];
+pub const PUSH_KEYS: &[&str] =
+  &["remote-build", "backend", "retry-attempts"];
 
 /// Sub-tables the `[push]` table accepts, alongside [`PUSH_KEYS`].
 pub const PUSH_TABLE_KEYS: &[&str] = &["hosts"];
 
 /// Every key a `[[push.hosts]]` entry accepts.
 pub const PUSH_HOST_KEYS: &[&str] =
-  &["name", "ssh", "remote-build", "retry-attempts"];
+  &["name", "ssh", "remote-build", "backend", "retry-attempts"];
 
 /// One `[[push.hosts]]` entry: an inventory name and the SSH target it
 /// resolves to.
@@ -41,17 +44,21 @@ pub struct PushHost {
   pub ssh:          String,
   /// Per-host override of the `remote-build` rung.
   pub remote_build: Option<bool>,
+  /// Per-host override of the `backend` rung.
+  pub backend:        Option<PushBackend>,
   /// Per-host override of the `retry-attempts` rung.
   pub retry_attempts: Option<u32>,
 }
 
-/// The parsed `[push]` table: the `remote-build` default and the flat
-/// host inventory.
+/// The parsed `[push]` table: the `remote-build` and `backend` defaults
+/// and the flat host inventory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PushConfig {
   /// `.xi.toml [push] remote-build`, the middle rung of the
   /// build-location ladder.
   pub remote_build: Option<bool>,
+  /// `.xi.toml [push] backend`, the middle rung of the backend ladder.
+  pub backend:        Option<PushBackend>,
   /// `.xi.toml [push] retry-attempts`, the table-level rung of the
   /// retry-attempts ladder.
   pub retry_attempts: Option<u32>,
@@ -101,11 +108,25 @@ impl PushConfig {
 
     let remote_build = match table.get("remote-build") {
       None => None,
+      Some(item) => Some(item.as_bool().ok_or_else(|| {
+        eyre!(
+          "{}: 'remote-build' in [push] must be a boolean",
+          path.display()
+        )
+      })?),
+    };
+
+    let backend = match table.get("backend") {
+      None => None,
       Some(item) => {
-        Some(item.as_bool().ok_or_else(|| {
+        let raw = item.as_str().ok_or_else(|| {
+          eyre!("{}: 'backend' in [push] must be a string", path.display())
+        })?;
+        Some(PushBackend::from_config_str(raw).ok_or_else(|| {
           eyre!(
-            "{}: 'remote-build' in [push] must be a boolean",
-            path.display()
+            "{}: 'backend' in [push] must be one of {}, got '{raw}'",
+            path.display(),
+            PushBackend::ALL.join(", ")
           )
         })?)
       },
@@ -134,6 +155,7 @@ impl PushConfig {
 
     Ok(Self {
       remote_build,
+      backend,
       retry_attempts,
       hosts,
     })
@@ -189,12 +211,30 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     .to_owned();
   let remote_build = match entry.get("remote-build") {
     None => None,
-    Some(item) => {
-      Some(item.as_bool().ok_or_else(|| {
-        eyre!(
-          "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
+    Some(item) => Some(item.as_bool().ok_or_else(|| {
+      eyre!(
+        "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
            boolean",
+        path.display()
+      )
+    })?),
+  };
+
+  let backend = match entry.get("backend") {
+    None => None,
+    Some(item) => {
+      let raw = item.as_str().ok_or_else(|| {
+        eyre!(
+          "{}: 'backend' in [[push.hosts]] entry '{name}' must be a string",
           path.display()
+        )
+      })?;
+      Some(PushBackend::from_config_str(raw).ok_or_else(|| {
+        eyre!(
+          "{}: 'backend' in [[push.hosts]] entry '{name}' must be one of \
+             {}, got '{raw}'",
+          path.display(),
+          PushBackend::ALL.join(", ")
         )
       })?)
     },
@@ -212,6 +252,7 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     name,
     ssh,
     remote_build,
+    backend,
     retry_attempts,
   })
 }
@@ -241,14 +282,70 @@ fn parse_retry_attempts(
   })
 }
 
+/// Environment variable gating the build-location floor flip's
+/// one-release opt-in: unset (or anything but `1`/`true`), the floor
+/// keeps its pre-flip answer; set, the floor is free to resolve to its
+/// new, context-sensitive default. See
+/// [`build_floor_remote_opt_in`] and the "build-location floor flip"
+/// capability this stages.
+pub const BUILD_FLOOR_REMOTE_ENV: &str = "XI_BUILD_FLOOR_REMOTE";
+
+/// Whether the one-release opt-in for the build-location floor flip is
+/// active.
+///
+/// This only answers whether the flip is allowed to take effect yet -
+/// it does not itself decide what the floor resolves to. Follows the
+/// same boolean-env-var convention used elsewhere in the project (e.g.
+/// `XI_UNWRAP` in `xi::proxy`): `"1"` or `"true"` is on, anything else
+/// (including unset) is off.
+#[must_use]
+pub fn build_floor_remote_opt_in() -> bool {
+  std::env::var(BUILD_FLOOR_REMOTE_ENV)
+    .is_ok_and(|value| value == "1" || value == "true")
+}
+
+/// Resolve one value through the five-rung precedence shared by every
+/// declarative-first `[push]` setting: an explicit flag, a per-host
+/// override, a table-level default, a Nix-module-provided default, and
+/// finally a compiled-in floor.
+///
+/// This is the shape behind [`resolve_remote_build`] and, in a sibling
+/// ladder, backend selection - one generalized helper rather than a
+/// hand-rolled copy of the same precedence per setting.
+#[must_use]
+pub fn resolve_ladder<T>(
+  cli: Option<T>,
+  per_host: Option<T>,
+  table_default: Option<T>,
+  module_default: Option<T>,
+  floor: T,
+) -> T {
+  cli
+    .or(per_host)
+    .or(table_default)
+    .or(module_default)
+    .unwrap_or(floor)
+}
+
 /// Resolve the build-location ladder for one target: `--remote-build` >
 /// `.xi.toml [push]` (a per-host `[[push.hosts]]` override first, then
-/// the table-level default) > the Nix-module-provided default > `false`.
+/// the table-level default) > the Nix-module-provided default > the
+/// compiled-in floor.
 ///
-/// `false` (closure: build here, copy the closure in) is the compiled-in
-/// floor every rung can override; `true` is `--mode sources`. The
-/// caller still has the final word through an explicit `--mode` flag -
-/// see [`super::args::PushArgs::effective_mode`] - which this function
+/// Every `xi push` target is, by construction, some other machine (see
+/// this module's own doc comment), so the floor always answers for a
+/// genuinely remote target - there is no local-machine case to special
+/// case here.
+///
+/// The floor is `false` (closure: build here, copy the closure in)
+/// unless [`build_floor_remote_opt_in`] is active, in which case it is
+/// `true` (`--mode sources`: the target builds itself) - the
+/// build-location floor flip, staged behind a one-release opt-in because
+/// it is the one user-visible default change in this effort. Every
+/// higher rung still overrides the floor unchanged either way.
+///
+/// The caller still has the final word through an explicit `--mode` flag
+/// (see [`super::args::PushArgs::effective_mode`]), which this function
 /// does not know about: it only resolves what the *ladder itself* says,
 /// not whether something further up overrides the ladder outright.
 #[must_use]
@@ -258,19 +355,44 @@ pub fn resolve_remote_build(
   toml_config: &PushConfig,
   nix_module_remote_build: Option<bool>,
 ) -> bool {
-  if let Some(flag) = cli {
-    return flag;
-  }
-  if let Some(per_host) = toml_config
-    .host(host_name)
-    .and_then(|host| host.remote_build)
-  {
-    return per_host;
-  }
-  if let Some(table_default) = toml_config.remote_build {
-    return table_default;
-  }
-  nix_module_remote_build.unwrap_or(false)
+  let floor = build_floor_remote_opt_in();
+  resolve_ladder(
+    cli,
+    toml_config
+      .host(host_name)
+      .and_then(|host| host.remote_build),
+    toml_config.remote_build,
+    nix_module_remote_build,
+    floor,
+  )
+}
+
+/// Resolve the backend ladder for one target: `--backend` >
+/// `.xi.toml [push]` (a per-host `[[push.hosts]]` override first, then
+/// the table-level default) > the Nix-module-provided default >
+/// `detect_backend`'s auto-detect floor.
+///
+/// The floor is always [`PushBackend::Auto`]: this function does not
+/// probe the flake itself, it only decides which configured rung (if
+/// any) preempts that probe. A caller passing `PushBackend::Auto` as
+/// `cli` is saying "no explicit `--backend` flag was given" - the same
+/// convention `--backend`'s own `clap` default already uses - so it is
+/// treated as absent rather than as an explicit override.
+#[must_use]
+pub fn resolve_backend(
+  cli: PushBackend,
+  host_name: &str,
+  toml_config: &PushConfig,
+  nix_module_backend: Option<PushBackend>,
+) -> PushBackend {
+  let cli = (cli != PushBackend::Auto).then_some(cli);
+  resolve_ladder(
+    cli,
+    toml_config.host(host_name).and_then(|host| host.backend),
+    toml_config.backend,
+    nix_module_backend,
+    PushBackend::Auto,
+  )
 }
 
 /// Resolve the retry-attempts ladder for one target: `--retry` >
@@ -324,6 +446,9 @@ pub fn apply_inventory(
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
+  use std::env;
+
+  use serial_test::serial;
   use tempfile::TempDir;
 
   use super::*;
@@ -331,6 +456,50 @@ mod tests {
     push::{discover::TargetSource, engine::TargetAddr},
     target::ProfileKind,
   };
+
+  /// Sets an environment variable for the lifetime of the guard,
+  /// restoring (or removing) it on drop - safe for `#[serial]` tests
+  /// that read process-global env vars.
+  struct EnvGuard {
+    key:   &'static str,
+    value: Option<std::ffi::OsString>,
+  }
+
+  impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+      let guard = Self {
+        key,
+        value: env::var_os(key),
+      };
+      unsafe {
+        env::set_var(key, value);
+      }
+      guard
+    }
+
+    fn remove(key: &'static str) -> Self {
+      let guard = Self {
+        key,
+        value: env::var_os(key),
+      };
+      unsafe {
+        env::remove_var(key);
+      }
+      guard
+    }
+  }
+
+  impl Drop for EnvGuard {
+    fn drop(&mut self) {
+      unsafe {
+        if let Some(value) = &self.value {
+          env::set_var(self.key, value);
+        } else {
+          env::remove_var(self.key);
+        }
+      }
+    }
+  }
 
   fn toml_config(body: &str) -> PushConfig {
     let dir = TempDir::new().expect("tempdir");
@@ -362,6 +531,21 @@ mod tests {
   }
 
   #[test]
+  fn backend_parses_as_an_enum_string() {
+    let config = toml_config("[push]\nbackend = \"colmena\"\n");
+    assert_eq!(config.backend, Some(PushBackend::Colmena));
+  }
+
+  #[test]
+  fn an_invalid_backend_value_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(&path, "[push]\nbackend = \"openstack\"\n").expect("write");
+    let err = PushConfig::from_toml_file(&path).expect_err("invalid backend");
+    assert!(format!("{err}").contains("backend"), "got: {err}");
+  }
+
+  #[test]
   fn an_unknown_push_key_is_rejected() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join(".xi.toml");
@@ -375,14 +559,31 @@ mod tests {
     let config = toml_config(
       "[[push.hosts]]\nname = \"web1\"\nssh = \
        \"deploy@10.0.0.1\"\n\n[[push.hosts]]\nname = \"web2\"\nssh = \
-       \"deploy@10.0.0.2:2222\"\nremote-build = true\n",
+       \"deploy@10.0.0.2:2222\"\nremote-build = true\nbackend = \
+       \"deploy-rs\"\n",
     );
     assert_eq!(config.hosts.len(), 2);
     assert_eq!(config.hosts[0].name, "web1");
     assert_eq!(config.hosts[0].ssh, "deploy@10.0.0.1");
     assert_eq!(config.hosts[0].remote_build, None);
+    assert_eq!(config.hosts[0].backend, None);
     assert_eq!(config.hosts[1].ssh, "deploy@10.0.0.2:2222");
     assert_eq!(config.hosts[1].remote_build, Some(true));
+    assert_eq!(config.hosts[1].backend, Some(PushBackend::DeployRs));
+  }
+
+  #[test]
+  fn an_invalid_host_backend_value_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(
+      &path,
+      "[[push.hosts]]\nname = \"web1\"\nssh = \"a\"\nbackend = \"openstack\"\n",
+    )
+    .expect("write");
+    let err =
+      PushConfig::from_toml_file(&path).expect_err("invalid host backend");
+    assert!(format!("{err}").contains("backend"), "got: {err}");
   }
 
   #[test]
@@ -502,16 +703,168 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn with_nothing_configured_the_nix_module_default_answers() {
     let toml = PushConfig::default();
-    assert!(resolve_remote_build(None, "web1", &toml, Some(true)));
-    assert!(!resolve_remote_build(None, "web1", &toml, Some(false)));
+    for env_value in [None, Some("1")] {
+      let _guard = match env_value {
+        Some(value) => EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, value),
+        None => EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV),
+      };
+      // The Nix-module rung outranks the floor either way: the opt-in
+      // gate must not change this answer.
+      assert!(resolve_remote_build(None, "web1", &toml, Some(true)));
+      assert!(!resolve_remote_build(None, "web1", &toml, Some(false)));
+    }
   }
 
   #[test]
-  fn with_every_rung_silent_the_floor_is_false() {
+  #[serial]
+  fn with_every_rung_silent_the_floor_matches_the_opt_in_gate() {
+    let toml = PushConfig::default();
+
+    let _guard = EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV);
+    assert!(!resolve_remote_build(None, "web1", &toml, None));
+    drop(_guard);
+
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    assert!(resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  // -- resolve_remote_build: the floor flip, behind its opt-in -----------
+
+  #[test]
+  #[serial]
+  fn with_the_opt_in_off_an_unconfigured_target_still_floors_to_false() {
+    let _guard = EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV);
     let toml = PushConfig::default();
     assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  #[test]
+  #[serial]
+  fn with_the_opt_in_on_an_unconfigured_target_floors_to_remote_build() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    let toml = PushConfig::default();
+    assert!(resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  #[test]
+  #[serial]
+  fn with_the_opt_in_on_a_table_level_override_still_wins_over_the_floor() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    let toml = toml_config("[push]\nremote-build = false\n");
+    assert!(!resolve_remote_build(None, "web1", &toml, None));
+  }
+
+  // -- resolve_backend: the five-rung backend ladder ---------------------
+
+  #[test]
+  fn the_cli_backend_flag_wins_over_every_other_rung() {
+    let toml = toml_config("[push]\nbackend = \"colmena\"\n");
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Builtin,
+        "web1",
+        &toml,
+        Some(PushBackend::DeployRs)
+      ),
+      PushBackend::Builtin
+    );
+  }
+
+  #[test]
+  fn without_a_cli_flag_the_toml_table_backend_default_answers() {
+    let toml = toml_config("[push]\nbackend = \"colmena\"\n");
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web1",
+        &toml,
+        Some(PushBackend::Builtin)
+      ),
+      PushBackend::Colmena
+    );
+  }
+
+  #[test]
+  fn a_per_host_backend_override_outranks_the_table_level_default() {
+    let toml = toml_config(
+      "[push]\nbackend = \"colmena\"\n\n[[push.hosts]]\nname = \"web1\"\nssh \
+       = \"deploy@web1\"\nbackend = \"deploy-rs\"\n",
+    );
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web1",
+        &toml,
+        Some(PushBackend::Builtin)
+      ),
+      PushBackend::DeployRs
+    );
+    // A different host falls through to the table-level default.
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web2",
+        &toml,
+        Some(PushBackend::Builtin)
+      ),
+      PushBackend::Colmena
+    );
+  }
+
+  #[test]
+  fn with_nothing_configured_the_nix_module_backend_default_answers() {
+    let toml = PushConfig::default();
+    assert_eq!(
+      resolve_backend(
+        PushBackend::Auto,
+        "web1",
+        &toml,
+        Some(PushBackend::Colmena)
+      ),
+      PushBackend::Colmena
+    );
+  }
+
+  #[test]
+  fn with_every_rung_silent_the_floor_is_auto() {
+    let toml = PushConfig::default();
+    assert_eq!(
+      resolve_backend(PushBackend::Auto, "web1", &toml, None),
+      PushBackend::Auto
+    );
+  }
+
+  // -- build_floor_remote_opt_in: the floor flip's one-release gate ------
+
+  #[test]
+  #[serial]
+  fn unset_the_opt_in_is_off() {
+    let _guard = EnvGuard::remove(BUILD_FLOOR_REMOTE_ENV);
+    assert!(!build_floor_remote_opt_in());
+  }
+
+  #[test]
+  #[serial]
+  fn set_to_1_the_opt_in_is_on() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "1");
+    assert!(build_floor_remote_opt_in());
+  }
+
+  #[test]
+  #[serial]
+  fn set_to_true_the_opt_in_is_on() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "true");
+    assert!(build_floor_remote_opt_in());
+  }
+
+  #[test]
+  #[serial]
+  fn set_to_anything_else_the_opt_in_is_off() {
+    let _guard = EnvGuard::set(BUILD_FLOOR_REMOTE_ENV, "0");
+    assert!(!build_floor_remote_opt_in());
   }
 
   // -- retry-attempts parsing ----------------------------------------------
