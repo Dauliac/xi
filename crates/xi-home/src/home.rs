@@ -287,6 +287,7 @@ impl HomeRebuildArgs {
     xi_core::sources::switch::record_activation(
       crate::args::HomeArgs::scope(),
       &target_profile,
+      prepared.dirty_source(),
     );
 
     debug!("Completed operation with output path: {target_profile:?}");

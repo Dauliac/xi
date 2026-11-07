@@ -28,6 +28,9 @@
 //!   leaves evidence of what was in flight.
 //! - [`reattach`]  -  `xi push --reattach`: with no id, lists every local
 //!   receipt newest first, probing each target's reachability.
+//! - [`retry`]  -  classifies [`engine::SshTransport`]'s raw `ssh`/`rsync`/
+//!   `nix copy` process results as transient or permanent, for
+//!   `xi_core::retry::retry`.
 //! - [`orchestrate`]  -  ties every module above into the `xi push` verb:
 //!   resolve context, discover, select, pick a backend, dispatch.
 
@@ -42,4 +45,5 @@ pub mod orchestrate;
 pub mod preflight;
 pub mod reattach;
 pub mod receipt;
+pub(crate) mod retry;
 pub mod rollback;

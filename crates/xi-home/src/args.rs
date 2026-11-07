@@ -23,6 +23,10 @@ use xi_remote::RemoteHost;
 #[derive(Debug, Subcommand)]
 pub enum HomeSubcommand {
   /// Build and activate a home-manager configuration
+  ///
+  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
+  /// functional for the deprecation window, hidden from `--help`.
+  #[command(hide = true)]
   Switch(HomeRebuildArgs),
 
   /// Build a home-manager configuration

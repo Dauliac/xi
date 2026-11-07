@@ -25,6 +25,7 @@
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
+use serial_test::serial;
 use tempfile::TempDir;
 use xi_core::sources::{
   GitopsHealth,
@@ -773,6 +774,243 @@ fn classification_does_not_depend_on_what_exists_on_disk() {
   );
 }
 
+// -- Requirement: a positional is disambiguated without breaking existing
+// meanings (xi-deploy-unified-verb) --------------------------------------
+
+/// Every shape `classify_positional` already resolves keeps that exact
+/// reading from `classify_deploy_positional` when no target matches -
+/// confirming the new function is layered on top rather than a
+/// modification of the existing one.
+#[test]
+fn deploy_positional_falls_through_to_classify_positional_when_no_target_matches()
+ {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    classify_deploy_positional,
+  };
+
+  let no_targets = BTreeSet::new();
+
+  let remotes = [
+    "git@github.com:you/cfg.git",
+    "git@git.example.org:cfg",
+    "https://git.example/owner/repo.git",
+    "https://git.example/dotfiles",
+    "http://git.example/dotfiles",
+    "ssh://git@example.org/cfg",
+  ];
+  for arg in remotes {
+    assert_eq!(
+      classify_deploy_positional(arg, &no_targets),
+      DeployPositionalKind::Positional(PositionalKind::ConfigRemote),
+      "`{arg}` should keep its config-remote reading"
+    );
+  }
+
+  let installables = [
+    ".",
+    "./cfg",
+    "/abs/path",
+    "/nix/store/abc-foo",
+    "github:owner/repo",
+    "gitlab:owner/repo",
+    "sourcehut:~owner/repo",
+    "git+https://git.example/repo",
+    "git+ssh://git@example.org/cfg",
+    "path:/abs/path",
+    "flake:nixpkgs",
+    "nixpkgs",
+    "",
+  ];
+  for arg in installables {
+    assert_eq!(
+      classify_deploy_positional(arg, &no_targets),
+      DeployPositionalKind::Positional(PositionalKind::Installable),
+      "`{arg}` should keep its installable reading"
+    );
+  }
+}
+
+/// A bare word with none of `classify_positional`'s recognised shapes
+/// resolves as a fleet target when it is in the discovered/inventory set.
+#[test]
+fn deploy_positional_resolves_a_bare_word_target_first() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned(), "db1".to_owned()].into();
+
+  assert_eq!(
+    classify_deploy_positional("web1", &targets),
+    DeployPositionalKind::Target
+  );
+}
+
+/// A bare word matching a target resolves as a target even when a
+/// same-named directory exists in `cwd` - `classify_deploy_positional`
+/// never stats the filesystem, so a colliding local directory must not
+/// change the reading.
+#[test]
+#[serial]
+fn deploy_positional_resolves_as_target_even_with_a_same_named_local_dir() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    classify_deploy_positional,
+  };
+
+  let tmp = TempDir::new().expect("tempdir");
+  std::fs::create_dir(tmp.path().join("web1")).expect("create colliding dir");
+
+  let original_dir = std::env::current_dir().expect("current dir");
+  std::env::set_current_dir(tmp.path()).expect("chdir into tempdir");
+  let result = std::panic::catch_unwind(|| {
+    let targets: BTreeSet<String> = ["web1".to_owned()].into();
+    classify_deploy_positional("web1", &targets)
+  });
+  std::env::set_current_dir(original_dir).expect("restore cwd");
+
+  assert_eq!(
+    result.expect("classify_deploy_positional must not panic"),
+    DeployPositionalKind::Target,
+    "a bare word matching a target must resolve as a target even when a \
+     same-named directory exists in cwd"
+  );
+}
+
+/// A bare word matching no target still falls through to
+/// `classify_positional`'s default installable reading.
+#[test]
+fn deploy_positional_falls_through_when_bare_word_matches_no_target() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+
+  assert_eq!(
+    classify_deploy_positional("nope", &targets),
+    DeployPositionalKind::Positional(PositionalKind::Installable)
+  );
+}
+
+/// Anything already shaped like a path, URL, scp spec, or flake
+/// reference keeps that reading even when its text happens to equal a
+/// target name - the target check only ever applies to bare words.
+#[test]
+fn deploy_positional_shaped_args_never_read_as_a_target() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+
+  assert_eq!(
+    classify_deploy_positional("./web1", &targets),
+    DeployPositionalKind::Positional(PositionalKind::Installable),
+    "a path-shaped positional is never read as a target"
+  );
+  assert_eq!(
+    classify_deploy_positional("github:web1", &targets),
+    DeployPositionalKind::Positional(PositionalKind::Installable),
+    "a flake-ref-shaped positional is never read as a target"
+  );
+}
+
+// -- Requirement: `--target` resolves the rare genuine collision ----------
+
+/// `--target` forces the target reading even over a positional
+/// `classify_deploy_positional` would otherwise read as a path -  the
+/// collision the heuristic alone cannot resolve, since a path-shaped
+/// positional is never checked against the target set at all.
+#[test]
+fn target_override_forces_target_reading_over_a_path_shaped_positional() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    apply_target_override,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+  let classified = classify_deploy_positional("./web1", &targets);
+  assert_eq!(
+    classified,
+    DeployPositionalKind::Positional(PositionalKind::Installable),
+    "precondition: the heuristic alone reads a path-shaped positional as an \
+     installable, never a target"
+  );
+
+  assert_eq!(
+    apply_target_override(classified, true),
+    DeployPositionalKind::Target,
+    "--target must override the heuristic's reading"
+  );
+}
+
+/// `--target` forces the target reading even for a bare word that
+/// matches nothing in the discovered/inventory target set.
+#[test]
+fn target_override_forces_target_reading_even_with_no_matching_target() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    DeployPositionalKind,
+    PositionalKind,
+    apply_target_override,
+    classify_deploy_positional,
+  };
+
+  let no_targets = BTreeSet::new();
+  let classified = classify_deploy_positional("anything", &no_targets);
+  assert_eq!(
+    classified,
+    DeployPositionalKind::Positional(PositionalKind::Installable)
+  );
+
+  assert_eq!(
+    apply_target_override(classified, true),
+    DeployPositionalKind::Target
+  );
+}
+
+/// Without `--target`, `apply_target_override` is a no-op: the
+/// heuristic's own reading passes through unchanged.
+#[test]
+fn target_override_is_a_noop_when_not_forced() {
+  use std::collections::BTreeSet;
+
+  use xi_core::sources::config::{
+    apply_target_override,
+    classify_deploy_positional,
+  };
+
+  let targets: BTreeSet<String> = ["web1".to_owned()].into();
+
+  for raw in ["web1", "./web1", "github:web1", "nope"] {
+    let classified = classify_deploy_positional(raw, &targets);
+    assert_eq!(apply_target_override(classified, false), classified);
+  }
+}
+
 // -- Requirement: Switch is the sources entrypoint, status half -----------
 
 /// The status a fresh adopt reports, decided on bead xi-4p3h.
@@ -817,7 +1055,7 @@ fn a_clone_is_pending_until_an_activation_is_recorded() {
   // Now what a successful activation leaves behind.
   let profile = tmp.path().join("generation-42");
   std::fs::create_dir_all(&profile).expect("mkdir profile");
-  record_activation_at(&paths, &profile).expect("record activation");
+  record_activation_at(&paths, &profile, false).expect("record activation");
 
   let resolved = profile
     .canonicalize()
@@ -864,7 +1102,7 @@ fn the_envelope_reports_pending_before_an_activation_and_ready_after() {
   assert_eq!(before["status"], "pending");
   assert!(before["active_generation"].is_null());
 
-  record_activation_at(&paths, &tmp.path().join("sources"))
+  record_activation_at(&paths, &tmp.path().join("sources"), false)
     .expect("record activation");
 
   let after = envelope(&paths);
