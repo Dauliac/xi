@@ -45,8 +45,9 @@ functionality, under the "Removed" section.
   instead of raw `cargo build`/`cross`, so the artifacts attached to GitHub
   releases are validated against the flake. `aarch64-linux` builds natively on
   GitHub's `ubuntu-24.04-arm` runner instead of emulating via `cross`. A new
-  `test` job (`nix flake check` + `cargo nextest` via `just test`) gates the
-  build job so releases are cut only after checks and tests pass.
+  `test` job (nix build of the `xi`/`xi-clippy`/`xi-doc` checks, plus `cargo
+  nextest` via `just test`) gates the build job so releases are cut only
+  after checks and tests pass.
 
 ### Removed
 

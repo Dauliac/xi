@@ -59,8 +59,13 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run nix flake checks (build + clippy + doc)
-        run: nix flake check -L
+      - name: Run nix checks (build + clippy + doc)
+        run: |
+          nix build \
+            .#checks.x86_64-linux.xi \
+            .#checks.x86_64-linux.xi-clippy \
+            .#checks.x86_64-linux.xi-doc \
+            -L --no-link
 
       - name: Run test suite
         run: nix develop --command just test
