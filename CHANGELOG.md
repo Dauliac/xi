@@ -28,9 +28,9 @@ functionality, under the "Removed" section.
   rather than published prose. `CHANGELOG.md` and `CONTRIBUTING.md` also leave
   Vale's scope as a result.
 - `tag.yaml`'s push trigger and `check.yaml`'s PR trigger targeted `master`, a
-  stale branch name left over from the `nh` fork, so auto-tagging and PR
-  checks against the real default branch (`main`) were silently not firing.
-  Both now target `main`.
+  stale branch name left over from the `nh` fork, so auto-tagging and PR checks
+  against the real default branch (`main`) were silently not firing. Both now
+  target `main`.
 - Release binaries built by `tag.yaml` are now built with `nix build .#xi`
   instead of raw `cargo build`/`cross`, so the artifacts attached to GitHub
   releases are validated against the flake. `aarch64-linux` builds natively on
