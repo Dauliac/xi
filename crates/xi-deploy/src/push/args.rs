@@ -365,6 +365,22 @@ pub struct PushArgs {
   /// the way `xi <scope> sources` does.
   #[arg(long, value_enum, default_value_t = PushScope::System)]
   pub scope: PushScope,
+
+  /// Reattach to a remote-build push instead of starting a new one
+  ///
+  /// With no id, lists every local push receipt
+  /// (`<state dir>/push-receipts/*.json`), newest first, probing each
+  /// one's target for reachability. With an id, reattaches to that
+  /// receipt's unit - not implemented yet (`xi-enwe.2.2`).
+  #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PUSH_ID")]
+  pub reattach: Option<String>,
+
+  /// Run `command` exactly once, the first time a terminal outcome
+  /// (success or failure) for this push's remote unit is observed and
+  /// its local receipt is removed - by this process, or by a later
+  /// `xi push --reattach`
+  #[arg(long, value_name = "COMMAND")]
+  pub notify: Option<String>,
 }
 
 impl PushArgs {
@@ -517,6 +533,8 @@ mod tests {
       build_only: false,
       from_manifest: None,
       scope: PushScope::System,
+      reattach: None,
+      notify: None,
     }
   }
 

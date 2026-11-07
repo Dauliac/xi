@@ -265,6 +265,8 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
     from_manifest:    None,
     scope:            PushScope::System,
     retry:            None,
+    reattach:         None,
+    notify:           None,
   };
 
   let report = execute(

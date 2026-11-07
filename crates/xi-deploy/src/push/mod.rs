@@ -26,6 +26,11 @@
 //! - [`mode_target_pull`]  -  `--mode target-pull`: ask the target's own
 //!   `xi-sources-daemon` to fetch-and-fast-forward itself, instead of the
 //!   operator copying anything to it.
+//! - [`receipt`]  -  the local `<state dir>/push-receipts/<push-id>.json` file
+//!   that records a unit this process started, so a disconnect mid-push still
+//!   leaves evidence of what was in flight.
+//! - [`reattach`]  -  `xi push --reattach`: with no id, lists every local
+//!   receipt newest first, probing each target's reachability.
 //! - [`retry`]  -  classifies [`engine::SshTransport`]'s raw `ssh`/`rsync`/
 //!   `nix copy` process results as transient or permanent, for
 //!   `xi_core::retry::retry`.
@@ -42,5 +47,7 @@ pub mod mode_sources;
 pub mod mode_target_pull;
 pub mod orchestrate;
 pub mod preflight;
+pub mod reattach;
+pub mod receipt;
 pub(crate) mod retry;
 pub mod rollback;
