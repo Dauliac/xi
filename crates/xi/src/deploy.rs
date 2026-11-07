@@ -88,14 +88,34 @@ fn is_adopted(scope: Scope) -> bool {
 /// resolve the plan, and either dispatch it or - under `--dry` - print
 /// it instead.
 ///
+/// With `--reattach` set, bypasses all of that and dispatches straight
+/// to [`push::reattach::run`], mirroring [`push::orchestrate::run`]'s
+/// own precedent exactly: a reattach is about a push already in
+/// flight, not a new activation decision, so neither fact-gathering
+/// nor the decision tree's local-vs-fleet resolution has any reason to
+/// run for it.
+///
 /// # Errors
 ///
-/// Propagates a fact-gathering or dispatch failure.
+/// With `--reattach` set, propagates [`push::reattach::run`]'s error
+/// instead of anything below. Otherwise propagates a fact-gathering or
+/// dispatch failure.
 fn run_for_scope(
   args: &DeployArgs,
   scope: Scope,
   elevation: &ElevationStrategy,
 ) -> Result<()> {
+  if let Some(id) = &args.reattach {
+    // A reattach's receipts live under the scope's state dir regardless
+    // of whether that scope currently has sources configured, so this
+    // reads `ScopePaths` directly rather than going through
+    // `gather_facts`/`resolve_plan`, which would run fact-gathering and
+    // decision-tree resolution a reattach has no reason to need.
+    let state_dir =
+      xi_core::sources::config::ScopePaths::resolve(scope).state_dir;
+    return push::reattach::run(id, &state_dir, &push::engine::SshTransport);
+  }
+
   let deploy_scope = match scope {
     Scope::System => DeployScope::System,
     Scope::User => DeployScope::User,
