@@ -46,7 +46,9 @@ use xi_core::sources::{
   switch::record_activation_at,
 };
 use xi_deploy::push::{
-  args::{BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope},
+  args::{
+    BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope,
+  },
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate::execute,
@@ -186,6 +188,7 @@ impl Transport for FixtureTransport {
     _target: &TargetAddr,
     _store_path: &str,
     _via: CopyVia,
+    _retry_attempts: u32,
   ) -> Result<()> {
     Ok(())
   }
@@ -196,6 +199,7 @@ impl Transport for FixtureTransport {
     _local: &std::path::Path,
     _spec: &xi_core::sources::secrets::SecretSpec,
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("a single-host activate push has no secrets in this scenario")
   }
@@ -207,6 +211,7 @@ impl Transport for FixtureTransport {
     _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("--mode closure never syncs a directory")
   }
@@ -258,6 +263,7 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
     build_only:       false,
     from_manifest:    None,
     scope:            PushScope::System,
+    retry:            None,
   };
 
   let report = execute(

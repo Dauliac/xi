@@ -422,6 +422,7 @@ fn push_args(
     phase: args.phase.clone(),
     mode: args.mode,
     remote_build: args.remote_build,
+    retry: None,
     magic_rollback: args.magic_rollback,
     parallel: args.parallel,
     interactive_sudo: args.interactive_sudo,

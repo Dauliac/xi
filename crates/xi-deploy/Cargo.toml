@@ -21,8 +21,9 @@ xi-core.workspace     = true
 yansi.workspace       = true
 
 [dev-dependencies]
-serial_test.workspace = true
-tempfile.workspace    = true
+serial_test.workspace        = true
+tempfile.workspace           = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
