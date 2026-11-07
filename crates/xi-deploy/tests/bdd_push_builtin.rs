@@ -127,6 +127,7 @@ impl Transport for FixtureTransport {
     target: &TargetAddr,
     store_path: &str,
     via: CopyVia,
+    _retry_attempts: u32,
   ) -> Result<()> {
     self
       .copy_closure_calls
@@ -142,6 +143,7 @@ impl Transport for FixtureTransport {
     _local: &std::path::Path,
     _spec: &xi_core::sources::secrets::SecretSpec,
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("a single-host activate push has no secrets in this scenario")
   }
@@ -153,6 +155,7 @@ impl Transport for FixtureTransport {
     _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("--mode closure never syncs a directory")
   }
@@ -245,7 +248,7 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
   );
 
   transport
-    .copy_closure(&target.addr, &store_path, CopyVia::Local)
+    .copy_closure(&target.addr, &store_path, CopyVia::Local, 3)
     .expect("copies the closure");
 
   let activation =
@@ -253,7 +256,7 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
   let outcome = transport
     .run(
       &target.addr,
-      &RemoteCommand::elevated(activation.clone(), false),
+      &RemoteCommand::elevated(activation.clone(), false, 3),
     )
     .expect("activates");
   assert!(outcome.success);
@@ -367,6 +370,7 @@ fn magic_rollback_confirms_a_healthy_activation_without_rolling_back() {
     std::time::Duration::from_millis(10),
     std::time::Duration::from_millis(2),
     false,
+    3,
   )
   .expect("confirms");
   assert_eq!(outcome, rollback::RollbackOutcome::Confirmed);

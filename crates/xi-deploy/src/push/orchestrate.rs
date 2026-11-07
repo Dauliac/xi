@@ -390,6 +390,8 @@ fn push_one(
     inventory,
     nix_module_remote_build,
   );
+  let retry_attempts =
+    config::resolve_retry_attempts(args.retry, &target.addr.name, inventory);
   let mode = args.effective_mode(remote_build);
   if mode == PushMode::Sources && args.copy_via == super::args::CopyVia::Target
   {
@@ -420,6 +422,7 @@ fn push_one(
     secrets,
     UploadAt::PreActivate,
     args.interactive_sudo,
+    retry_attempts,
   )?;
 
   match mode {
@@ -433,6 +436,7 @@ fn push_one(
         args.sources_scope(),
         &[],
         args.interactive_sudo,
+        retry_attempts,
       )
       .and_then(|()| {
         mode_sources::switch(
@@ -441,6 +445,7 @@ fn push_one(
           args.sources_scope(),
           origin_host,
           args.interactive_sudo,
+          retry_attempts,
         )
       }) {
         if args.fail_fast {
@@ -457,9 +462,12 @@ fn push_one(
 
       let _permit = limits.apply.acquire();
       check_aborted()?;
-      if let Err(e) =
-        transport.copy_closure(&target.addr, &store_path, args.copy_via)
-      {
+      if let Err(e) = transport.copy_closure(
+        &target.addr,
+        &store_path,
+        args.copy_via,
+        retry_attempts,
+      ) {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
         }
@@ -474,7 +482,8 @@ fn push_one(
       );
       let outcome = transport.run(
         &target.addr,
-        &RemoteCommand::elevated(script, args.interactive_sudo),
+        &RemoteCommand::elevated(script, args.interactive_sudo, retry_attempts)
+          .non_retryable(),
       )?;
       if !outcome.success {
         if args.fail_fast {
@@ -496,6 +505,7 @@ fn push_one(
     secrets,
     UploadAt::PostActivate,
     args.interactive_sudo,
+    retry_attempts,
   )?;
 
   if args.magic_rollback > 0 {
@@ -507,6 +517,7 @@ fn push_one(
       Duration::from_secs(args.magic_rollback),
       ROLLBACK_POLL_INTERVAL,
       args.interactive_sudo,
+      retry_attempts,
     )?;
     if outcome == rollback::RollbackOutcome::RolledBack {
       if args.fail_fast {
@@ -542,11 +553,12 @@ fn upload_secrets(
   secrets: &BTreeMap<String, SecretSpec>,
   when: UploadAt,
   interactive_sudo: bool,
+  retry_attempts: u32,
 ) -> Result<()> {
   for secret in secrets.values().filter(|secret| secret.upload_at == when) {
     let local = secret.source_from(&context.sources_dir);
     transport
-      .upload_secret(&target.addr, &local, secret, interactive_sudo)
+      .upload_secret(&target.addr, &local, secret, interactive_sudo, retry_attempts)
       .map_err(|e| {
         eyre!(
           "uploading secret '{}' to {}: {e}",
@@ -576,7 +588,11 @@ fn upload_secrets(
 /// [`ProfileKind::Custom`] and [`ProfileKind::Noop`] have no
 /// corresponding `xi` entrypoint and keep the lower-level commands they
 /// always have: a user-supplied script, or a bare profile registration
-/// with no activation at all.
+/// with no activation at all. `ProfileKind::Custom`'s `activate_command`
+/// is a template fixed at discovery time, before any store path exists,
+/// so it carries a [`discover::STORE_PATH_PLACEHOLDER`]
+/// (`TargetSource::profile_kind` populates it for `SystemConfigs`
+/// targets) that gets substituted here with the real store path.
 #[must_use]
 fn activation_script(
   target: &PushTarget,
@@ -591,7 +607,9 @@ fn activation_script(
         scope.sources_verb()
       )
     },
-    ProfileKind::Custom { activate_command } => activate_command.clone(),
+    ProfileKind::Custom { activate_command } => {
+      activate_command.replace(discover::STORE_PATH_PLACEHOLDER, store_path)
+    },
     ProfileKind::Noop => {
       format!(
         "nix-env --profile {} --set {store_path}",
@@ -708,6 +726,7 @@ mod tests {
       target: &TargetAddr,
       store_path: &str,
       _via: PushCopyVia,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self
         .copy_calls
@@ -723,6 +742,7 @@ mod tests {
       local: &std::path::Path,
       spec: &SecretSpec,
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self
         .secret_calls
@@ -739,6 +759,7 @@ mod tests {
       remote: &str,
       _excludes: &[&str],
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       self
         .sync_calls
@@ -768,8 +789,9 @@ mod tests {
       target: &TargetAddr,
       store_path: &str,
       via: PushCopyVia,
+      retry_attempts: u32,
     ) -> Result<()> {
-      self.0.copy_closure(target, store_path, via)
+      self.0.copy_closure(target, store_path, via, retry_attempts)
     }
 
     fn upload_secret(
@@ -778,8 +800,11 @@ mod tests {
       local: &std::path::Path,
       spec: &SecretSpec,
       interactive_sudo: bool,
+      retry_attempts: u32,
     ) -> Result<()> {
-      self.0.upload_secret(target, local, spec, interactive_sudo)
+      self
+        .0
+        .upload_secret(target, local, spec, interactive_sudo, retry_attempts)
     }
 
     fn sync_dir(
@@ -789,10 +814,16 @@ mod tests {
       remote: &str,
       excludes: &[&str],
       interactive_sudo: bool,
+      retry_attempts: u32,
     ) -> Result<()> {
-      self
-        .0
-        .sync_dir(target, local, remote, excludes, interactive_sudo)
+      self.0.sync_dir(
+        target,
+        local,
+        remote,
+        excludes,
+        interactive_sudo,
+        retry_attempts,
+      )
     }
   }
 
@@ -827,6 +858,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      retry: None,
       magic_rollback: 0,
       parallel: 1,
       interactive_sudo: false,
@@ -984,7 +1016,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      ..PushConfig::default()
     };
 
     let report = execute(
@@ -1016,7 +1048,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       remote_build: Some(true),
-      hosts:        Vec::new(),
+      ..PushConfig::default()
     };
 
     let report = execute(
@@ -1349,5 +1381,45 @@ mod tests {
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
+  }
+
+  /// xi-slej.3.2: `ProfileKind::Custom`'s `{store_path}` placeholder
+  /// (populated by `TargetSource::profile_kind` for `SystemConfigs`
+  /// targets) is substituted with the real store path, the same way
+  /// `register` is assembled for every other kind.
+  #[test]
+  fn custom_activation_substitutes_the_store_path_placeholder() {
+    let target = PushTarget {
+      addr:         TargetAddr {
+        name:     "web3".to_owned(),
+        ssh_host: "web3".to_owned(),
+        ssh_opts: Vec::new(),
+      },
+      source:       discover::TargetSource::SystemConfigs,
+      tags:         Vec::new(),
+      installable:  ".#systemConfigs.web3".to_owned(),
+      kind:         ProfileKind::Custom {
+        activate_command: "nix build --no-link --profile /p {store_path} && \
+                           {store_path}/bin/activate"
+          .to_owned(),
+      },
+      profile_path: "/p".to_owned(),
+      rebuild_tool: "nix",
+    };
+
+    let script = activation_script(
+      &target,
+      "/nix/store/abc-web3",
+      Scope::System,
+      "operator-host",
+    );
+
+    assert_eq!(
+      script,
+      "nix build --no-link --profile /p /nix/store/abc-web3 && \
+       /nix/store/abc-web3/bin/activate"
+    );
+    assert!(!script.contains("nixos-rebuild"));
+    assert!(!script.contains("darwin-rebuild"));
   }
 }
