@@ -173,9 +173,9 @@ impl OsRebuildActivateArgs {
     let (out_path, _tempdir_guard) =
       self.rebuild.determine_output_path(variant)?;
 
-    // `_sources_lock` is held until this function returns, which is
+    // `sources_lock` is held until this function returns, which is
     // after activation and after the generation has been recorded.
-    let (toplevel, _sources_lock) = self
+    let (toplevel, sources_lock) = self
       .rebuild
       .resolve_installable_and_toplevel(&target_hostname, final_attrs)?;
 
@@ -275,6 +275,7 @@ impl OsRebuildActivateArgs {
       xi_core::sources::switch::record_activation(
         crate::args::OsArgs::scope(),
         &target_profile,
+        sources_lock.dirty_source(),
       );
     }
 

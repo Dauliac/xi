@@ -28,7 +28,6 @@ pub struct DeployArgs {
   pub flake_ref: Option<String>,
 
   /// Target nodes to deploy (deploys all if none specified)
-  #[arg(trailing_var_arg = true)]
   pub targets: Vec<String>,
 
   /// Filter targets by tag (colmena-style, prefix with @)

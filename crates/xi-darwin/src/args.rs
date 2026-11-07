@@ -58,6 +58,10 @@ impl DarwinArgs {
 #[derive(Debug, Subcommand)]
 pub enum DarwinSubcommand {
   /// Build and activate a nix-darwin configuration
+  ///
+  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
+  /// functional for the deprecation window, hidden from `--help`.
+  #[command(hide = true)]
   Switch(DarwinRebuildArgs),
   /// Build a nix-darwin configuration
   Build(DarwinRebuildArgs),

@@ -215,6 +215,8 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
   assert_eq!(args.phases().expect("phases parse"), vec![Phase::Activate]);
   args.validate().expect("args are internally consistent");
 
+  let xi_toml_path = root.path().join(".xi.toml");
+
   let report = orchestrate::execute(
     &args,
     &context,
@@ -223,6 +225,7 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     &PushConfig::default(),
     None,
     None,
+    &xi_toml_path,
     &nix,
     &transport,
   )
@@ -285,6 +288,7 @@ fn xi_push_mode_sources_activates_via_the_remote_switch_entrypoint_not_the_old_r
     &PushConfig::default(),
     None,
     None,
+    &root.path().join(".xi.toml"),
     &nix,
     &transport,
   )
@@ -322,6 +326,18 @@ fn xi_push_mode_sources_activates_via_the_remote_switch_entrypoint_not_the_old_r
     last_script.starts_with("systemd-run --wait --pipe --collect -- "),
     "got: {last_script}"
   );
+
+  // A fully successful rollout caches `fleet-digest` next to the
+  // operator's `.xi.toml`, not inside any scope's state dir.
+  let cached = std::fs::read_to_string(root.path().join(".xi-fleet-digest"))
+    .expect("fleet-digest cache file must exist after a successful rollout");
+  let expected = xi_deploy::fleet_digest::FleetDigestInput {
+    targets:        vec!["web1".to_owned()],
+    backend:        report.backend.as_str().to_owned(),
+    build_location: report.build_location.clone(),
+  }
+  .digest();
+  assert_eq!(cached, expected);
 }
 
 /// Flattens [`PushArgs`] behind the real `clap` parser, the same shape
@@ -384,6 +400,7 @@ fn omitting_build_strategy_dispatches_identically_to_interleaved_given_explicitl
       &PushConfig::default(),
       None,
       None,
+      &root.path().join(".xi.toml"),
       &nix,
       &transport,
     )
@@ -432,6 +449,8 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
   let mut args = push_args();
   args.targets = vec!["does-not-exist".to_owned()];
 
+  let xi_toml_path = root.path().join(".xi.toml");
+
   let err = orchestrate::execute(
     &args,
     &context,
@@ -440,10 +459,15 @@ fn an_unknown_target_name_refuses_before_any_mutation() {
     &PushConfig::default(),
     None,
     None,
+    &xi_toml_path,
     &nix,
     &transport,
   )
   .expect_err("no such target");
   assert!(format!("{err}").contains("web1"), "got: {err}");
   assert!(transport.copy_calls.lock().expect("lock").is_empty());
+  assert!(
+    !root.path().join(".xi-fleet-digest").exists(),
+    "a refused push must not cache a fleet-digest"
+  );
 }

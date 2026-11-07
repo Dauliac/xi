@@ -217,6 +217,7 @@ fn xi_push_discovers_and_activates_a_system_configs_target() {
     &PushConfig::default(),
     None,
     None,
+    &root.path().join(".xi.toml"),
     &nix,
     &transport,
   )

@@ -180,6 +180,7 @@ impl SystemRebuildArgs {
         xi_core::sources::switch::record_activation(
           crate::system::args::SystemArgs::scope(),
           &store_path,
+          prepared.dirty_source(),
         );
       }
     }

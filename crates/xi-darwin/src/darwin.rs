@@ -262,6 +262,7 @@ impl DarwinRebuildArgs {
         xi_core::sources::switch::record_activation(
           crate::args::DarwinArgs::scope(),
           &out_path,
+          prepared.dirty_source(),
         );
       }
     }

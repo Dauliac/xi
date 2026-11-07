@@ -319,6 +319,12 @@ pub struct RefLineage {
 /// reboot-window gate deferred it. It outlives a daemon restart so a
 /// deferral spanning one (a `02:00-04:00` window is long enough to) is
 /// still honoured on the next tick rather than silently forgotten.
+///
+/// `verified-at` is `xi-deploy-unified-verb`'s: written alongside
+/// `applied-at` by [`switch::record_activation_at`], but only when the
+/// activation built from a clean working dir. `xi deploy`'s decision
+/// tree reads it at the dirty/clean boundary to tell a just-verified
+/// commit from an untested one.
 pub const STATE_FILE_NAMES: &[&str] = &[
   "remote-url",
   "remote-head",
@@ -330,6 +336,7 @@ pub const STATE_FILE_NAMES: &[&str] = &[
   "applied-origin",
   "inventory-role",
   "applied-at",
+  "verified-at",
   "pending-activation",
   "lock",
   lock::ALIVE_FILE,
