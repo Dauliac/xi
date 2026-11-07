@@ -422,18 +422,68 @@ fn push_args(
     phase: args.phase.clone(),
     mode: args.mode,
     remote_build: args.remote_build,
+    sources_transport: args.sources_transport,
+    retry: args.retry,
     magic_rollback: args.magic_rollback,
     parallel: args.parallel,
     interactive_sudo: args.interactive_sudo,
     copy_via: args.copy_via,
     fail_fast: args.fail_fast,
     force_dirty: args.sources.force_dirty,
-    build_strategy: push::args::BuildStrategy::Interleaved,
-    build_only: false,
-    from_manifest: None,
+    build_strategy: args.build_strategy,
+    build_only: args.build_only,
+    from_manifest: args.from_manifest.clone(),
     scope: match scope {
       Scope::System => push::args::PushScope::System,
       Scope::User => push::args::PushScope::User,
     },
+    reattach: args.reattach.clone(),
+    notify: args.notify.clone(),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use clap::Parser;
+
+  use super::*;
+
+  #[derive(Debug, Parser)]
+  struct TestCli {
+    #[command(flatten)]
+    args: DeployArgs,
+  }
+
+  // Task xi-6mf6.2.1: push_args() passes the seven push-only flags
+  // through from DeployArgs instead of hardcoding placeholders.
+  #[test]
+  fn push_args_carries_the_seven_push_only_flags_unchanged() {
+    let cli = TestCli::try_parse_from([
+      "xi",
+      "--sources-transport",
+      "target-pull",
+      "--retry",
+      "5",
+      "--build-strategy",
+      "batched",
+      "--build-only",
+      "--from-manifest",
+      "/tmp/push-manifest.json",
+      "--reattach",
+      "push-123",
+      "--notify",
+      "echo done",
+    ])
+    .expect("parses");
+
+    let built = push_args(&cli.args, Scope::System, Vec::new());
+
+    assert_eq!(built.sources_transport, cli.args.sources_transport);
+    assert_eq!(built.retry, cli.args.retry);
+    assert_eq!(built.build_strategy, cli.args.build_strategy);
+    assert_eq!(built.build_only, cli.args.build_only);
+    assert_eq!(built.from_manifest, cli.args.from_manifest);
+    assert_eq!(built.reattach, cli.args.reattach);
+    assert_eq!(built.notify, cli.args.notify);
   }
 }
