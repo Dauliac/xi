@@ -345,6 +345,34 @@ fn test_parse_attribute() {
 }
 
 impl InstallableArgs {
+  /// Build directly from a raw positional string, outside of clap
+  /// parsing.
+  ///
+  /// Mirrors the plain `INSTALLABLE` positional's own resolution inside
+  /// [`FromArgMatches::from_arg_matches_mut`] (a `/nix/store` path
+  /// resolves as [`Installable::Store`], everything else as
+  /// [`Installable::Flake`]), for callers that already own a parsed
+  /// `String` - like `xi deploy`'s own `targets` positional, which
+  /// cannot flatten [`InstallableArgs`] itself (see `unified_args`'s
+  /// module docs) - rather than `clap::ArgMatches`.
+  #[must_use]
+  pub fn from_positional(raw: &str) -> Self {
+    if let Ok(p) = fs::canonicalize(raw)
+      && p.starts_with("/nix/store")
+    {
+      return Self::Specified(Installable::Store { path: p });
+    }
+    match parse_flake_reference(raw) {
+      Ok((reference, attribute)) => {
+        Self::Specified(Installable::Flake {
+          reference,
+          attribute,
+        })
+      },
+      Err(_) => Self::Unspecified,
+    }
+  }
+
   /// Returns whether the parsed CLI input or non-empty flake environment
   /// variables select flake mode for the command context.
   #[must_use]
@@ -729,7 +757,7 @@ where
   res
 }
 
-fn local_flake_reference_path(reference: &str) -> Option<PathBuf> {
+pub(crate) fn local_flake_reference_path(reference: &str) -> Option<PathBuf> {
   // Only preflight references that are unmistakably filesystem paths. Bare
   // names like `nixpkgs`, plus URL/registry-style refs, stay in Nix's hands.
   if let Some(path) = reference.strip_prefix("path:") {

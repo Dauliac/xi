@@ -25,10 +25,13 @@ use color_eyre::{
 };
 use nix_command::{CommandKind, NixCommand};
 use tracing::debug;
-use xi_core::sources::{Scope, secrets::SecretSpec};
+use xi_core::{
+  retry::{retry, RetryPolicy},
+  sources::{Scope, secrets::SecretSpec},
+};
 use xi_sources_daemon::control::{self, AdvanceNow, AdvanceReply};
 
-use super::args::CopyVia;
+use super::{args::CopyVia, retry::classify_ssh_exit};
 
 /// A target as the transport needs to address it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +58,26 @@ pub struct RemoteCommand {
   /// Off for probes, whose output is parsed; on for activation, whose
   /// output is the thing the operator is watching.
   pub streaming: bool,
+  /// Retry attempts for this command's underlying `ssh` spawn.
+  ///
+  /// Only consulted on the `streaming` path - a probe never retries
+  /// regardless of this value (see [`SshTransport::run`]), so
+  /// [`Self::probe`] sets it to a meaningless `1`.
+  pub retry_attempts: u32,
+  /// Whether [`SshTransport::run`] may retry this command's `ssh` spawn
+  /// at all.
+  ///
+  /// `true` for everything constructed here, except activation/switch
+  /// commands (`nixos-rebuild`/`darwin-rebuild`/`home-manager switch`,
+  /// or `mode_sources::switch`'s `systemd-run`-wrapped equivalent),
+  /// which call sites set to `false` via [`Self::non_retryable`]. `ssh`
+  /// exit `255` means "could not establish or maintain the connection",
+  /// but for those commands it is also what a connection drop *after*
+  /// the remote activation already started looks like - retrying then
+  /// re-invokes the whole command, and for the `systemd-run`-wrapped one
+  /// (no stable `--unit=` name) that spins up a second, independent,
+  /// concurrent activation racing the first.
+  pub retryable: bool,
 }
 
 impl RemoteCommand {
@@ -66,12 +89,18 @@ impl RemoteCommand {
       pty:       false,
       elevate:   Elevate::No,
       streaming: false,
+      retry_attempts: 1,
+      retryable: true,
     }
   }
 
   /// An elevated command, with the sudo mode the flags imply.
   #[must_use]
-  pub fn elevated(script: impl Into<String>, interactive_sudo: bool) -> Self {
+  pub fn elevated(
+    script: impl Into<String>,
+    interactive_sudo: bool,
+    retry_attempts: u32,
+  ) -> Self {
     Self {
       script:    script.into(),
       pty:       interactive_sudo,
@@ -81,7 +110,19 @@ impl RemoteCommand {
         Elevate::NonInteractive
       },
       streaming: true,
+      retry_attempts,
+      retryable: true,
     }
+  }
+
+  /// Mark this command as never retried by [`SshTransport::run`].
+  ///
+  /// For an activation/switch command: see [`Self::retryable`] for why
+  /// retrying one is unsafe.
+  #[must_use]
+  pub fn non_retryable(mut self) -> Self {
+    self.retryable = false;
+    self
   }
 }
 
@@ -202,6 +243,7 @@ pub trait Transport: Send + Sync {
     target: &TargetAddr,
     store_path: &str,
     via: CopyVia,
+    retry_attempts: u32,
   ) -> Result<()>;
 
   /// Upload one secret to its destination with its owner, group and mode.
@@ -215,6 +257,7 @@ pub trait Transport: Send + Sync {
     local: &Path,
     spec: &SecretSpec,
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()>;
 
   /// Mirror a directory onto the target.
@@ -229,6 +272,7 @@ pub trait Transport: Send + Sync {
     remote: &str,
     excludes: &[&str],
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()>;
 
   /// Ask `target`'s own `xi-sources-daemon` to fetch-and-fast-forward
@@ -404,9 +448,35 @@ impl Transport for SshTransport {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-      let status = ssh
-        .status()
-        .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))?;
+      // Only this branch ever retries: it is the elevated/activation path,
+      // never a probe. A probe (the `!cmd.streaming` branch below) wants an
+      // honest, immediate answer, not one that papers over the condition
+      // it is testing for.
+      //
+      // Within this branch, `cmd.retryable` opts a command back out: an
+      // activation/switch command's `ssh` exit 255 can mean the connection
+      // dropped after activation already started, not only that it never
+      // connected, so retrying it risks re-running a non-idempotent
+      // mutation (see `RemoteCommand::retryable`).
+      if !cmd.retryable {
+        let status = ssh
+          .status()
+          .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))?;
+        return Ok(Outcome {
+          success: status.success(),
+          stdout:  String::new(),
+          stderr:  String::new(),
+        });
+      }
+      let policy = RetryPolicy {
+        max_attempts: cmd.retry_attempts,
+        ..RetryPolicy::default()
+      };
+      let status = retry(&policy, classify_ssh_exit, || {
+        ssh
+          .status()
+          .map_err(|e| eyre!("failed to run ssh for {}: {e}", target.name))
+      })?;
       return Ok(Outcome {
         success: status.success(),
         stdout:  String::new(),
@@ -429,34 +499,46 @@ impl Transport for SshTransport {
     target: &TargetAddr,
     store_path: &str,
     via: CopyVia,
+    retry_attempts: u32,
   ) -> Result<()> {
+    let policy = RetryPolicy {
+      max_attempts: retry_attempts,
+      ..RetryPolicy::default()
+    };
     match via {
       // `nix-copy-closure --use-substitutes` makes the *target* fetch
       // what it can from its own caches, which is the deploy-rs
       // `substituteOnDestination` behaviour and the only sensible choice
       // when the operator's link is the bottleneck.
       CopyVia::Target => {
-        let status = Command::new("nix-copy-closure")
-          .args(nix_copy_closure_args(target, store_path))
-          .status()
-          .map_err(|e| eyre!("failed to run nix-copy-closure: {e}"))?;
+        let status = retry(&policy, classify_ssh_exit, || {
+          Command::new("nix-copy-closure")
+            .args(nix_copy_closure_args(target, store_path))
+            .status()
+            .map_err(|e| eyre!("failed to run nix-copy-closure: {e}"))
+        })?;
         if !status.success() {
           bail!("nix-copy-closure to {} failed", target.name);
         }
         Ok(())
       },
       CopyVia::Local => {
-        let output = NixCommand::new(CommandKind::Copy)
-          .arg("--to")
-          .arg(format!("ssh://{}", target.ssh_host))
-          .arg(store_path)
-          .output()
-          .map_err(|e| eyre!("failed to run nix copy: {e}"))?;
-        if !output.status.success() {
+        let last_stderr = std::cell::RefCell::new(String::new());
+        let status = retry(&policy, classify_ssh_exit, || {
+          let output = NixCommand::new(CommandKind::Copy)
+            .arg("--to")
+            .arg(format!("ssh://{}", target.ssh_host))
+            .arg(store_path)
+            .output()
+            .map_err(|e| eyre!("failed to run nix copy: {e}"))?;
+          *last_stderr.borrow_mut() = String::from_utf8_lossy(&output.stderr).into_owned();
+          Ok(output.status)
+        })?;
+        if !status.success() {
           bail!(
             "nix copy to {} failed:\n{}",
             target.name,
-            String::from_utf8_lossy(&output.stderr)
+            last_stderr.into_inner()
           );
         }
         Ok(())
@@ -470,6 +552,7 @@ impl Transport for SshTransport {
     local: &Path,
     spec: &SecretSpec,
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()> {
     // Staged through a 0600 temp path owned by the SSH user, then moved
     // into place with `install`. Uploading straight to the destination
@@ -491,8 +574,10 @@ impl Transport for SshTransport {
     let script = install_secret_script(spec, &staged);
     let destination = spec.destination.display().to_string();
 
-    let outcome =
-      self.run(target, &RemoteCommand::elevated(script, interactive_sudo))?;
+    let outcome = self.run(
+      target,
+      &RemoteCommand::elevated(script, interactive_sudo, retry_attempts),
+    )?;
     if !outcome.success {
       bail!(
         "installing secret '{}' at {destination} on {} failed: {}",
@@ -511,6 +596,7 @@ impl Transport for SshTransport {
     remote: &str,
     excludes: &[&str],
     interactive_sudo: bool,
+    retry_attempts: u32,
   ) -> Result<()> {
     // The destination is usually root-owned, so rsync needs elevation on
     // the far side. `--rsync-path` is how that is spelled; the local
@@ -521,25 +607,31 @@ impl Transport for SshTransport {
       "sudo -n rsync"
     };
 
-    let mut rsync = Command::new("rsync");
-    rsync.arg("--archive").arg("--delete").arg("--compress");
-    for exclude in excludes {
-      rsync.arg(format!("--exclude={exclude}"));
-    }
-    rsync.arg(format!("--rsync-path={rsync_path}"));
-    rsync.arg("-e");
-    rsync.arg(format!(
-      "ssh {}",
-      Self::base_opts(target, interactive_sudo).join(" ")
-    ));
-    // The trailing slash is load-bearing: without it rsync nests the
-    // source directory inside the destination.
-    rsync.arg(format!("{}/", local.display()));
-    rsync.arg(format!("{}:{remote}", target.ssh_host));
+    let policy = RetryPolicy {
+      max_attempts: retry_attempts,
+      ..RetryPolicy::default()
+    };
+    let status = retry(&policy, classify_ssh_exit, || {
+      let mut rsync = Command::new("rsync");
+      rsync.arg("--archive").arg("--delete").arg("--compress");
+      for exclude in excludes {
+        rsync.arg(format!("--exclude={exclude}"));
+      }
+      rsync.arg(format!("--rsync-path={rsync_path}"));
+      rsync.arg("-e");
+      rsync.arg(format!(
+        "ssh {}",
+        Self::base_opts(target, interactive_sudo).join(" ")
+      ));
+      // The trailing slash is load-bearing: without it rsync nests the
+      // source directory inside the destination.
+      rsync.arg(format!("{}/", local.display()));
+      rsync.arg(format!("{}:{remote}", target.ssh_host));
 
-    let status = rsync
-      .status()
-      .map_err(|e| eyre!("failed to run rsync: {e}"))?;
+      rsync
+        .status()
+        .map_err(|e| eyre!("failed to run rsync: {e}"))
+    })?;
     if !status.success() {
       bail!("rsync of {} to {} failed", local.display(), target.name);
     }
@@ -694,16 +786,28 @@ mod tests {
 
   #[test]
   fn an_interactive_command_asks_for_a_pty() {
-    let cmd = RemoteCommand::elevated("true", true);
+    let cmd = RemoteCommand::elevated("true", true, 3);
     assert!(cmd.pty);
     assert_eq!(cmd.elevate, Elevate::Interactive);
   }
 
   #[test]
   fn a_default_command_asks_for_no_pty() {
-    let cmd = RemoteCommand::elevated("true", false);
+    let cmd = RemoteCommand::elevated("true", false, 3);
     assert!(!cmd.pty);
     assert_eq!(cmd.elevate, Elevate::NonInteractive);
+  }
+
+  #[test]
+  fn an_elevated_command_carries_its_retry_attempts() {
+    let cmd = RemoteCommand::elevated("true", false, 7);
+    assert_eq!(cmd.retry_attempts, 7);
+  }
+
+  #[test]
+  fn a_probe_never_asks_for_more_than_one_attempt() {
+    let cmd = RemoteCommand::probe("true");
+    assert_eq!(cmd.retry_attempts, 1);
   }
 
   #[test]

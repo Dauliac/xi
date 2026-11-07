@@ -22,7 +22,9 @@ xi-sources-daemon.workspace  = true
 yansi.workspace              = true
 
 [dev-dependencies]
-tempfile.workspace = true
+serial_test.workspace        = true
+tempfile.workspace           = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

@@ -22,10 +22,12 @@
 use std::sync::Mutex;
 
 use color_eyre::Result;
+use xi_core::sources::Scope;
 use xi_deploy::push::{
   args::{CopyVia, PushBackend},
   discover::{self, PushTarget, ResolvedBackend},
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
+  mode_sources,
   preflight,
   rollback,
 };
@@ -125,6 +127,7 @@ impl Transport for FixtureTransport {
     target: &TargetAddr,
     store_path: &str,
     via: CopyVia,
+    _retry_attempts: u32,
   ) -> Result<()> {
     self
       .copy_closure_calls
@@ -140,6 +143,7 @@ impl Transport for FixtureTransport {
     _local: &std::path::Path,
     _spec: &xi_core::sources::secrets::SecretSpec,
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("a single-host activate push has no secrets in this scenario")
   }
@@ -151,20 +155,28 @@ impl Transport for FixtureTransport {
     _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("--mode closure never syncs a directory")
   }
 }
 
-/// The activation script the `builtin` backend's legacy implementation
-/// already uses (`crates/xi-deploy/src/backend/builtin.rs`): register
-/// the store path in the target's profile, then run
-/// `switch-to-configuration switch`.
-fn activation_script(target: &PushTarget, store_path: &str) -> String {
+/// The activation script `xi-deploy-unify-activation` gives the
+/// `builtin` backend's closure-mode push: a remote `xi <scope> switch
+/// <store_path>` invocation, tagged with
+/// `XI_APPLIED_ORIGIN=push:<origin_host>` so the target's
+/// `record_activation_at` can tell this activation apart from a local
+/// interactive switch or a gitops-daemon tick
+/// (`crates/xi-deploy/src/push/orchestrate.rs::activation_script`).
+fn activation_script(
+  _target: &PushTarget,
+  store_path: &str,
+  scope: Scope,
+  origin_host: &str,
+) -> String {
   format!(
-    "nix-env --profile {} --set {store_path} && \
-     {store_path}/bin/switch-to-configuration switch",
-    target.profile_path
+    "XI_APPLIED_ORIGIN=push:{origin_host} xi {} switch {store_path}",
+    scope.sources_verb()
   )
 }
 
@@ -236,14 +248,15 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
   );
 
   transport
-    .copy_closure(&target.addr, &store_path, CopyVia::Local)
+    .copy_closure(&target.addr, &store_path, CopyVia::Local, 3)
     .expect("copies the closure");
 
-  let activation = activation_script(target, &store_path);
+  let activation =
+    activation_script(target, &store_path, Scope::System, "operator-host");
   let outcome = transport
     .run(
       &target.addr,
-      &RemoteCommand::elevated(activation.clone(), false),
+      &RemoteCommand::elevated(activation.clone(), false, 3),
     )
     .expect("activates");
   assert!(outcome.success);
@@ -261,6 +274,58 @@ fn a_clean_target_builds_copies_and_activates_in_one_pass() {
     .script
     .clone();
   assert_eq!(last_script, activation);
+}
+
+#[test]
+fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_raw_script()
+ {
+  // xi-jhh4.2.3: the end-to-end counterpart of
+  // `a_clean_target_builds_copies_and_activates_in_one_pass` for `--mode
+  // sources`. No closure is built or copied under this mode, so this
+  // drives the real `mode_sources::switch` (not a hand-rolled copy)
+  // against the fixture `Transport` and asserts the recorded command is
+  // an `xi <scope> switch` invocation, not the old bare
+  // `nixos-rebuild switch --flake` script.
+  let nix = FixtureNix::single_nixos_host("web1");
+  let transport = FixtureTransport::default();
+
+  let targets = discover::discover(&nix, FLAKE).expect("discovers");
+  let selected =
+    discover::select(&targets, &["web1".to_owned()], None).expect("selects");
+  let target = selected[0];
+
+  mode_sources::switch(&transport, target, Scope::System, "operator-host", false, 3)
+    .expect("activates via the remote switch entrypoint");
+
+  let last_script = transport
+    .run_calls
+    .lock()
+    .expect("lock")
+    .last()
+    .expect("ran")
+    .script
+    .clone();
+  assert_eq!(
+    last_script,
+    mode_sources::wrap_in_systemd_run(&mode_sources::switch_script(
+      target,
+      Scope::System,
+      "operator-host"
+    ))
+  );
+  assert!(last_script.contains("xi system switch"), "got: {last_script}");
+  assert!(
+    !last_script.contains("nixos-rebuild switch --flake"),
+    "the old raw rebuild script must not run: {last_script}"
+  );
+  assert!(
+    transport
+      .copy_closure_calls
+      .lock()
+      .expect("lock")
+      .is_empty(),
+    "--mode sources never copies a closure"
+  );
 }
 
 #[test]
@@ -305,6 +370,7 @@ fn magic_rollback_confirms_a_healthy_activation_without_rolling_back() {
     std::time::Duration::from_millis(10),
     std::time::Duration::from_millis(2),
     false,
+    3,
   )
   .expect("confirms");
   assert_eq!(outcome, rollback::RollbackOutcome::Confirmed);

@@ -26,6 +26,9 @@
 //! - [`mode_target_pull`]  -  `--mode target-pull`: ask the target's own
 //!   `xi-sources-daemon` to fetch-and-fast-forward itself, instead of the
 //!   operator copying anything to it.
+//! - [`retry`]  -  classifies [`engine::SshTransport`]'s raw `ssh`/`rsync`/
+//!   `nix copy` process results as transient or permanent, for
+//!   `xi_core::retry::retry`.
 //! - [`orchestrate`]  -  ties every module above into the `xi push` verb:
 //!   resolve context, discover, select, pick a backend, dispatch.
 
@@ -39,4 +42,5 @@ pub mod mode_sources;
 pub mod mode_target_pull;
 pub mod orchestrate;
 pub mod preflight;
+pub(crate) mod retry;
 pub mod rollback;

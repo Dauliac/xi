@@ -187,7 +187,7 @@ pub enum DiffType {
   Never,
 }
 
-#[derive(Debug, Default, Args)]
+#[derive(Debug, Default, Clone, Args)]
 pub struct NixBuildPassthroughArgs {
   /// Number of concurrent jobs Nix should run
   #[arg(long, short = 'j', env = "XI_MAX_JOBS")]
