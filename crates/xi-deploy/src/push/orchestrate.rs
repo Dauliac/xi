@@ -505,6 +505,59 @@ fn push_one(
   Ok(())
 }
 
+/// How many times [`switch_with_receipt`] will regenerate a colliding
+/// push id before giving up.
+///
+/// [`mode_sources::push_id`]'s random suffix makes a collision roughly
+/// 1-in-16M per draw - this bound exists only to turn a catastrophic
+/// (e.g. broken RNG) run of collisions into a clear error instead of an
+/// infinite loop, not because a real push is ever expected to need more
+/// than one draw.
+const MAX_PUSH_ID_ATTEMPTS: u8 = 10;
+
+/// Generate a push id for `target_name` that does not collide with any
+/// receipt or notified-marker already on disk for `state_dir`.
+///
+/// Deferred by bead `xi-enwe.1.1` to "once the receipt store exists" -
+/// it now does, so [`switch_with_receipt`] checks here rather than
+/// trusting [`mode_sources::push_id`]'s randomness alone: two pushes to
+/// the same target in the same second landing on the same suffix would
+/// otherwise silently clobber each other's receipt, and if the
+/// colliding id's unit was already `--collect`-ed, the second
+/// `systemd-run --unit=` could even reuse a still-live name.
+///
+/// # Errors
+///
+/// Returns an error if every attempt collided.
+fn unique_push_id(state_dir: &std::path::Path, target_name: &str) -> Result<String> {
+  unique_push_id_with(state_dir, || mode_sources::push_id(target_name))
+}
+
+/// [`unique_push_id`]'s retry loop, with the id generator injected so a
+/// test can force a collision - a real collision only happens for one
+/// in roughly 16M draws, far too rare to trigger through
+/// [`mode_sources::push_id`]'s actual randomness in a test.
+fn unique_push_id_with(
+  state_dir: &std::path::Path,
+  mut generate: impl FnMut() -> String,
+) -> Result<String> {
+  for _ in 0..MAX_PUSH_ID_ATTEMPTS {
+    let candidate = generate();
+    if !receipt::exists(state_dir, &candidate) {
+      return Ok(candidate);
+    }
+    warn!(
+      push_id = candidate,
+      "generated push id collided with an existing receipt or notified \
+       marker; regenerating"
+    );
+  }
+  bail!(
+    "could not generate a push id that doesn't collide with an existing \
+     receipt after {MAX_PUSH_ID_ATTEMPTS} attempts"
+  );
+}
+
 /// Run [`mode_sources::switch`] with a local receipt bracketing the SSH
 /// call that starts its transient `systemd-run` unit.
 ///
@@ -513,15 +566,17 @@ fn push_one(
 /// exact unit [`mode_sources::switch`] is about to start on `target`.
 /// The receipt is removed only once `switch` returns `Ok`: that is the
 /// one outcome this process can be sure it observed cleanly end to end.
-/// Any `Err` - whether the remote unit itself failed or the transport
-/// call never completed (a dropped connection) - leaves the receipt in
-/// place, because `switch`'s `Result` does not distinguish "the remote
-/// told us it failed" from "we lost the connection and don't know": the
-/// signal a later `--reattach` needs (a sibling task, not read here) is
-/// exactly a receipt an ambiguous outcome did not remove. `args.notify`
-/// travels with the receipt for the same reason: it only ever fires
-/// through [`receipt::remove_and_notify`], so it is gated on the exact
-/// same "did this process actually observe and remove" distinction.
+/// A confirmed `Err` from `switch` - the SSH round-trip completed and
+/// the remote rebuild itself failed - still has the receipt's `notify`
+/// fired through [`receipt::mark_notified_and_notify`] (the same
+/// mechanism `reattach::run`'s failure branches use) before the error
+/// propagates, since the spec's "`--notify` fires exactly once per
+/// terminal observation" covers this confirmed-failure, stayed-connected
+/// path too, not just a disconnect. The receipt itself still stays in
+/// place either way: `switch`'s `Result` does not distinguish "the
+/// remote told us it failed" from "we lost the connection and don't
+/// know", and the signal a later `--reattach` needs (a sibling task, not
+/// read here) is exactly a receipt an ambiguous outcome did not remove.
 ///
 /// # Errors
 ///
@@ -533,7 +588,7 @@ fn switch_with_receipt(
   args: &PushArgs,
   state_dir: &std::path::Path,
 ) -> Result<()> {
-  let push_id = mode_sources::push_id(&target.addr.name);
+  let push_id = unique_push_id(state_dir, &target.addr.name)?;
   let unit_name = mode_sources::unit_name(&push_id);
   let receipt = receipt::PushReceipt::new(
     target.addr.name.clone(),
@@ -550,16 +605,28 @@ fn switch_with_receipt(
     args.interactive_sudo,
     &push_id,
   );
-  if outcome.is_ok()
-    && let Err(remove_err) = receipt::remove_and_notify(state_dir, &push_id, &receipt)
-  {
-    warn!(
-      push_id,
-      error = %remove_err,
-      "failed to remove push receipt after observing a terminal outcome"
-    );
+  match outcome {
+    Ok(()) => {
+      if let Err(remove_err) = receipt::remove_and_notify(state_dir, &push_id, &receipt) {
+        warn!(
+          push_id,
+          error = %remove_err,
+          "failed to remove push receipt after observing a terminal outcome"
+        );
+      }
+      Ok(())
+    },
+    Err(err) => {
+      if let Err(notify_err) = receipt::mark_notified_and_notify(state_dir, &push_id, &receipt) {
+        warn!(
+          push_id,
+          error = %notify_err,
+          "failed to record --notify as fired for a confirmed switch failure"
+        );
+      }
+      Err(err)
+    },
   }
-  outcome
 }
 
 /// Upload every declared secret whose [`UploadAt`] matches `when`.
@@ -1078,6 +1145,12 @@ mod tests {
     state_dir:              std::path::PathBuf,
     receipt_seen_at_switch: Mutex<Option<bool>>,
     fail_switch_with_error: bool,
+    /// When set, the `systemd-run`-wrapped switch call answers with a
+    /// confirmed non-zero remote exit (an `Ok(Outcome::failed(..))`)
+    /// instead of `fail_switch_with_error`'s `Err` - the SSH round-trip
+    /// completed and the remote itself reported failure, as opposed to
+    /// an ambiguous dropped connection.
+    fail_switch_with_confirmed_failure: bool,
   }
 
   impl SwitchObservingTransport {
@@ -1094,6 +1167,9 @@ mod tests {
           Some(self.receipts_present());
         if self.fail_switch_with_error {
           bail!("simulated disconnect: ssh connection dropped");
+        }
+        if self.fail_switch_with_confirmed_failure {
+          return Ok(Outcome::failed("switch-to-configuration failed"));
         }
       }
       self.inner.run(target, cmd)
@@ -1146,6 +1222,7 @@ mod tests {
       state_dir:              context.state_dir.clone(),
       receipt_seen_at_switch: Mutex::new(None),
       fail_switch_with_error: false,
+      fail_switch_with_confirmed_failure: false,
     };
     let secrets = BTreeMap::new();
 
@@ -1187,6 +1264,7 @@ mod tests {
       state_dir:              context.state_dir.clone(),
       receipt_seen_at_switch: Mutex::new(None),
       fail_switch_with_error: true,
+      fail_switch_with_confirmed_failure: false,
     };
     let secrets = BTreeMap::new();
 
@@ -1203,16 +1281,61 @@ mod tests {
     .expect("executes");
 
     assert!(!report.ok(), "the simulated disconnect must be reported");
-    let receipts_dir = context.state_dir.join("push-receipts");
-    let leftover: Vec<_> = std::fs::read_dir(&receipts_dir)
-      .map(|entries| entries.filter_map(Result::ok).collect())
-      .unwrap_or_default();
+    let leftover = receipt::list(&context.state_dir).expect("list receipts");
     assert_eq!(
       leftover.len(),
       1,
-      "a simulated disconnect must leave the receipt behind in {}: \
+      "a simulated disconnect must leave the receipt behind: {leftover:?}",
+    );
+  }
+
+  #[test]
+  fn a_confirmed_switch_failure_runs_notify_and_still_leaves_the_receipt_in_place()
+   {
+    // xi-bnow finding 2: `switch_with_receipt`'s Err branch used to
+    // propagate a confirmed (not merely ambiguous) remote failure
+    // without ever firing `--notify` - an operator who stayed connected
+    // through a failing `--mode sources` push got no notification at
+    // all, the single most common failure mode.
+    let nix = FixtureNix::single_nixos_host("web1");
+    let (_root, context) = fixture_context();
+    let marker = context.state_dir.join("notified");
+    let transport = SwitchObservingTransport {
+      inner:                  FixtureTransport::default(),
+      state_dir:              context.state_dir.clone(),
+      receipt_seen_at_switch: Mutex::new(None),
+      fail_switch_with_error: false,
+      fail_switch_with_confirmed_failure: true,
+    };
+    let secrets = BTreeMap::new();
+    let mut push_args = args(PushMode::Sources);
+    push_args.notify =
+      Some(format!("touch {}", shell_quote(&marker.display().to_string())));
+
+    let report = execute(
+      &push_args,
+      &context,
+      ".",
+      &secrets,
+      &PushConfig::default(),
+      None,
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(!report.ok(), "the confirmed remote failure must be reported");
+    assert!(
+      marker.exists(),
+      "expected --notify to fire for a confirmed synchronous switch failure"
+    );
+    let leftover = receipt::list(&context.state_dir).expect("list receipts");
+    assert_eq!(
+      leftover.len(),
+      1,
+      "a confirmed failure must still leave the receipt behind for operator \
+       acknowledgment, exactly like reattach's own failure branches: \
        {leftover:?}",
-      receipts_dir.display()
     );
   }
 
@@ -1280,6 +1403,7 @@ mod tests {
       state_dir:              context.state_dir.clone(),
       receipt_seen_at_switch: Mutex::new(None),
       fail_switch_with_error: true,
+      fail_switch_with_confirmed_failure: false,
     };
     let secrets = BTreeMap::new();
 
@@ -1605,5 +1729,110 @@ mod tests {
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
+  }
+
+  // -- unique_push_id: collision regeneration (xi-bnow finding 3) --------
+  //
+  // A real collision only happens for one in roughly 16M draws of
+  // `mode_sources::push_id`'s random suffix, far too rare to trigger
+  // through its actual randomness in a test - these drive
+  // `unique_push_id_with` directly with a scripted generator instead, so
+  // the retry/give-up logic itself is exercised deterministically.
+
+  #[test]
+  fn unique_push_id_accepts_the_first_candidate_when_nothing_collides() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut calls = 0;
+    let id = unique_push_id_with(tmp.path(), || {
+      calls += 1;
+      "web1-1700000000-aaaaaa".to_owned()
+    })
+    .expect("no collision");
+    assert_eq!(id, "web1-1700000000-aaaaaa");
+    assert_eq!(calls, 1, "must not regenerate when there is no collision");
+  }
+
+  #[test]
+  fn unique_push_id_regenerates_past_a_colliding_candidate() {
+    let tmp = TempDir::new().expect("tempdir");
+    let taken = receipt::PushReceipt::new(
+      "web1",
+      "xi-push-web1-1700000000-aaaaaa",
+      Scope::System,
+    );
+    receipt::write(tmp.path(), "web1-1700000000-aaaaaa", &taken)
+      .expect("seed collision");
+
+    let mut candidates = vec![
+      "web1-1700000000-aaaaaa".to_owned(),
+      "web1-1700000000-bbbbbb".to_owned(),
+    ]
+    .into_iter();
+    let id =
+      unique_push_id_with(tmp.path(), || candidates.next().expect("enough candidates"))
+        .expect("regenerates past the collision");
+    assert_eq!(
+      id, "web1-1700000000-bbbbbb",
+      "the first (colliding) candidate must be rejected and the second accepted"
+    );
+  }
+
+  #[test]
+  fn unique_push_id_regenerates_past_a_notified_marker_with_no_receipt() {
+    // The collision check must also catch a push id whose receipt was
+    // already removed but whose `--notify`-fired marker is still on
+    // disk - reusing it would make a brand new push's eventual failure
+    // silently skip `--notify` because the old marker already exists.
+    let tmp = TempDir::new().expect("tempdir");
+    let receipt = receipt::PushReceipt::new(
+      "web1",
+      "xi-push-web1-1700000000-aaaaaa",
+      Scope::System,
+    );
+    receipt::write(tmp.path(), "web1-1700000000-aaaaaa", &receipt).expect("seed");
+    receipt::mark_notified_and_notify(tmp.path(), "web1-1700000000-aaaaaa", &receipt)
+      .expect("mark notified");
+    assert!(
+      receipt::remove(tmp.path(), "web1-1700000000-aaaaaa").expect("remove"),
+      "the receipt itself must be gone, leaving only the marker"
+    );
+
+    let mut candidates = vec![
+      "web1-1700000000-aaaaaa".to_owned(),
+      "web1-1700000000-bbbbbb".to_owned(),
+    ]
+    .into_iter();
+    let id =
+      unique_push_id_with(tmp.path(), || candidates.next().expect("enough candidates"))
+        .expect("regenerates past the stale marker");
+    assert_eq!(id, "web1-1700000000-bbbbbb");
+  }
+
+  #[test]
+  fn unique_push_id_gives_up_after_exhausting_every_attempt() {
+    let tmp = TempDir::new().expect("tempdir");
+    let taken = receipt::PushReceipt::new(
+      "web1",
+      "xi-push-web1-1700000000-aaaaaa",
+      Scope::System,
+    );
+    receipt::write(tmp.path(), "web1-1700000000-aaaaaa", &taken)
+      .expect("seed collision");
+
+    let mut calls = 0;
+    let err = unique_push_id_with(tmp.path(), || {
+      calls += 1;
+      "web1-1700000000-aaaaaa".to_owned()
+    })
+    .expect_err("every attempt collides");
+    assert!(
+      format!("{err}").contains("could not generate a push id"),
+      "got: {err}"
+    );
+    assert_eq!(
+      calls,
+      u32::from(MAX_PUSH_ID_ATTEMPTS),
+      "must try exactly MAX_PUSH_ID_ATTEMPTS times before giving up"
+    );
   }
 }
