@@ -356,6 +356,19 @@ fn query_journal(
 /// streaming [`Outcome`](super::engine::Outcome) carries no captured
 /// stdout to parse after the fact.
 ///
+/// Piping `journalctl -f` straight into the reading `while` loop (an
+/// earlier version of this script did exactly that) does not work:
+/// exiting the loop only closes its end of the pipe, and since the unit
+/// is already `--collect`-ed, no further journal entries ever arrive
+/// for `journalctl -f` to notice the closed pipe on - it blocks in
+/// `poll()` forever and never receives `SIGPIPE`. Instead, `journalctl
+/// -f` is started in the background writing into a named pipe (a plain
+/// anonymous pipe would not let this script recover its PID after the
+/// fact the way `$!` does right after backgrounding it), and the
+/// moment the loop sees a terminal line it `kill`s that PID explicitly
+/// before exiting, rather than relying on the loop's own exit to stop
+/// it.
+///
 /// The failure marker is matched without its trailing single quote
 /// (unlike [`JOURNAL_FAILED_MARKER`]), since that quote cannot itself
 /// appear inside the single-quoted glob a `case` pattern needs here.
@@ -370,11 +383,15 @@ fn stream_unit(
   started_at: &str,
 ) -> Result<bool> {
   let script = format!(
-    "journalctl -u {} -f --since {} --no-pager | while IFS= read -r line; do \
+    "tmp_dir=$(mktemp -d); fifo=\"$tmp_dir/journal.fifo\"; mkfifo \"$fifo\"; \
+     journalctl -u {} -f --since {} --no-pager > \"$fifo\" & \
+     pid=$!; \
+     while IFS= read -r line; do \
      printf '%s\\n' \"$line\"; case \"$line\" in \
-     *': Succeeded.'*) exit 0 ;; \
-     *': Failed with result'*) exit 1 ;; \
-     esac; done",
+     *': Succeeded.'*) kill \"$pid\" 2>/dev/null; rm -rf \"$tmp_dir\"; exit 0 ;; \
+     *': Failed with result'*) kill \"$pid\" 2>/dev/null; rm -rf \"$tmp_dir\"; exit 1 ;; \
+     esac; done < \"$fifo\"; \
+     rm -rf \"$tmp_dir\"; exit 1",
     shell_quote(unit_name),
     shell_quote(started_at),
   );
@@ -1243,6 +1260,189 @@ mod tests {
       std::fs::read_to_string(&fire_count).expect("read counter"),
       "x",
       "--notify must have run exactly once across the original process and the reattach"
+    );
+  }
+
+  /// A [`Transport`] that actually executes `cmd.script` locally through
+  /// `sh -c`, with `PATH` pointing at a fixture `journalctl` binary
+  /// instead of hitting a network target - the only way to prove the
+  /// remote script [`stream_unit`] builds actually terminates, rather
+  /// than merely asserting on its text.
+  ///
+  /// Kills the child and panics if it outlives `TIMEOUT`: a regression
+  /// of the journalctl-kill fix would otherwise hang this test exactly
+  /// as it hangs a real `xi push --reattach`.
+  struct LocalShellTransport {
+    path_env: String,
+  }
+
+  impl LocalShellTransport {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    fn with_fixture_bin(bin_dir: &std::path::Path) -> Self {
+      let existing = std::env::var("PATH").unwrap_or_default();
+      Self {
+        path_env: format!("{}:{existing}", bin_dir.display()),
+      }
+    }
+  }
+
+  impl Transport for LocalShellTransport {
+    fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+      let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd.script)
+        .env("PATH", &self.path_env)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sh -c <script>");
+
+      let start = std::time::Instant::now();
+      // Killed and reported as a failure rather than let to run forever: a
+      // regression of the journalctl-kill fix would otherwise hang this
+      // test exactly as it hangs a real `xi push --reattach`. The calling
+      // test's own `elapsed < 5s` assertion is what actually catches the
+      // regression - this bound just stops the test process from hanging
+      // on one.
+      let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+          break Some(status);
+        }
+        if start.elapsed() > Self::TIMEOUT {
+          let _ = child.kill();
+          let _ = child.wait();
+          break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+      };
+      Ok(status.map_or_else(
+        || {
+          Outcome::failed(format!(
+            "script did not terminate within {:?}",
+            Self::TIMEOUT
+          ))
+        },
+        |status| Outcome {
+          success: status.success(),
+          stdout:  String::new(),
+          stderr:  String::new(),
+        },
+      ))
+    }
+
+    fn copy_closure(
+      &self,
+      _target: &TargetAddr,
+      _store_path: &str,
+      _via: super::super::args::CopyVia,
+    ) -> Result<()> {
+      unreachable!("stream_unit never copies a closure")
+    }
+
+    fn upload_secret(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _spec: &xi_core::sources::secrets::SecretSpec,
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      unreachable!("stream_unit never uploads a secret")
+    }
+
+    fn sync_dir(
+      &self,
+      _target: &TargetAddr,
+      _local: &std::path::Path,
+      _remote: &str,
+      _excludes: &[&str],
+      _interactive_sudo: bool,
+    ) -> Result<()> {
+      unreachable!("stream_unit never syncs a directory")
+    }
+  }
+
+  /// Write a fake `journalctl` under `dir/journalctl` that behaves the
+  /// way the real one does `-f`-ing an already-`--collect`-ed unit: it
+  /// prints a couple of lines including `terminal_line`, then blocks
+  /// (simulating `poll()`-ing for journal entries that will never
+  /// arrive) instead of ever exiting on its own.
+  fn write_fake_journalctl(dir: &std::path::Path, terminal_line: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("journalctl");
+    std::fs::write(
+      &path,
+      format!(
+        "#!/bin/sh\n\
+         echo 'Nov 06 10:00:00 host systemd[1]: Started xi-push-web1-1.'\n\
+         sleep 0.2\n\
+         echo {}\n\
+         sleep 20\n",
+        shell_quote(terminal_line),
+      ),
+    )
+    .expect("write fake journalctl");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+      .expect("chmod +x fake journalctl");
+  }
+
+  #[test]
+  fn stream_unit_kills_a_hanging_journalctl_f_and_returns_true_on_success() {
+    // Bug fix (xi-bnow finding 1): a plain `journalctl -f | while ...`
+    // pipe never terminates once the loop exits, because `--collect`
+    // means no further journal entries will ever arrive to make
+    // `journalctl -f` notice the closed pipe. This drives the actual
+    // generated script through a real shell against a fixture
+    // `journalctl` that hangs exactly that way, and the surrounding
+    // `LocalShellTransport` will panic the test if it does not return
+    // well before the fixture's 20s sleep would otherwise force it to.
+    let bin_dir = TempDir::new().expect("tempdir");
+    write_fake_journalctl(
+      bin_dir.path(),
+      "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Succeeded.",
+    );
+    let transport = LocalShellTransport::with_fixture_bin(bin_dir.path());
+
+    let start = std::time::Instant::now();
+    let result =
+      stream_unit(&transport, &addr(), "xi-push-web1-1", "2024-01-01T00:00:00Z");
+    let elapsed = start.elapsed();
+
+    assert!(
+      result.expect("stream_unit must not error"),
+      "a terminal Succeeded. line must report success"
+    );
+    assert!(
+      elapsed < std::time::Duration::from_secs(5),
+      "stream_unit must kill the backgrounded journalctl and return promptly \
+       once it sees the terminal line, not hang for the fake journalctl's \
+       full 20s sleep - took {elapsed:?}"
+    );
+  }
+
+  #[test]
+  fn stream_unit_kills_a_hanging_journalctl_f_and_returns_false_on_failure() {
+    let bin_dir = TempDir::new().expect("tempdir");
+    write_fake_journalctl(
+      bin_dir.path(),
+      "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed with \
+       result 'exit-code'.",
+    );
+    let transport = LocalShellTransport::with_fixture_bin(bin_dir.path());
+
+    let start = std::time::Instant::now();
+    let result =
+      stream_unit(&transport, &addr(), "xi-push-web1-1", "2024-01-01T00:00:00Z");
+    let elapsed = start.elapsed();
+
+    assert!(
+      !result.expect("stream_unit must not error"),
+      "a terminal Failed with result line must report failure"
+    );
+    assert!(
+      elapsed < std::time::Duration::from_secs(5),
+      "stream_unit must kill the backgrounded journalctl and return promptly \
+       once it sees the terminal line - took {elapsed:?}"
     );
   }
 }

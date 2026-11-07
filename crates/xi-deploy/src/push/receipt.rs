@@ -76,6 +76,20 @@ pub fn receipt_path(state_dir: &Path, push_id: &str) -> PathBuf {
   state_dir.join(RECEIPTS_DIR).join(format!("{push_id}.json"))
 }
 
+/// Whether anything is already on disk for `push_id` under `state_dir`:
+/// its receipt, or the sibling `--notify`-fired marker
+/// [`mark_notified_and_notify`] may have left behind after a confirmed
+/// failure even once the receipt itself is gone.
+///
+/// Used by `orchestrate::unique_push_id` to pick a push id that cannot
+/// collide with (and silently clobber, or reuse the `--notify`-fired
+/// state of) a push already recorded under this scope's state dir.
+#[must_use]
+pub fn exists(state_dir: &Path, push_id: &str) -> bool {
+  receipt_path(state_dir, push_id).exists()
+    || notified_marker_path(state_dir, push_id).exists()
+}
+
 /// Write `receipt` to `<state_dir>/push-receipts/<push_id>.json`,
 /// creating the receipts directory first if it does not exist yet.
 ///
