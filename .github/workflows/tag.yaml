@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - master
+      - main
     tags:
       - "v*"
 
 jobs:
   tag:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: cachix/install-nix-action@master
         with:
@@ -46,9 +46,29 @@ jobs:
           git tag "$nh_version"
           git push --tags
 
+  test:
+    name: Test (nix)
+    runs-on: ubuntu-latest
+    needs: tag
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v7
+        name: Checkout
+
+      - uses: cachix/install-nix-action@master
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run nix flake checks (build + clippy + doc)
+        run: nix flake check -L
+
+      - name: Run test suite
+        run: nix develop --command just test
+
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
+    needs: test
     if: startsWith(github.ref, 'refs/tags/')
     strategy:
       fail-fast: false
@@ -56,36 +76,23 @@ jobs:
         include:
           - platform: x86_64-linux
             runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
           - platform: aarch64-linux
-            runner: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
           - platform: aarch64-darwin
             runner: macos-14
-            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v7
         name: Checkout
 
-      - name: Install cross
-        if: matrix.platform == 'aarch64-linux'
-        run: cargo install cross
+      - uses: cachix/install-nix-action@master
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Rust target
-        if: matrix.platform != 'aarch64-linux'
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Build
-        run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+      - name: Build with Nix
+        run: nix build .#xi -L -o result
 
       - name: Prepare binary
-        run: |
-          cp "target/${{ matrix.target }}/release/xi" "xi-${{ matrix.platform }}"
+        run: cp result/bin/xi "xi-${{ matrix.platform }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

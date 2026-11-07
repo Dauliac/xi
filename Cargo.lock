@@ -3304,7 +3304,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xi"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "anstyle",
  "clap",
@@ -3340,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "xi-agent"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3362,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "xi-auth"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -3372,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "xi-core"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "xi-darwin"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3419,7 +3419,7 @@ dependencies = [
 
 [[package]]
 name = "xi-deploy"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -3434,7 +3434,7 @@ dependencies = [
 
 [[package]]
 name = "xi-develop"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -3464,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "xi-diff"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "color-eyre",
  "dix",
@@ -3476,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "xi-flake"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3499,7 +3499,7 @@ dependencies = [
 
 [[package]]
 name = "xi-home"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3514,7 +3514,7 @@ dependencies = [
 
 [[package]]
 name = "xi-nixos"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "xi-remote"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "color-eyre",
  "dix",
@@ -3551,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "xi-search"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3576,7 +3576,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",

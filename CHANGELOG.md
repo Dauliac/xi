@@ -22,11 +22,31 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+### Removed
+
+## 4.5.0
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Vale prose linting is now scoped to `docs/` only. `openspec/**/*.md` was in
   scope and contributed 1259 errors, which broke both the `Lint docs` and
   `Deploy Documentation` workflows. Those files are internal design artifacts
   rather than published prose. `CHANGELOG.md` and `CONTRIBUTING.md` also leave
   Vale's scope as a result.
+- `tag.yaml`'s push trigger and `check.yaml`'s PR trigger targeted `master`, a
+  stale branch name left over from the `nh` fork, so auto-tagging and PR checks
+  against the real default branch (`main`) were silently not firing. Both now
+  target `main`.
+- Release binaries built by `tag.yaml` are now built with `nix build .#xi`
+  instead of raw `cargo build`/`cross`, so the artifacts attached to GitHub
+  releases are validated against the flake. `aarch64-linux` builds natively on
+  GitHub's `ubuntu-24.04-arm` runner instead of emulating via `cross`. A new
+  `test` job (`nix flake check` + `cargo nextest` via `just test`) gates the
+  build job so releases are cut only after checks and tests pass.
 
 ### Removed
 
