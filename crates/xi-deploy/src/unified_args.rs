@@ -243,6 +243,28 @@ pub struct DeployArgs {
   /// Stop at the first failing target instead of finishing the rest.
   #[arg(long, help_heading = "Safety")]
   pub fail_fast: bool,
+
+  /// Reattach to a remote-build push instead of starting a new one
+  ///
+  /// With no id, lists every local push receipt
+  /// (`<state dir>/push-receipts/*.json`), newest first, probing each
+  /// one's target for reachability. With an id, reattaches to that
+  /// receipt's unit - not implemented yet (`xi-enwe.2.2`).
+  #[arg(
+    long,
+    num_args = 0..=1,
+    default_missing_value = "",
+    value_name = "PUSH_ID",
+    help_heading = "Safety"
+  )]
+  pub reattach: Option<String>,
+
+  /// Run `command` exactly once, the first time a terminal outcome
+  /// (success or failure) for this push's remote unit is observed and
+  /// its local receipt is removed - by this process, or by a later
+  /// `xi push --reattach`
+  #[arg(long, value_name = "COMMAND", help_heading = "Safety")]
+  pub notify: Option<String>,
 }
 
 #[cfg(test)]
@@ -303,6 +325,8 @@ mod tests {
     assert!(!args.interactive_sudo);
     assert!(matches!(args.copy_via, CopyVia::Local));
     assert!(!args.fail_fast);
+    assert_eq!(args.reattach, None);
+    assert_eq!(args.notify, None);
   }
 
   // SwitchSourcesArgs flags, unchanged.
@@ -454,6 +478,30 @@ mod tests {
         .expect("parses")
         .from_manifest,
       Some(PathBuf::from("/tmp/push-manifest.json"))
+    );
+  }
+
+  // Task xi-6mf6.1.2: PushArgs's --reattach/--notify re-exposed on `xi deploy`.
+
+  #[test]
+  fn reattach_parses_with_no_value_with_a_value_and_when_omitted() {
+    assert_eq!(parse(&[]).expect("parses").reattach, None);
+    assert_eq!(
+      parse(&["--reattach"]).expect("parses").reattach,
+      Some(String::new())
+    );
+    assert_eq!(
+      parse(&["--reattach", "push-123"]).expect("parses").reattach,
+      Some("push-123".to_owned())
+    );
+  }
+
+  #[test]
+  fn notify_parses_given_and_omitted() {
+    assert_eq!(parse(&[]).expect("parses").notify, None);
+    assert_eq!(
+      parse(&["--notify", "echo done"]).expect("parses").notify,
+      Some("echo done".to_owned())
     );
   }
 
