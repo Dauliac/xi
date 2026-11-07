@@ -294,8 +294,16 @@ fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_ra
     discover::select(&targets, &["web1".to_owned()], None).expect("selects");
   let target = selected[0];
 
-  mode_sources::switch(&transport, target, Scope::System, "operator-host", false, 3)
-    .expect("activates via the remote switch entrypoint");
+  mode_sources::switch(
+    &transport,
+    target,
+    Scope::System,
+    "operator-host",
+    false,
+    "test-push-id",
+    3,
+  )
+  .expect("activates via the remote switch entrypoint");
 
   let last_script = transport
     .run_calls
@@ -307,11 +315,10 @@ fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_ra
     .clone();
   assert_eq!(
     last_script,
-    mode_sources::wrap_in_systemd_run(&mode_sources::switch_script(
-      target,
-      Scope::System,
-      "operator-host"
-    ))
+    mode_sources::wrap_in_systemd_run(
+      &mode_sources::switch_script(target, Scope::System, "operator-host"),
+      "xi-push-test-push-id",
+    )
   );
   assert!(last_script.contains("xi system switch"), "got: {last_script}");
   assert!(

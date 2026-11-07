@@ -190,6 +190,8 @@ fn push_args() -> PushArgs {
     build_only:       false,
     from_manifest:    None,
     scope:            PushScope::System,
+    reattach:         None,
+    notify:           None,
   }
 }
 

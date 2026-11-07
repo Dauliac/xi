@@ -196,6 +196,8 @@ fn push_args() -> PushArgs {
     build_only: false,
     from_manifest: None,
     scope: PushScope::System,
+    reattach: None,
+    notify: None,
   }
 }
 
@@ -323,7 +325,7 @@ fn xi_push_mode_sources_activates_via_the_remote_switch_entrypoint_not_the_old_r
     "the old raw rebuild script must not run: {last_script}"
   );
   assert!(
-    last_script.starts_with("systemd-run --wait --pipe --collect -- "),
+    last_script.starts_with("systemd-run --wait --pipe --collect --unit="),
     "got: {last_script}"
   );
 

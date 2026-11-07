@@ -23,6 +23,11 @@
 //!   if the sentinel goes missing within the window.
 //! - [`mode_sources`]  -  `--mode sources`: rsync the sources dir to the
 //!   target's scope-resolved path instead of shipping a built closure.
+//! - [`receipt`]  -  the local `<state dir>/push-receipts/<push-id>.json` file
+//!   that records a unit this process started, so a disconnect mid-push still
+//!   leaves evidence of what was in flight.
+//! - [`reattach`]  -  `xi push --reattach`: with no id, lists every local
+//!   receipt newest first, probing each target's reachability.
 //! - [`retry`]  -  classifies [`engine::SshTransport`]'s raw `ssh`/`rsync`/
 //!   `nix copy` process results as transient or permanent, for
 //!   `xi_core::retry::retry`.
@@ -38,5 +43,7 @@ pub mod limits;
 pub mod mode_sources;
 pub mod orchestrate;
 pub mod preflight;
+pub mod reattach;
+pub mod receipt;
 pub(crate) mod retry;
 pub mod rollback;

@@ -436,5 +436,7 @@ fn push_args(
       Scope::System => push::args::PushScope::System,
       Scope::User => push::args::PushScope::User,
     },
+    reattach: None,
+    notify: None,
   }
 }
