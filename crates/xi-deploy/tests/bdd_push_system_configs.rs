@@ -133,6 +133,7 @@ impl Transport for FixtureTransport {
     target: &TargetAddr,
     store_path: &str,
     _via: CopyVia,
+    _retry_attempts: u32,
   ) -> Result<()> {
     self
       .copy_calls
@@ -148,6 +149,7 @@ impl Transport for FixtureTransport {
     _local: &std::path::Path,
     _spec: &xi_core::sources::secrets::SecretSpec,
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("this fixture declares no secrets")
   }
@@ -159,6 +161,7 @@ impl Transport for FixtureTransport {
     _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("--mode closure never syncs a directory")
   }
@@ -181,6 +184,7 @@ fn push_args() -> PushArgs {
     fail_fast:        false,
     force_dirty:      false,
     scope:            PushScope::System,
+    retry:            None,
   }
 }
 

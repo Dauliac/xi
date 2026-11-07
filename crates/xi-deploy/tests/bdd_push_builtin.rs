@@ -294,7 +294,7 @@ fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_ra
     discover::select(&targets, &["web1".to_owned()], None).expect("selects");
   let target = selected[0];
 
-  mode_sources::switch(&transport, target, Scope::System, "operator-host", false)
+  mode_sources::switch(&transport, target, Scope::System, "operator-host", false, 3)
     .expect("activates via the remote switch entrypoint");
 
   let last_script = transport
