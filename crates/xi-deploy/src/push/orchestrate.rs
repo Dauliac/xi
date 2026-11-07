@@ -1578,11 +1578,13 @@ mod tests {
     let inventory = PushConfig {
       remote_build: None,
       backend: None,
+      retry_attempts: None,
       hosts: vec![config::PushHost {
         name: "web2".to_owned(),
         ssh: "web2".to_owned(),
         remote_build: Some(true),
         backend: None,
+        retry_attempts: None,
       }],
     };
 

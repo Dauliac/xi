@@ -25,7 +25,9 @@ use color_eyre::Result;
 use tempfile::TempDir;
 use xi_core::sources::{Scope, SourcesContext, SourcesId};
 use xi_deploy::push::{
-  args::{CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope},
+  args::{
+    BuildStrategy, CopyVia, Phase, PushArgs, PushBackend, PushMode, PushScope,
+  },
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate,
@@ -133,6 +135,7 @@ impl Transport for FixtureTransport {
     target: &TargetAddr,
     store_path: &str,
     _via: CopyVia,
+    _retry_attempts: u32,
   ) -> Result<()> {
     self
       .copy_calls
@@ -148,6 +151,7 @@ impl Transport for FixtureTransport {
     _local: &std::path::Path,
     _spec: &xi_core::sources::secrets::SecretSpec,
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("this fixture declares no secrets")
   }
@@ -159,6 +163,7 @@ impl Transport for FixtureTransport {
     _remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
+    _retry_attempts: u32,
   ) -> Result<()> {
     unreachable!("--mode closure never syncs a directory")
   }
@@ -174,12 +179,16 @@ fn push_args() -> PushArgs {
     phase:            "activate".to_owned(),
     mode:             Some(PushMode::Closure),
     remote_build:     None,
+    retry:            None,
     magic_rollback:   0,
     parallel:         1,
     interactive_sudo: false,
     copy_via:         CopyVia::Local,
     fail_fast:        false,
     force_dirty:      false,
+    build_strategy:   BuildStrategy::Interleaved,
+    build_only:       false,
+    from_manifest:    None,
     scope:            PushScope::System,
   }
 }
@@ -206,6 +215,7 @@ fn xi_push_discovers_and_activates_a_system_configs_target() {
     &flake_ref,
     &secrets,
     &PushConfig::default(),
+    None,
     None,
     &nix,
     &transport,
