@@ -549,6 +549,13 @@ fn upload_secrets(
 /// [`mode_sources::switch_script`] does - it runs the lower-level
 /// commands those tools themselves run, which is also exactly what
 /// deploy-rs does for the same reason.
+///
+/// `ProfileKind::Custom`'s `activate_command` is a template fixed at
+/// discovery time, before any store path exists, so it carries a
+/// [`discover::STORE_PATH_PLACEHOLDER`] (`TargetSource::profile_kind`
+/// populates it for `SystemConfigs` targets) that gets substituted here
+/// with the real store path, the same way `register` is assembled for
+/// every other kind.
 #[must_use]
 fn activation_script(target: &PushTarget, store_path: &str) -> String {
   let register = format!(
@@ -562,7 +569,9 @@ fn activation_script(target: &PushTarget, store_path: &str) -> String {
     ProfileKind::Darwin | ProfileKind::HomeManager => {
       format!("{register} && {store_path}/activate")
     },
-    ProfileKind::Custom { activate_command } => activate_command.clone(),
+    ProfileKind::Custom { activate_command } => {
+      activate_command.replace(discover::STORE_PATH_PLACEHOLDER, store_path)
+    },
     ProfileKind::Noop => register,
   }
 }
@@ -1242,5 +1251,40 @@ mod tests {
       unknown_state_files: Vec::new(),
     };
     assert!(refuse_if_dirty(&context, false).is_ok());
+  }
+
+  /// xi-slej.3.2: `ProfileKind::Custom`'s `{store_path}` placeholder
+  /// (populated by `TargetSource::profile_kind` for `SystemConfigs`
+  /// targets) is substituted with the real store path, the same way
+  /// `register` is assembled for every other kind.
+  #[test]
+  fn custom_activation_substitutes_the_store_path_placeholder() {
+    let target = PushTarget {
+      addr:         TargetAddr {
+        name:     "web3".to_owned(),
+        ssh_host: "web3".to_owned(),
+        ssh_opts: Vec::new(),
+      },
+      source:       discover::TargetSource::SystemConfigs,
+      tags:         Vec::new(),
+      installable:  ".#systemConfigs.web3".to_owned(),
+      kind:         ProfileKind::Custom {
+        activate_command: "nix build --no-link --profile /p {store_path} && \
+                           {store_path}/bin/activate"
+          .to_owned(),
+      },
+      profile_path: "/p".to_owned(),
+      rebuild_tool: "nix",
+    };
+
+    let script = activation_script(&target, "/nix/store/abc-web3");
+
+    assert_eq!(
+      script,
+      "nix build --no-link --profile /p /nix/store/abc-web3 && \
+       /nix/store/abc-web3/bin/activate"
+    );
+    assert!(!script.contains("nixos-rebuild"));
+    assert!(!script.contains("darwin-rebuild"));
   }
 }

@@ -31,7 +31,11 @@ use super::{
   log::SYSTEMD_UNIT,
   scp_separator,
 };
-use crate::style::{self, Icon};
+use crate::{
+  flake_output::FlakeOutput,
+  installable::{Installable, resolve_toplevel},
+  style::{self, Icon},
+};
 
 /// Which mechanism, if any, owns this host's system-wide configuration.
 ///
@@ -53,6 +57,34 @@ pub enum SystemDeploymentKind {
   None,
 }
 
+/// Why [`SystemDeploymentKind::detect_with_sources`] refused to resolve a
+/// mechanism from the sources: either namespace declared `hostname`
+/// (ambiguous) or neither did (nothing to fall back to). Both are a real
+/// ambiguity per the spec, not something to guess past.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MechanismAmbiguity {
+  /// Both `nixosConfigurations.<hostname>` and `systemConfigs.<hostname>`
+  /// are declared.
+  #[error(
+    "host '{hostname}' is declared under both nixosConfigurations and \
+     systemConfigs; refusing to guess which system mechanism owns it"
+  )]
+  Both {
+    /// The hostname that was looked up.
+    hostname: String,
+  },
+  /// Host state was silent and neither namespace declares `hostname`.
+  #[error(
+    "host state is silent and neither nixosConfigurations.{hostname} nor \
+     systemConfigs.{hostname} is declared; cannot determine the system \
+     mechanism"
+  )]
+  Neither {
+    /// The hostname that was looked up.
+    hostname: String,
+  },
+}
+
 impl SystemDeploymentKind {
   /// Probe well-known marker paths for the active mechanism.
   ///
@@ -61,6 +93,14 @@ impl SystemDeploymentKind {
   /// check that should fail the command.
   #[must_use]
   pub fn detect() -> Self {
+    Self::detect_from_host_state()
+  }
+
+  /// The host-state rung of [`Self::detect`] and [`Self::detect_with_sources`],
+  /// unchanged from `detect`'s original body: a marker that cannot be
+  /// read is treated the same as one that is absent.
+  #[must_use]
+  fn detect_from_host_state() -> Self {
     if cfg!(target_os = "macos") {
       return Self::Darwin;
     }
@@ -75,6 +115,75 @@ impl SystemDeploymentKind {
     Self::None
   }
 
+  /// Full OS-scope mechanism detection: host state first; when host state
+  /// is silent (nothing installed yet, or genuinely ambiguous), fall
+  /// through to whichever namespace the adopted or about-to-be-adopted
+  /// flake declares `hostname` under.
+  ///
+  /// `attribute_exists` answers "does this flake attribute reference
+  /// exist", backed by a real Nix evaluation in production and a fixture
+  /// set in tests; the reference itself is built via [`resolve_toplevel`]
+  /// rather than a second hand-rolled `<namespace>.<hostname>` formatter.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`MechanismAmbiguity`] when both or neither namespace
+  /// declares `hostname`  -  host state is silent and the sources do not
+  /// give a single answer either.
+  pub fn detect_with_sources(
+    flake_ref: &str,
+    hostname: &str,
+    attribute_exists: &dyn Fn(&str) -> bool,
+  ) -> Result<Self, MechanismAmbiguity> {
+    Self::resolve_with_sources(
+      Self::detect_from_host_state(),
+      flake_ref,
+      hostname,
+      attribute_exists,
+    )
+  }
+
+  /// [`Self::detect_with_sources`], with the host-state result taken as
+  /// a parameter rather than re-probed, so tests can drive the
+  /// host-state-present and host-state-silent branches deterministically
+  /// without faking `/etc/NIXOS` or a system-manager profile on disk.
+  fn resolve_with_sources(
+    host_state: Self,
+    flake_ref: &str,
+    hostname: &str,
+    attribute_exists: &dyn Fn(&str) -> bool,
+  ) -> Result<Self, MechanismAmbiguity> {
+    if host_state != Self::None {
+      return Ok(host_state);
+    }
+
+    let nixos = attribute_exists(&mechanism_attr(
+      flake_ref,
+      hostname,
+      FlakeOutput::NixosConfigurations,
+    ));
+    let system_manager = attribute_exists(&mechanism_attr(
+      flake_ref,
+      hostname,
+      FlakeOutput::SystemConfigs,
+    ));
+
+    match (nixos, system_manager) {
+      (true, false) => Ok(Self::NixOs),
+      (false, true) => Ok(Self::SystemManager),
+      (true, true) => {
+        Err(MechanismAmbiguity::Both {
+          hostname: hostname.to_owned(),
+        })
+      },
+      (false, false) => {
+        Err(MechanismAmbiguity::Neither {
+          hostname: hostname.to_owned(),
+        })
+      },
+    }
+  }
+
   /// Short, human-facing name.
   #[must_use]
   pub const fn label(self) -> &'static str {
@@ -87,15 +196,140 @@ impl SystemDeploymentKind {
   }
 }
 
+/// Build the `<flake_ref>#<namespace>.<hostname>` reference
+/// [`resolve_toplevel`] would resolve for `output`, so the sources-fallback
+/// rung asks about the exact attribute a real activation would build,
+/// rather than a second implementation of that hostname match.
+///
+/// `resolve_toplevel` cannot fail for an empty starting attribute and an
+/// empty build path (the only way it is ever called here); the fallback
+/// formatter exists only so this stays total without an `expect`.
+fn mechanism_attr(
+  flake_ref: &str,
+  hostname: &str,
+  output: FlakeOutput,
+) -> String {
+  let installable = resolve_toplevel(
+    hostname,
+    Installable::Flake {
+      reference: flake_ref.to_owned(),
+      attribute: Vec::new(),
+    },
+    output,
+    &[],
+  )
+  .unwrap_or_else(|_| {
+    Installable::Flake {
+      reference: flake_ref.to_owned(),
+      attribute: vec![output.as_str().to_owned(), hostname.to_owned()],
+    }
+  });
+  installable.to_args().into_iter().next().unwrap_or_default()
+}
+
 /// Whether a `home-manager-<user>.service` unit exists, the telltale
 /// sign that this user's home-manager is embedded in a NixOS or
 /// system-manager activation rather than run standalone.
 #[must_use]
 pub fn embedded_home_manager_unit(username: &str) -> bool {
-  Path::new(&format!(
-    "/etc/systemd/system/home-manager-{username}.service"
-  ))
-  .exists()
+  embedded_home_manager_unit_under(Path::new("/"), username)
+}
+
+/// [`embedded_home_manager_unit`], rooted under `root` instead of `/`, so
+/// tests can drive both branches against a fixture filesystem rather
+/// than the real `/etc/systemd/system`.
+fn embedded_home_manager_unit_under(root: &Path, username: &str) -> bool {
+  root
+    .join(format!(
+      "etc/systemd/system/home-manager-{username}.service"
+    ))
+    .exists()
+}
+
+/// Which `homeConfigurations` output name (if any) backs a standalone
+/// home-manager activation for this user, checking the host-qualified
+/// `<user>@<host>` form before the bare `<user>` form.
+///
+/// Takes the flake's already-enumerated `homeConfigurations` attribute
+/// names rather than evaluating the flake itself, so callers that already
+/// hold that list (and tests) don't re-run `nix eval` to ask this
+/// question.
+#[must_use]
+pub fn discover_standalone_home_output<'a>(
+  username: &str,
+  hostname: &str,
+  available: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+  let available: Vec<&str> = available.into_iter().collect();
+  let qualified = format!("{username}@{hostname}");
+  if available.contains(&qualified.as_str()) {
+    return Some(qualified);
+  }
+  available
+    .into_iter()
+    .find(|&name| name == username)
+    .map(str::to_owned)
+}
+
+/// Which of embedded, standalone, both, or neither home-manager
+/// activation applies to a user.
+///
+/// Independent of [`SystemDeploymentKind`]: the four combinations here
+/// are not a fourth OS-scope mechanism, they describe how `Scope::User`
+/// is (or isn't) wired relative to whatever `Scope::System` mechanism, if
+/// any, is in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HomeActivationMode {
+  /// A `home-manager-<user>.service` unit is present; no discoverable
+  /// standalone output.
+  Embedded,
+  /// A discoverable standalone output exists; no embedded unit.
+  Standalone,
+  /// Both the embedded unit and a discoverable standalone output exist.
+  Both,
+  /// Neither signal is present.
+  None,
+}
+
+impl HomeActivationMode {
+  /// Resolve from the two independent signals: whether the embedded unit
+  /// is present, and whether a standalone output was discovered (e.g. via
+  /// [`discover_standalone_home_output`]).
+  #[must_use]
+  pub const fn resolve(embedded: bool, standalone: bool) -> Self {
+    match (embedded, standalone) {
+      (true, true) => Self::Both,
+      (true, false) => Self::Embedded,
+      (false, true) => Self::Standalone,
+      (false, false) => Self::None,
+    }
+  }
+
+  /// The `status` overlap-warning text, surfaced *before* an activation
+  /// decision is made rather than only after one: `Some` exactly when
+  /// both the embedded unit and a discoverable standalone output are
+  /// present, `None` for the other three combinations.
+  ///
+  /// Shares [`home_activation_overlap_warning_text`] with `status` rather
+  /// than a second copy of the wording, so the two surfaces cannot drift
+  /// apart.
+  #[must_use]
+  pub fn overlap_warning(self, username: &str) -> Option<String> {
+    (self == Self::Both)
+      .then(|| home_activation_overlap_warning_text(username))
+  }
+}
+
+/// The warning text shown when a user's home-manager activation is both
+/// embedded in a system-scope activation and backed by a discoverable
+/// standalone output: shared verbatim between `status`'s side note
+/// ([`print_human`]) and [`HomeActivationMode::overlap_warning`].
+fn home_activation_overlap_warning_text(username: &str) -> String {
+  format!(
+    "home-manager-{username}.service embeds this scope's activation; a \
+     standalone `xi home switch` here runs independently of it"
+  )
 }
 
 /// Whether this source's remote is a local filesystem path rather than
@@ -404,9 +638,9 @@ fn print_human(args: PrintHumanArgs<'_>) {
   );
   if scope == Scope::User && embedded_home_manager {
     println!(
-      "  {} home-manager-{username}.service embeds this scope's activation; a \
-       standalone `xi home switch` here runs independently of it",
-      Icon::Warn.render()
+      "  {} {}",
+      Icon::Warn.render(),
+      home_activation_overlap_warning_text(username)
     );
   }
 
@@ -502,5 +736,287 @@ fn print_human(args: PrintHumanArgs<'_>) {
         )
       );
     },
+  }
+}
+
+#[cfg(test)]
+mod detect_with_sources_tests {
+  use super::SystemDeploymentKind;
+
+  /// A sources closure that fails the test if it is ever invoked, for
+  /// asserting that host state short-circuits before any source lookup.
+  fn unreachable_attribute_exists(_attribute: &str) -> bool {
+    panic!(
+      "sources must not be consulted when host state already resolved a \
+       mechanism"
+    )
+  }
+
+  #[test]
+  fn host_state_nixos_wins_without_consulting_sources() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::NixOs,
+      "github:example/flake",
+      "host1",
+      &unreachable_attribute_exists,
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::NixOs));
+  }
+
+  #[test]
+  fn host_state_system_manager_wins_without_consulting_sources() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::SystemManager,
+      "github:example/flake",
+      "host1",
+      &unreachable_attribute_exists,
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::SystemManager));
+  }
+
+  #[test]
+  fn host_state_darwin_wins_without_consulting_sources() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::Darwin,
+      "github:example/flake",
+      "host1",
+      &unreachable_attribute_exists,
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::Darwin));
+  }
+}
+
+/// Host state silent, exactly one namespace declares the hostname: that
+/// namespace's mechanism resolves per the "A bare host resolves from
+/// sources alone" scenario, without guessing past a genuine ambiguity.
+#[cfg(test)]
+mod sources_fallback_single_match_tests {
+  use super::SystemDeploymentKind;
+
+  #[test]
+  fn host_state_silent_nixos_only_resolves_nixos() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|attribute: &str| attribute.contains("nixosConfigurations"),
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::NixOs));
+  }
+
+  #[test]
+  fn host_state_silent_system_manager_only_resolves_system_manager() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|attribute: &str| attribute.contains("systemConfigs"),
+    );
+    assert_eq!(result, Ok(SystemDeploymentKind::SystemManager));
+  }
+}
+
+/// Host state silent, both or neither namespace declares the hostname:
+/// detection refuses and names the ambiguity rather than guessing, per
+/// the "An ambiguous declaration refuses" scenario.
+#[cfg(test)]
+mod sources_fallback_ambiguity_tests {
+  use super::{MechanismAmbiguity, SystemDeploymentKind};
+
+  #[test]
+  fn host_state_silent_both_namespaces_refuses_as_both() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|_attribute: &str| true,
+    );
+    assert_eq!(
+      result,
+      Err(MechanismAmbiguity::Both {
+        hostname: "host1".to_owned(),
+      })
+    );
+  }
+
+  #[test]
+  fn host_state_silent_neither_namespace_refuses_as_neither() {
+    let result = SystemDeploymentKind::resolve_with_sources(
+      SystemDeploymentKind::None,
+      "github:example/flake",
+      "host1",
+      &|_attribute: &str| false,
+    );
+    assert_eq!(
+      result,
+      Err(MechanismAmbiguity::Neither {
+        hostname: "host1".to_owned(),
+      })
+    );
+  }
+}
+
+#[cfg(test)]
+mod home_activation_mode_tests {
+  use super::{
+    HomeActivationMode,
+    discover_standalone_home_output,
+    home_activation_overlap_warning_text,
+  };
+
+  #[test]
+  fn resolves_embedded_only() {
+    assert_eq!(
+      HomeActivationMode::resolve(true, false),
+      HomeActivationMode::Embedded
+    );
+  }
+
+  #[test]
+  fn resolves_standalone_only() {
+    assert_eq!(
+      HomeActivationMode::resolve(false, true),
+      HomeActivationMode::Standalone
+    );
+  }
+
+  #[test]
+  fn resolves_both() {
+    assert_eq!(
+      HomeActivationMode::resolve(true, true),
+      HomeActivationMode::Both
+    );
+  }
+
+  #[test]
+  fn resolves_none() {
+    assert_eq!(
+      HomeActivationMode::resolve(false, false),
+      HomeActivationMode::None
+    );
+  }
+
+  #[test]
+  fn discovers_host_qualified_name_first() {
+    let available = ["alice", "alice@host"];
+    assert_eq!(
+      discover_standalone_home_output("alice", "host", available),
+      Some("alice@host".to_owned())
+    );
+  }
+
+  #[test]
+  fn falls_back_to_bare_username() {
+    let available = ["alice"];
+    assert_eq!(
+      discover_standalone_home_output("alice", "host", available),
+      Some("alice".to_owned())
+    );
+  }
+
+  #[test]
+  fn discovers_nothing_for_an_unrelated_output_set() {
+    let available = ["bob", "bob@host"];
+    assert_eq!(
+      discover_standalone_home_output("alice", "host", available),
+      None
+    );
+  }
+
+  #[test]
+  fn both_overlap_warning_matches_status_text() {
+    assert_eq!(
+      HomeActivationMode::Both.overlap_warning("alice"),
+      Some(home_activation_overlap_warning_text("alice"))
+    );
+  }
+
+  #[test]
+  fn non_both_modes_have_no_overlap_warning() {
+    assert_eq!(HomeActivationMode::Embedded.overlap_warning("alice"), None);
+    assert_eq!(HomeActivationMode::Standalone.overlap_warning("alice"), None);
+    assert_eq!(HomeActivationMode::None.overlap_warning("alice"), None);
+  }
+}
+
+/// Drives all four [`HomeActivationMode`] combinations through the real
+/// detection functions: a fixture filesystem standing in for
+/// `/etc/systemd/system` (the embedded signal) crossed with a fixture
+/// `homeConfigurations` output set (the standalone signal), rather than
+/// handing `HomeActivationMode::resolve` pre-computed booleans.
+#[cfg(test)]
+mod activation_mode_fixture_tests {
+  use tempfile::TempDir;
+
+  use super::{
+    HomeActivationMode,
+    discover_standalone_home_output,
+    embedded_home_manager_unit_under,
+  };
+
+  const USERNAME: &str = "alice";
+  const HOSTNAME: &str = "host1";
+
+  fn write_embedded_unit(root: &std::path::Path) {
+    let unit_dir = root.join("etc/systemd/system");
+    std::fs::create_dir_all(&unit_dir).expect("create fixture systemd dir");
+    std::fs::write(
+      unit_dir.join(format!("home-manager-{USERNAME}.service")),
+      "[Unit]\n",
+    )
+    .expect("write fixture systemd unit");
+  }
+
+  fn resolve_against_fixtures<'a>(
+    root: &std::path::Path,
+    available: impl IntoIterator<Item = &'a str>,
+  ) -> HomeActivationMode {
+    let embedded = embedded_home_manager_unit_under(root, USERNAME);
+    let standalone =
+      discover_standalone_home_output(USERNAME, HOSTNAME, available).is_some();
+    HomeActivationMode::resolve(embedded, standalone)
+  }
+
+  #[test]
+  fn embedded_only_from_fixtures() {
+    let tmp = TempDir::new().expect("tempdir");
+    write_embedded_unit(tmp.path());
+
+    assert_eq!(
+      resolve_against_fixtures(tmp.path(), []),
+      HomeActivationMode::Embedded
+    );
+  }
+
+  #[test]
+  fn standalone_only_from_fixtures() {
+    let tmp = TempDir::new().expect("tempdir");
+
+    assert_eq!(
+      resolve_against_fixtures(tmp.path(), [USERNAME]),
+      HomeActivationMode::Standalone
+    );
+  }
+
+  #[test]
+  fn both_from_fixtures() {
+    let tmp = TempDir::new().expect("tempdir");
+    write_embedded_unit(tmp.path());
+    let qualified = format!("{USERNAME}@{HOSTNAME}");
+
+    assert_eq!(
+      resolve_against_fixtures(tmp.path(), [qualified.as_str()]),
+      HomeActivationMode::Both
+    );
+  }
+
+  #[test]
+  fn none_from_fixtures() {
+    let tmp = TempDir::new().expect("tempdir");
+
+    assert_eq!(
+      resolve_against_fixtures(tmp.path(), []),
+      HomeActivationMode::None
+    );
   }
 }
