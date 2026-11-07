@@ -17,22 +17,32 @@
 //! "Nix-module-written" rung for an inventory, because a target has no
 //! reason to know its own entry in somebody else's host list.
 
-use std::path::Path;
+use std::{path::Path, str::FromStr};
 
 use color_eyre::{Result, eyre::eyre};
 
-use super::args::PushBackend;
+use super::args::{PushBackend, SourcesTransport};
 
 /// Every key the `[push]` table accepts, besides the `hosts` sub-table.
-pub const PUSH_KEYS: &[&str] =
-  &["remote-build", "backend", "retry-attempts"];
+pub const PUSH_KEYS: &[&str] = &[
+  "remote-build",
+  "backend",
+  "retry-attempts",
+  "sources-transport",
+];
 
 /// Sub-tables the `[push]` table accepts, alongside [`PUSH_KEYS`].
 pub const PUSH_TABLE_KEYS: &[&str] = &["hosts"];
 
 /// Every key a `[[push.hosts]]` entry accepts.
-pub const PUSH_HOST_KEYS: &[&str] =
-  &["name", "ssh", "remote-build", "backend", "retry-attempts"];
+pub const PUSH_HOST_KEYS: &[&str] = &[
+  "name",
+  "ssh",
+  "remote-build",
+  "backend",
+  "retry-attempts",
+  "sources-transport",
+];
 
 /// One `[[push.hosts]]` entry: an inventory name and the SSH target it
 /// resolves to.
@@ -45,9 +55,11 @@ pub struct PushHost {
   /// Per-host override of the `remote-build` rung.
   pub remote_build: Option<bool>,
   /// Per-host override of the `backend` rung.
-  pub backend:        Option<PushBackend>,
+  pub backend:           Option<PushBackend>,
   /// Per-host override of the `retry-attempts` rung.
-  pub retry_attempts: Option<u32>,
+  pub retry_attempts:    Option<u32>,
+  /// Per-host override of the `sources-transport` rung.
+  pub sources_transport: Option<SourcesTransport>,
 }
 
 /// The parsed `[push]` table: the `remote-build` and `backend` defaults
@@ -58,12 +70,15 @@ pub struct PushConfig {
   /// build-location ladder.
   pub remote_build: Option<bool>,
   /// `.xi.toml [push] backend`, the middle rung of the backend ladder.
-  pub backend:        Option<PushBackend>,
+  pub backend:           Option<PushBackend>,
   /// `.xi.toml [push] retry-attempts`, the table-level rung of the
   /// retry-attempts ladder.
-  pub retry_attempts: Option<u32>,
+  pub retry_attempts:    Option<u32>,
+  /// `.xi.toml [push] sources-transport`, the table-level rung of the
+  /// sources-transport ladder.
+  pub sources_transport: Option<SourcesTransport>,
   /// `[[push.hosts]]` entries, in file order.
-  pub hosts:        Vec<PushHost>,
+  pub hosts: Vec<PushHost>,
 }
 
 impl PushConfig {
@@ -137,6 +152,22 @@ impl PushConfig {
       Some(item) => Some(parse_retry_attempts(path, item, "[push]")?),
     };
 
+    let sources_transport = match table.get("sources-transport") {
+      None => None,
+      Some(item) => {
+        let raw = item.as_str().ok_or_else(|| {
+          eyre!(
+            "{}: 'sources-transport' in [push] must be a string",
+            path.display()
+          )
+        })?;
+        Some(
+          SourcesTransport::from_str(raw)
+            .map_err(|e| eyre!("{}: {e}", path.display()))?,
+        )
+      },
+    };
+
     let hosts = match table.get("hosts") {
       None => Vec::new(),
       Some(item) => {
@@ -157,6 +188,7 @@ impl PushConfig {
       remote_build,
       backend,
       retry_attempts,
+      sources_transport,
       hosts,
     })
   }
@@ -248,12 +280,30 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     )?),
   };
 
+  let sources_transport = match entry.get("sources-transport") {
+    None => None,
+    Some(item) => {
+      let raw = item.as_str().ok_or_else(|| {
+        eyre!(
+          "{}: 'sources-transport' in [[push.hosts]] entry '{name}' must be \
+           a string",
+          path.display()
+        )
+      })?;
+      Some(
+        SourcesTransport::from_str(raw)
+          .map_err(|e| eyre!("{}: {e}", path.display()))?,
+      )
+    },
+  };
+
   Ok(PushHost {
     name,
     ssh,
     remote_build,
     backend,
     retry_attempts,
+    sources_transport,
   })
 }
 
@@ -421,6 +471,37 @@ pub fn resolve_retry_attempts(
     return table_default;
   }
   3
+}
+
+/// Resolve the sources-transport ladder for one target: `--sources-transport`
+/// outranks `.xi.toml [push]` (a per-host `[[push.hosts]]` override first,
+/// then the table-level default), which outranks the compiled floor
+/// `operator-copy`.
+///
+/// Shaped identically to [`resolve_remote_build`], minus a Nix-module
+/// rung: nothing writes a Nix-module default for this setting, so the
+/// floor is the last rung rather than a fourth one. `target-pull` is
+/// never guessed - an operator opts a target into it explicitly once
+/// they have verified it can reach the configured remote directly.
+#[must_use]
+pub fn resolve_sources_transport(
+  cli: Option<SourcesTransport>,
+  host_name: &str,
+  toml_config: &PushConfig,
+) -> SourcesTransport {
+  if let Some(flag) = cli {
+    return flag;
+  }
+  if let Some(per_host) = toml_config
+    .host(host_name)
+    .and_then(|host| host.sources_transport)
+  {
+    return per_host;
+  }
+  if let Some(table_default) = toml_config.sources_transport {
+    return table_default;
+  }
+  SourcesTransport::OperatorCopy
 }
 
 /// Rewrite `targets`' SSH address from a matching `[[push.hosts]]` entry.
@@ -934,5 +1015,104 @@ mod tests {
   fn with_every_retry_rung_silent_the_floor_is_three() {
     let toml = PushConfig::default();
     assert_eq!(resolve_retry_attempts(None, "web1", &toml), 3);
+  }
+
+  // -- [push] sources-transport: TOML parsing -----------------------------
+
+  #[test]
+  fn sources_transport_parses_as_a_string() {
+    let config = toml_config("[push]\nsources-transport = \"target-pull\"\n");
+    assert_eq!(config.sources_transport, Some(SourcesTransport::TargetPull));
+  }
+
+  #[test]
+  fn an_unknown_sources_transport_value_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(&path, "[push]\nsources-transport = \"rsync\"\n")
+      .expect("write");
+    let err = PushConfig::from_toml_file(&path).expect_err("unknown value");
+    assert!(format!("{err}").contains("rsync"), "got: {err}");
+  }
+
+  #[test]
+  fn a_non_string_sources_transport_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(&path, "[push]\nsources-transport = true\n").expect("write");
+    let err = PushConfig::from_toml_file(&path).expect_err("wrong type");
+    assert!(format!("{err}").contains("sources-transport"), "got: {err}");
+  }
+
+  #[test]
+  fn a_host_level_sources_transport_override_parses() {
+    let config = toml_config(
+      "[[push.hosts]]\nname = \"web1\"\nssh = \"deploy@web1\"\n\
+       sources-transport = \"target-pull\"\n",
+    );
+    assert_eq!(
+      config.hosts[0].sources_transport,
+      Some(SourcesTransport::TargetPull)
+    );
+  }
+
+  #[test]
+  fn an_unknown_host_level_sources_transport_value_is_rejected() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join(".xi.toml");
+    std::fs::write(
+      &path,
+      "[[push.hosts]]\nname = \"web1\"\nssh = \"a\"\nsources-transport = \
+       \"rsync\"\n",
+    )
+    .expect("write");
+    let err = PushConfig::from_toml_file(&path).expect_err("unknown value");
+    assert!(format!("{err}").contains("rsync"), "got: {err}");
+  }
+
+  // -- resolve_sources_transport: the sources-transport ladder ------------
+
+  #[test]
+  fn the_cli_flag_wins_sources_transport_over_every_other_rung() {
+    let toml = toml_config("[push]\nsources-transport = \"target-pull\"\n");
+    assert_eq!(
+      resolve_sources_transport(Some(SourcesTransport::OperatorCopy), "web1", &toml),
+      SourcesTransport::OperatorCopy
+    );
+  }
+
+  #[test]
+  fn without_a_flag_the_toml_table_level_sources_transport_default_answers() {
+    let toml = toml_config("[push]\nsources-transport = \"target-pull\"\n");
+    assert_eq!(
+      resolve_sources_transport(None, "web1", &toml),
+      SourcesTransport::TargetPull
+    );
+  }
+
+  #[test]
+  fn a_per_host_sources_transport_override_outranks_the_table_level_default() {
+    let toml = toml_config(
+      "[push]\nsources-transport = \"operator-copy\"\n\n[[push.hosts]]\nname = \
+       \"web1\"\nssh = \"deploy@web1\"\nsources-transport = \"target-pull\"\n",
+    );
+    assert_eq!(
+      resolve_sources_transport(None, "web1", &toml),
+      SourcesTransport::TargetPull
+    );
+    // A different host falls through to the table-level default.
+    assert_eq!(
+      resolve_sources_transport(None, "web2", &toml),
+      SourcesTransport::OperatorCopy
+    );
+  }
+
+  #[test]
+  fn with_every_sources_transport_rung_silent_the_floor_is_operator_copy() {
+    let toml = PushConfig::default();
+    assert_eq!(
+      resolve_sources_transport(None, "web1", &toml),
+      SourcesTransport::OperatorCopy
+    );
   }
 }

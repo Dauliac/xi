@@ -34,6 +34,7 @@ use xi_core::sources::{
   SourcesContext,
   conflict::inspect_working_tree,
   secrets::{SecretSpec, UploadAt},
+  shadow,
 };
 
 use super::{
@@ -44,6 +45,7 @@ use super::{
   engine::{CliNix, Nix, RemoteCommand, SshTransport, Transport},
   limits::PhaseLimits,
   mode_sources,
+  mode_target_pull,
   preflight,
   reattach,
   receipt,
@@ -125,7 +127,12 @@ fn closure_mode_targets<'a>(
         inventory,
         nix_module_remote_build,
       );
-      args.effective_mode(remote_build) == PushMode::Closure
+      let sources_transport = config::resolve_sources_transport(
+        args.sources_transport,
+        &target.addr.name,
+        inventory,
+      );
+      args.effective_mode(remote_build, sources_transport) == PushMode::Closure
     })
     .collect()
 }
@@ -395,7 +402,12 @@ pub fn execute(
     inventory,
     nix_module_remote_build,
   );
-  let build_location = format!("{:?}", args.effective_mode(fleet_remote_build));
+  let fleet_sources_transport =
+    config::resolve_sources_transport(args.sources_transport, "", inventory);
+  let build_location = format!(
+    "{:?}",
+    args.effective_mode(fleet_remote_build, fleet_sources_transport)
+  );
 
   // Group by the backend ladder's resolved rung (`config::resolve_backend`,
   // not `args.backend` read directly) before auto-detecting: a fleet with
@@ -736,9 +748,14 @@ fn push_one(
     inventory,
     nix_module_remote_build,
   );
+  let sources_transport = config::resolve_sources_transport(
+    args.sources_transport,
+    &target.addr.name,
+    inventory,
+  );
   let retry_attempts =
     config::resolve_retry_attempts(args.retry, &target.addr.name, inventory);
-  let mode = args.effective_mode(remote_build);
+  let mode = args.effective_mode(remote_build, sources_transport);
   if mode == PushMode::Sources && args.copy_via == super::args::CopyVia::Target
   {
     bail!(
@@ -794,6 +811,27 @@ fn push_one(
           retry_attempts,
         )
       }) {
+        if args.fail_fast {
+          aborted.store(true, Ordering::SeqCst);
+        }
+        return Err(e);
+      }
+    },
+    PushMode::TargetPull => {
+      let _permit = limits.apply.acquire();
+      check_aborted()?;
+      let to_sha = shadow::head_sha(&context.sources_dir).map_err(|e| {
+        eyre!(
+          "resolving the sources dir HEAD for target-pull on {}: {e}",
+          target.addr.name
+        )
+      })?;
+      if let Err(e) = mode_target_pull::advance(
+        transport,
+        &target.addr,
+        args.sources_scope(),
+        to_sha,
+      ) {
         if args.fail_fast {
           aborted.store(true, Ordering::SeqCst);
         }
@@ -1102,10 +1140,11 @@ mod tests {
 
   use tempfile::TempDir;
   use xi_core::sources::{Scope, SourcesId};
+  use xi_sources_daemon::control::{AdvanceNow, AdvanceReply};
 
   use super::*;
   use crate::push::{
-    args::{CopyVia as PushCopyVia, PushBackend},
+    args::{CopyVia as PushCopyVia, PushBackend, SourcesTransport},
     engine::{Outcome, TargetAddr, shell_quote},
   };
 
@@ -1163,6 +1202,7 @@ mod tests {
     copy_calls:       Mutex<Vec<(String, String)>>,
     secret_calls:     Mutex<Vec<String>>,
     sync_calls:       Mutex<Vec<String>>,
+    advance_calls:    Mutex<Vec<String>>,
     activation_fails: bool,
   }
 
@@ -1244,6 +1284,96 @@ mod tests {
         .push(format!("{}->{remote}", local.display()));
       Ok(())
     }
+
+    fn advance_now(
+      &self,
+      target: &TargetAddr,
+      _scope: Scope,
+      request: &AdvanceNow,
+    ) -> Result<AdvanceReply> {
+      self
+        .advance_calls
+        .lock()
+        .expect("advance_calls lock")
+        .push(target.name.clone());
+      Ok(AdvanceReply::Advanced {
+        new_head: request.to_sha.clone(),
+      })
+    }
+  }
+
+  /// Wraps a [`FixtureTransport`] so `advance_now` fails the way
+  /// [`super::engine::SshTransport::advance_now`] does when nothing is
+  /// listening on the target's control socket: the local `ssh` spawns
+  /// fine but the daemon side refuses the connection, which
+  /// `SshTransport` reports as a [`super::engine::TargetPullUnreachable`]
+  /// naming `--sources-transport operator-copy` as the fallback.
+  /// Everything else delegates to the wrapped fixture so preflight and
+  /// secret upload still succeed, isolating the failure to the
+  /// target-pull request itself.
+  struct ConnectionRefusedAdvanceNow(FixtureTransport);
+
+  impl Transport for ConnectionRefusedAdvanceNow {
+    fn run(&self, target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+      self.0.run(target, cmd)
+    }
+
+    fn copy_closure(
+      &self,
+      target: &TargetAddr,
+      store_path: &str,
+      via: PushCopyVia,
+      retry_attempts: u32,
+    ) -> Result<()> {
+      self.0.copy_closure(target, store_path, via, retry_attempts)
+    }
+
+    fn upload_secret(
+      &self,
+      target: &TargetAddr,
+      local: &std::path::Path,
+      spec: &SecretSpec,
+      interactive_sudo: bool,
+      retry_attempts: u32,
+    ) -> Result<()> {
+      self
+        .0
+        .upload_secret(target, local, spec, interactive_sudo, retry_attempts)
+    }
+
+    fn sync_dir(
+      &self,
+      target: &TargetAddr,
+      local: &std::path::Path,
+      remote: &str,
+      excludes: &[&str],
+      interactive_sudo: bool,
+      retry_attempts: u32,
+    ) -> Result<()> {
+      self.0.sync_dir(
+        target,
+        local,
+        remote,
+        excludes,
+        interactive_sudo,
+        retry_attempts,
+      )
+    }
+
+    fn advance_now(
+      &self,
+      target: &TargetAddr,
+      _scope: Scope,
+      _request: &AdvanceNow,
+    ) -> Result<AdvanceReply> {
+      Err(eyre!(
+        "target-pull on {} is unreachable (ctl relay exited with exit \
+         status: 255: ssh: connect to host {} port 22: Connection \
+         refused); fall back to --sources-transport operator-copy",
+        target.name,
+        target.ssh_host,
+      ))
+    }
   }
 
   /// Wraps a [`FixtureTransport`] to fail the rebuild-tool preflight
@@ -1319,6 +1449,24 @@ mod tests {
     (root, context)
   }
 
+  /// Like [`fixture_context`], but `sources_dir` is a real `git init`'d
+  /// repo with one commit, so [`xi_core::sources::shadow::head_sha`]
+  /// (what `--mode target-pull` resolves `to_sha` from) has a real `HEAD`
+  /// to read instead of erroring out on "not a repository".
+  fn fixture_context_with_git_sources() -> (TempDir, SourcesContext) {
+    let root = TempDir::new().expect("tempdir");
+    let sources_dir = root.path().join("sources");
+    std::fs::create_dir_all(&sources_dir).expect("sources dir");
+    git_repo(&sources_dir);
+    let context = SourcesContext::load(
+      SourcesId::new(Scope::System, "https://example/repo"),
+      sources_dir,
+      root.path().join("state"),
+    )
+    .expect("load context");
+    (root, context)
+  }
+
   fn args(mode: PushMode) -> PushArgs {
     PushArgs {
       mode: Some(mode),
@@ -1334,6 +1482,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      sources_transport: None,
       retry: None,
       magic_rollback: 0,
       parallel: 1,
@@ -1930,6 +2079,168 @@ mod tests {
   }
 
   #[test]
+  fn a_toml_sources_transport_default_of_target_pull_skips_copy_closure_and_sync_dir()
+   {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context_with_git_sources();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::TargetPull),
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      None,
+      &_root.path().join(".xi.toml"),
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(transport.advance_calls.lock().expect("lock").len(), 1);
+    assert_eq!(transport.copy_calls.lock().expect("lock").len(), 0);
+    assert_eq!(transport.sync_calls.lock().expect("lock").len(), 0);
+    assert!(nix.built.lock().expect("lock").is_empty());
+  }
+
+  #[test]
+  fn a_target_pull_with_no_daemon_listening_refuses_rather_than_switching_to_operator_copy()
+   {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = ConnectionRefusedAdvanceNow(FixtureTransport::default());
+    let (_root, context) = fixture_context_with_git_sources();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::TargetPull),
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      None,
+      &_root.path().join(".xi.toml"),
+      &nix,
+      &transport,
+    )
+    .expect("execute reports a per-target failure rather than erroring itself");
+
+    assert!(!report.ok(), "{:?}", report.results);
+    let failures = report.failures();
+    assert_eq!(failures.len(), 1);
+    let message = failures[0]
+      .outcome
+      .as_ref()
+      .expect_err("target-pull must fail when the control socket refuses the connection")
+      .to_string();
+    assert!(
+      message.contains("target-pull on web1 is unreachable"),
+      "got: {message}"
+    );
+    assert!(
+      message.contains("Connection refused"),
+      "the connection-refused cause must not be swallowed; got: {message}"
+    );
+    assert!(
+      message.contains("--sources-transport operator-copy"),
+      "the error must name the fallback for the operator to retry with; got: {message}"
+    );
+    assert_eq!(
+      transport.0.copy_calls.lock().expect("lock").len(),
+      0,
+      "an unreachable target-pull must not silently fall back to copy_closure"
+    );
+    assert_eq!(
+      transport.0.sync_calls.lock().expect("lock").len(),
+      0,
+      "an unreachable target-pull must not silently fall back to sync_dir"
+    );
+  }
+
+  #[test]
+  fn a_per_host_sources_transport_override_outranks_the_table_default() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context_with_git_sources();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::OperatorCopy),
+      hosts:             vec![super::super::config::PushHost {
+        name:              "web1".to_owned(),
+        ssh:               "web1".to_owned(),
+        remote_build:      None,
+        backend:           None,
+        retry_attempts:    None,
+        sources_transport: Some(SourcesTransport::TargetPull),
+      }],
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args_with_mode(None),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      None,
+      &_root.path().join(".xi.toml"),
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(transport.advance_calls.lock().expect("lock").len(), 1);
+  }
+
+  #[test]
+  fn an_explicit_mode_flag_overrides_the_toml_sources_transport_default() {
+    let nix = FixtureNix::single_nixos_host("web1");
+    let transport = FixtureTransport::default();
+    let (_root, context) = fixture_context();
+    let secrets = BTreeMap::new();
+    let inventory = PushConfig {
+      sources_transport: Some(SourcesTransport::TargetPull),
+      ..PushConfig::default()
+    };
+
+    let report = execute(
+      &args(PushMode::Closure),
+      &context,
+      ".",
+      &secrets,
+      &inventory,
+      None,
+      None,
+      &_root.path().join(".xi.toml"),
+      &nix,
+      &transport,
+    )
+    .expect("executes");
+
+    assert!(report.ok(), "{:?}", report.results);
+    assert_eq!(
+      transport.advance_calls.lock().expect("lock").len(),
+      0,
+      "--mode closure must win over the ladder's sources-transport=target-pull"
+    );
+    assert_eq!(nix.built.lock().expect("lock").len(), 1);
+  }
+
+  #[test]
   fn an_explicit_mode_flag_overrides_the_toml_remote_build_default() {
     let nix = FixtureNix::single_nixos_host("web1");
     let transport = FixtureTransport::default();
@@ -2445,15 +2756,17 @@ mod tests {
     // ladder. `web2`'s per-host override sends it to `--mode sources`,
     // so only `web1` should end up in the manifest.
     let inventory = PushConfig {
-      remote_build:   None,
-      backend:        None,
-      retry_attempts: None,
-      hosts:          vec![config::PushHost {
-        name:           "web2".to_owned(),
-        ssh:            "web2".to_owned(),
-        remote_build:   Some(true),
-        backend:        None,
-        retry_attempts: None,
+      remote_build:      None,
+      backend:           None,
+      retry_attempts:    None,
+      sources_transport: None,
+      hosts:             vec![config::PushHost {
+        name:              "web2".to_owned(),
+        ssh:               "web2".to_owned(),
+        remote_build:      Some(true),
+        backend:           None,
+        retry_attempts:    None,
+        sources_transport: None,
       }],
     };
 

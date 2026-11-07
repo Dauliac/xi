@@ -179,6 +179,7 @@ fn push_args() -> PushArgs {
     phase:            "activate".to_owned(),
     mode:             Some(PushMode::Closure),
     remote_build:     None,
+    sources_transport: None,
     retry:            None,
     magic_rollback:   0,
     parallel:         1,
