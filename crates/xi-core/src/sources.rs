@@ -327,6 +327,8 @@ pub const STATE_FILE_NAMES: &[&str] = &[
   "working-dir",
   "active-generation",
   "applied-via",
+  "applied-origin",
+  "inventory-role",
   "applied-at",
   "pending-activation",
   "lock",

@@ -5,9 +5,12 @@
 //! This is the `xi-sources-push` spec's "`--mode sources`" requirement:
 //! rsync the sources dir to the target, excluding `.git/` and
 //! operator-specific state ([`sync`], through [`Transport::sync_dir`]),
-//! then SSH in and run the target's rebuild tool against the synced
-//! copy with `--flake <remote path>#<target name>` ([`switch`], through
-//! [`Transport::run`]).
+//! then SSH in and run the target's own `xi <scope> switch` entrypoint
+//! against the synced copy ([`switch`], through [`Transport::run`]) -
+//! the same entrypoint `xi-deploy-unify-activation` gives `--mode
+//! closure`'s [`crate::push::orchestrate::activation_script`], so both
+//! modes take the target's `SourcesLock` and leave the same state-dir
+//! markers no matter which one triggered the activation.
 
 use std::path::Path;
 
@@ -76,23 +79,35 @@ pub fn sync(
   )
 }
 
-/// The remote rebuild invocation `--mode sources` runs after [`sync`]
-/// lands the sources dir: `<rebuild tool> switch --flake <remote
-/// path>#<target name>`, e.g.
-/// `nixos-rebuild switch --flake /etc/xi/sources#web1`.
+/// The remote activation invocation `--mode sources` runs after
+/// [`sync`] lands the sources dir: a remote `xi <scope> switch <remote
+/// path>#<target name>` invocation, tagged with
+/// `XI_APPLIED_ORIGIN=push:<origin_host>` so `record_activation_at` can
+/// tell this activation apart from a local interactive switch or a
+/// gitops-daemon tick, e.g.
+/// `XI_APPLIED_ORIGIN=push:operator-host xi system switch
+/// /etc/xi/sources#web1`.
 ///
-/// `target.rebuild_tool` already carries the right binary for the
-/// target's kind (`nixos-rebuild`, `darwin-rebuild`, `home-manager`),
-/// so this does not special-case any of them: all three accept the same
-/// `<tool> switch --flake <ref>#<name>` shape.
+/// The synced sources dir is a flake like any other, so this costs `xi
+/// <scope> switch` nothing it was not already going to do: the
+/// positional `<remote path>#<target name>` resolves as the same
+/// `reference#attribute` installable shape an interactive `xi <scope>
+/// switch /etc/xi/sources#web1` would parse. `Scope::sources_verb`
+/// picks `system` over naming `nixos`/`darwin` explicitly, which is why
+/// this needs no per-kind branch the way `target.rebuild_tool`
+/// (`nixos-rebuild`/`darwin-rebuild`/`home-manager`) used to.
 ///
 /// Exposed separately from [`switch`] so the exact script is assertable
 /// without a [`Transport`].
 #[must_use]
-pub fn switch_script(target: &PushTarget, scope: Scope) -> String {
+pub fn switch_script(
+  target: &PushTarget,
+  scope: Scope,
+  origin_host: &str,
+) -> String {
   format!(
-    "{} switch --flake {}#{}",
-    target.rebuild_tool,
+    "XI_APPLIED_ORIGIN=push:{origin_host} xi {} switch {}#{}",
+    scope.sources_verb(),
     remote_path(scope),
     target.addr.name
   )
@@ -140,10 +155,12 @@ pub fn switch(
   transport: &dyn Transport,
   target: &PushTarget,
   scope: Scope,
+  origin_host: &str,
   interactive_sudo: bool,
   retry_attempts: u32,
 ) -> Result<()> {
-  let script = wrap_in_systemd_run(&switch_script(target, scope));
+  let script =
+    wrap_in_systemd_run(&switch_script(target, scope, origin_host));
   let outcome = transport.run(
     &target.addr,
     &RemoteCommand::elevated(script, interactive_sudo, retry_attempts).non_retryable(),
@@ -412,29 +429,33 @@ mod tests {
   }
 
   #[test]
-  fn switch_script_runs_the_targets_rebuild_tool_against_the_synced_path() {
+  fn switch_script_runs_the_remote_switch_entrypoint_against_the_synced_path()
+   {
     let target = push_target("web1", "nixos-rebuild");
     assert_eq!(
-      switch_script(&target, Scope::System),
-      "nixos-rebuild switch --flake /etc/xi/sources#web1"
+      switch_script(&target, Scope::System, "operator-host"),
+      "XI_APPLIED_ORIGIN=push:operator-host xi system switch \
+       /etc/xi/sources#web1"
     );
   }
 
   #[test]
-  fn switch_script_honours_the_targets_own_rebuild_tool() {
+  fn switch_script_does_not_special_case_the_targets_rebuild_tool() {
     let target = push_target("mac1", "darwin-rebuild");
     assert_eq!(
-      switch_script(&target, Scope::System),
-      "darwin-rebuild switch --flake /etc/xi/sources#mac1"
+      switch_script(&target, Scope::System, "operator-host"),
+      "XI_APPLIED_ORIGIN=push:operator-host xi system switch \
+       /etc/xi/sources#mac1"
     );
   }
 
   #[test]
-  fn switch_script_resolves_the_user_scope_remote_path() {
+  fn switch_script_resolves_the_user_scope_remote_path_and_verb() {
     let target = push_target("me", "home-manager");
     assert_eq!(
-      switch_script(&target, Scope::User),
-      "home-manager switch --flake ~/.local/share/xi/sources#me"
+      switch_script(&target, Scope::User, "operator-host"),
+      "XI_APPLIED_ORIGIN=push:operator-host xi home switch \
+       ~/.local/share/xi/sources#me"
     );
   }
 
@@ -478,11 +499,15 @@ mod tests {
   #[test]
   fn wrapping_the_real_switch_script_produces_the_full_remote_command() {
     let target = push_target("web1", "nixos-rebuild");
-    let wrapped = wrap_in_systemd_run(&switch_script(&target, Scope::System));
+    let wrapped = wrap_in_systemd_run(&switch_script(
+      &target,
+      Scope::System,
+      "operator-host",
+    ));
     assert_eq!(
       wrapped,
-      "systemd-run --wait --pipe --collect -- nixos-rebuild switch --flake \
-       /etc/xi/sources#web1"
+      "systemd-run --wait --pipe --collect -- XI_APPLIED_ORIGIN=push:operator-\
+       host xi system switch /etc/xi/sources#web1"
     );
   }
 
@@ -490,13 +515,18 @@ mod tests {
   fn a_successful_switch_runs_the_systemd_wrapped_script_elevated() {
     let transport = RecordingTransport::with_run_outcomes(vec![true]);
     let target = push_target("web1", "nixos-rebuild");
-    switch(&transport, &target, Scope::System, false, 3).expect("switches");
+    switch(&transport, &target, Scope::System, "operator-host", false, 3)
+      .expect("switches");
 
     let calls = transport.run_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(
       calls[0].script,
-      wrap_in_systemd_run(&switch_script(&target, Scope::System))
+      wrap_in_systemd_run(&switch_script(
+        &target,
+        Scope::System,
+        "operator-host"
+      ))
     );
     assert_eq!(calls[0].elevate, Elevate::NonInteractive);
   }
@@ -505,7 +535,8 @@ mod tests {
   fn interactive_sudo_propagates_to_the_remote_switch() {
     let transport = RecordingTransport::with_run_outcomes(vec![true]);
     let target = push_target("web1", "nixos-rebuild");
-    switch(&transport, &target, Scope::System, true, 3).expect("switches");
+    switch(&transport, &target, Scope::System, "operator-host", true, 3)
+      .expect("switches");
 
     let calls = transport.run_calls();
     assert_eq!(calls[0].elevate, Elevate::Interactive);
@@ -513,10 +544,26 @@ mod tests {
   }
 
   #[test]
+  fn the_switch_script_carries_the_applied_origin_tag() {
+    let transport = RecordingTransport::with_run_outcomes(vec![true]);
+    let target = push_target("web1", "nixos-rebuild");
+    switch(&transport, &target, Scope::System, "operator-host", false, 3)
+      .expect("switches");
+
+    let calls = transport.run_calls();
+    assert!(
+      calls[0].script.contains("XI_APPLIED_ORIGIN=push:operator-host"),
+      "got: {}",
+      calls[0].script
+    );
+  }
+
+  #[test]
   fn switch_threads_its_retry_attempts_into_the_remote_command() {
     let transport = RecordingTransport::with_run_outcomes(vec![true]);
     let target = push_target("web1", "nixos-rebuild");
-    switch(&transport, &target, Scope::System, false, 7).expect("switches");
+    switch(&transport, &target, Scope::System, "operator-host", false, 7)
+      .expect("switches");
     assert_eq!(transport.run_calls()[0].retry_attempts, 7);
   }
 
@@ -524,8 +571,9 @@ mod tests {
   fn a_failed_remote_switch_names_the_target_and_the_remote_error() {
     let transport = RecordingTransport::with_run_outcomes(vec![false]);
     let target = push_target("web1", "nixos-rebuild");
-    let err = switch(&transport, &target, Scope::System, false, 3)
-      .expect_err("remote switch failed");
+    let err =
+      switch(&transport, &target, Scope::System, "operator-host", false, 3)
+        .expect_err("remote switch failed");
     let message = format!("{err}");
     assert!(message.contains("web1"), "got: {message}");
     assert!(

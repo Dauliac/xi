@@ -101,9 +101,15 @@ impl Nix for FixtureNix {
 
 /// Answers every SSH-family call a single-host `builtin` push makes.
 #[derive(Default)]
+#[expect(
+  clippy::struct_field_names,
+  reason = "each field names the Transport call it records; the shared \
+            `_calls` suffix is the point, not an accident"
+)]
 struct FixtureTransport {
   copy_calls: Mutex<Vec<(String, String)>>,
-  run_calls: Mutex<Vec<RemoteCommand>>,
+  run_calls:  Mutex<Vec<RemoteCommand>>,
+  sync_calls: Mutex<Vec<(String, String)>>,
 }
 
 impl Transport for FixtureTransport {
@@ -156,13 +162,18 @@ impl Transport for FixtureTransport {
   fn sync_dir(
     &self,
     _target: &TargetAddr,
-    _local: &std::path::Path,
-    _remote: &str,
+    local: &std::path::Path,
+    remote: &str,
     _excludes: &[&str],
     _interactive_sudo: bool,
     _retry_attempts: u32,
   ) -> Result<()> {
-    unreachable!("--mode closure never syncs a directory")
+    self
+      .sync_calls
+      .lock()
+      .expect("sync_calls lock")
+      .push((local.display().to_string(), remote.to_owned()));
+    Ok(())
   }
 }
 
@@ -236,7 +247,79 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     .script
     .clone();
   assert!(
-    last_script.contains("switch-to-configuration switch"),
+    last_script.contains("XI_APPLIED_ORIGIN=push:"),
+    "got: {last_script}"
+  );
+  assert!(
+    last_script.contains("xi system switch"),
+    "got: {last_script}"
+  );
+}
+
+#[test]
+fn xi_push_mode_sources_activates_via_the_remote_switch_entrypoint_not_the_old_raw_script()
+ {
+  // xi-jhh4.2.3: the end-to-end counterpart of
+  // `xi_push_runs_end_to_end_against_a_real_git_sources_fixture` for
+  // `--mode sources`, driven through the real orchestrator. Proves the
+  // activation step it reaches is an `xi <scope> switch` invocation, not
+  // the old bare `nixos-rebuild switch --flake` script `mode_sources`
+  // ran before xi-jhh4.2.2.
+  let root = TempDir::new().expect("tempdir");
+  let context = fixture_context(&root);
+  let flake_ref = context.sources_dir.display().to_string();
+
+  let nix = FixtureNix {
+    built: Mutex::new(Vec::new()),
+  };
+  let transport = FixtureTransport::default();
+  let secrets: BTreeMap<String, _> = BTreeMap::new();
+  let mut args = push_args();
+  args.mode = Some(PushMode::Sources);
+
+  let report = orchestrate::execute(
+    &args,
+    &context,
+    &flake_ref,
+    &secrets,
+    &PushConfig::default(),
+    None,
+    None,
+    &nix,
+    &transport,
+  )
+  .expect("push executes against the real git fixture");
+
+  assert!(report.ok(), "report: {:?}", report.results);
+  assert!(
+    nix.built.lock().expect("lock").is_empty(),
+    "--mode sources never builds a closure locally"
+  );
+  assert!(transport.copy_calls.lock().expect("lock").is_empty());
+  assert_eq!(transport.sync_calls.lock().expect("lock").len(), 1);
+
+  let last_script = transport
+    .run_calls
+    .lock()
+    .expect("lock")
+    .last()
+    .expect("activation ran")
+    .script
+    .clone();
+  assert!(
+    last_script.contains("XI_APPLIED_ORIGIN=push:"),
+    "got: {last_script}"
+  );
+  assert!(
+    last_script.contains("xi system switch"),
+    "got: {last_script}"
+  );
+  assert!(
+    !last_script.contains("nixos-rebuild switch --flake"),
+    "the old raw rebuild script must not run: {last_script}"
+  );
+  assert!(
+    last_script.starts_with("systemd-run --wait --pipe --collect -- "),
     "got: {last_script}"
   );
 }
@@ -329,7 +412,7 @@ fn omitting_build_strategy_dispatches_identically_to_interleaved_given_explicitl
       .script
       .clone();
     assert!(
-      last_script.contains("switch-to-configuration switch"),
+      last_script.contains("xi system switch"),
       "{label} got: {last_script}"
     );
   }
