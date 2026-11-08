@@ -392,6 +392,12 @@ impl OsRebuildActivateArgs {
         eyre!("switch-to-configuration path contains invalid UTF-8")
       })?;
 
+    // Steps that still need root, collected instead of run immediately,
+    // so a local `Switch` (`Test` then `Boot`) authenticates once
+    // instead of once per step - most visibly, a GUI askpass or Touch
+    // ID popup otherwise shown multiple times for one activation.
+    let mut local_elevated_steps: Vec<Command> = Vec::new();
+
     if let Test | Switch = variant {
       if let Some(target_host) = &self.rebuild.target_host {
         let activation_type = match variant {
@@ -417,15 +423,15 @@ impl OsRebuildActivateArgs {
           activation_type.as_str()
         ))?;
       } else {
-        Command::new(canonical_out_path)
-          .arg("test")
-          .message("Activating configuration")
-          .elevate(elevate.then_some(elevation.clone()))
-          .preserve_envs(["NIXOS_INSTALL_BOOTLOADER", "NIXOS_NO_CHECK"])
-          .with_required_env()
-          .show_output(self.show_activation_logs)
-          .run()
-          .wrap_err("Activation (test) failed")?;
+        local_elevated_steps.push(
+          Command::new(canonical_out_path)
+            .arg("test")
+            .message("Activating configuration")
+            .elevate(elevate.then_some(elevation.clone()))
+            .preserve_envs(["NIXOS_INSTALL_BOOTLOADER", "NIXOS_NO_CHECK"])
+            .with_required_env()
+            .show_output(self.show_activation_logs),
+        );
       }
 
       if let Some(store_path) = actual_store_path {
@@ -462,13 +468,13 @@ impl OsRebuildActivateArgs {
           .canonicalize()
           .context("Failed to resolve base output path to store path")?;
 
-        Command::new(find_real_nix_binary())
-          .args(["build", "--no-link", "--profile", SYSTEM_PROFILE])
-          .arg(&base_store_path)
-          .elevate(elevate.then_some(elevation.clone()))
-          .with_required_env()
-          .run()
-          .wrap_err("Failed to set system profile")?;
+        local_elevated_steps.push(
+          Command::new(find_real_nix_binary())
+            .args(["build", "--no-link", "--profile", SYSTEM_PROFILE])
+            .arg(&base_store_path)
+            .elevate(elevate.then_some(elevation.clone()))
+            .with_required_env(),
+        );
 
         let mut cmd = Command::new(switch_to_configuration)
           .arg("boot")
@@ -480,11 +486,13 @@ impl OsRebuildActivateArgs {
           cmd = cmd.set_env("NIXOS_INSTALL_BOOTLOADER", "1");
         }
 
-        cmd
-          .with_required_env()
-          .run()
-          .wrap_err("Bootloader activation failed")?;
+        local_elevated_steps.push(cmd.with_required_env());
       }
+    }
+
+    if !local_elevated_steps.is_empty() {
+      Command::run_elevated_batch(&local_elevated_steps)
+        .wrap_err("Activation failed")?;
     }
 
     if let Some(store_path) = actual_store_path {
