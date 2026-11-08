@@ -22,6 +22,11 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- Two public doc comments (`xi-flake::project_config::load_sources_config`,
+  `xi::sources` module docs) linked to module-private items via intra-doc link
+  syntax, which `cargo doc -D warnings` rejects. This was never caught before
+  because CI never ran `cargo doc`; it does now via `tag.yaml`'s release gate.
+
 ### Removed
 
 ## 4.5.0
@@ -45,9 +50,10 @@ functionality, under the "Removed" section.
   instead of raw `cargo build`/`cross`, so the artifacts attached to GitHub
   releases are validated against the flake. `aarch64-linux` builds natively on
   GitHub's `ubuntu-24.04-arm` runner instead of emulating via `cross`. A new
-  `test` job (nix build of the `xi`/`xi-clippy`/`xi-doc` checks, plus `cargo
-  nextest` via `just test`) gates the build job so releases are cut only
-  after checks and tests pass.
+  `test` job (nix build of the `xi`/`xi-clippy`/`xi-doc` checks, plus
+  `cargo
+  nextest` via `just test`) gates the build job so releases are cut
+  only after checks and tests pass.
 
 ### Removed
 

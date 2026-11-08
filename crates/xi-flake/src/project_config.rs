@@ -404,7 +404,7 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
 
 /// Load and validate the `.xi.toml [sources]` section, strictly.
 ///
-/// Unlike [`load_project_config`], a malformed `[sources]` block is an
+/// Unlike `load_project_config`, a malformed `[sources]` block is an
 /// error rather than a warning: an operator who misspells `remote` must
 /// find out at config-load time, not when a gitops daemon silently never
 /// advances. A missing `.xi.toml`, or one without a `[sources]` table, is
