@@ -253,9 +253,17 @@ fn build_line_editor(
 
 /// Build the right-hand prompt segment identifying which flake this
 /// session is open against - just the directory's own name (e.g.
-/// `flake:impl-xi-repl`), shown only when `flake_root` actually has a
-/// `flake.nix` at all (a bare "no flake detected" session, e.g. against a
-/// throwaway fixture directory, gets the empty segment it always had).
+/// `xi(impl-xi-repl)`), folded into the left prompt rather than a right
+/// one: a right-side segment sits at a column that moves with the
+/// terminal's width, which turned out to be exactly the kind of thing
+/// that makes `reedline`'s own layout math (wrapping, the multiline `:::`
+/// indicator, the completion menu's positioning) awkward to reason about
+/// in practice. The left prompt has no such issue - it is always exactly
+/// where the line starts.
+///
+/// Shown only when `flake_root` actually has a `flake.nix` at all (a bare
+/// "no flake detected" session, e.g. against a throwaway fixture
+/// directory, just gets the plain `"xi"` it always had).
 ///
 /// This is deliberately minimal: a quick "which of several open sessions/
 /// worktrees is this one" glance, not a dashboard. `flake_root`'s own
@@ -263,15 +271,15 @@ fn build_line_editor(
 /// e.g. the flake's own `description` (would need an `ExprEval` call) or
 /// git-dirty status (would need a `git` invocation) - either could be a
 /// reasonable follow-up if a session identifier alone isn't enough.
-fn flake_right_prompt_segment(flake_root: &Path) -> DefaultPromptSegment {
+fn flake_left_prompt_segment(flake_root: &Path) -> DefaultPromptSegment {
   if !flake_root.join("flake.nix").is_file() {
-    return DefaultPromptSegment::Empty;
+    return DefaultPromptSegment::Basic("xi".to_owned());
   }
   let name = flake_root.file_name().map_or_else(
     || flake_root.display().to_string(),
     |n| n.to_string_lossy().into_owned(),
   );
-  DefaultPromptSegment::Basic(format!("flake:{name}"))
+  DefaultPromptSegment::Basic(format!("xi({name})"))
 }
 
 /// Run the reedline read-eval-print loop against `socket_path`.
@@ -317,8 +325,8 @@ fn flake_right_prompt_segment(flake_root: &Path) -> DefaultPromptSegment {
 pub fn run_loop(socket_path: &Path, flake_root: &Path) -> Result<()> {
   let mut line_editor = build_line_editor(socket_path, flake_root)?;
   let prompt = DefaultPrompt::new(
-    DefaultPromptSegment::Basic("xi".to_owned()),
-    flake_right_prompt_segment(flake_root),
+    flake_left_prompt_segment(flake_root),
+    DefaultPromptSegment::Empty,
   );
 
   loop {
@@ -539,11 +547,11 @@ mod tests {
   }
 
   #[test]
-  fn flake_prompt_segment_is_empty_without_a_flake_nix() {
+  fn flake_prompt_segment_is_just_xi_without_a_flake_nix() {
     let tmp = tempfile::tempdir().expect("mktemp");
-    let segment = flake_right_prompt_segment(tmp.path());
-    let prompt = DefaultPrompt::new(DefaultPromptSegment::Empty, segment);
-    assert_eq!(prompt.render_prompt_right(), "");
+    let segment = flake_left_prompt_segment(tmp.path());
+    let prompt = DefaultPrompt::new(segment, DefaultPromptSegment::Empty);
+    assert_eq!(prompt.render_prompt_left(), "xi");
   }
 
   #[test]
@@ -553,8 +561,8 @@ mod tests {
     std::fs::create_dir(&flake_root).expect("mkdir");
     std::fs::write(flake_root.join("flake.nix"), "{ }").expect("write");
 
-    let segment = flake_right_prompt_segment(&flake_root);
-    let prompt = DefaultPrompt::new(DefaultPromptSegment::Empty, segment);
-    assert_eq!(prompt.render_prompt_right(), "flake:my-flake");
+    let segment = flake_left_prompt_segment(&flake_root);
+    let prompt = DefaultPrompt::new(segment, DefaultPromptSegment::Empty);
+    assert_eq!(prompt.render_prompt_left(), "xi(my-flake)");
   }
 }

@@ -11,37 +11,64 @@
 //!    flake's own top-level output names (`packages`, `nixosConfigurations`,
 //!    `checks`, ...), the same thing real `nix repl`'s `:lf .` loads into
 //!    scope.
-//! 2. Resolves the base expression's attribute names. The *first* request for a
-//!    given base expression sends `ExprEval{expr: base, shallow: true}` to the
-//!    daemon on a background thread, never on `complete()`'s caller (reedline's
-//!    input-handling thread), because that round-trip goes through the same
-//!    `builtins.getFlake`-backed path as any other expression and can take tens
-//!    of seconds, uncached, on a large flake (see
+//! 2. Resolves *everything* a brand-new request needs: the base expression's
+//!    attribute names (an `ExprEval{expr: base, shallow: true}` round-trip,
+//!    which goes through the same `builtins.getFlake`-backed path as any other
+//!    expression and can take tens of seconds, uncached, on a large flake, see
 //!    `v3_handlers::run_expr_eval`'s doc comment and
-//!    `client_v3::EXPR_EVAL_TIMEOUT`'s 1-minute ceiling); blocking the input
-//!    thread on it would freeze the whole editor, not just the completion menu.
-//!    `complete()` waits up to [`INITIAL_FETCH_GRACE`] for that background
-//!    thread's answer before giving up and returning empty - without this, a
-//!    fetch that resolves in, say, half a second still flashes an empty "no
-//!    records found" menu for that half second before the real one replaces it,
-//!    which reads as broken even on a perfectly healthy fetch. Past the grace
-//!    window [`Completer::poll_completion`] takes over, reporting `Ready` once
-//!    the answer lands so reedline re-asks `complete()` for the now-populated
-//!    list - this path still never blocks the editor beyond the bounded grace
-//!    window, however long the fetch itself ends up taking. The raw
+//!    `client_v3::EXPR_EVAL_TIMEOUT`'s 1-minute ceiling), *and* the enrichment
+//!    preview text for a bounded window of the resulting candidates (point 3
+//!    below), together, as one [`ResolvedBatch`], on a single background thread
+//!    spawned by [`AttrCompleter::spawn_resolve`]. Never on `complete()`'s
+//!    caller (reedline's input-handling thread), since blocking it would freeze
+//!    the whole editor, not just the completion menu. `complete()` waits up to
+//!    [`INITIAL_FETCH_GRACE`] for that thread's answer before giving up and
+//!    returning empty, without this, a fetch that resolves in, say, half a
+//!    second still flashes an empty "no records found" menu for that half
+//!    second before the real one replaces it, which reads as broken even on a
+//!    perfectly healthy fetch. Past the grace window
+//!    [`Completer::poll_completion`] takes over, reporting `Ready` once the
+//!    answer lands so reedline re-asks `complete()` for the now-populated list,
+//!    and this path still never blocks the editor beyond the bounded grace
+//!    window, however long the resolve itself ends up taking. The raw
 //!    (unfiltered) names are cached per base expression, so narrowing the
 //!    partial by typing further characters re-filters that cache locally
-//!    instead of re-querying the daemon on every keystroke.
+//!    instead of re-querying the daemon on every keystroke; the enrichment half
+//!    still re-resolves (and still goes through this same one-shot path) since
+//!    a different partial means a different filtered window.
 //! 3. Enriches only a bounded window of the (locally filtered) candidates (task
 //!    5.2) with a `meta.description`/version preview, one further shallow
 //!    `ExprEval` per candidate, rendered through the same
 //!    [`crate::render::render`] this crate already uses for top-level results
 //!    (which itself defers to [`xi_core::nix_value::render_entry`] for
-//!    derivations). This also runs on a background thread, feeding results back
-//!    through an `mpsc` channel drained non-blockingly from `poll_completion`
-//!    (task 5.3)  -  the same thread+channel shape `nix-command`'s
-//!    `read_pipe`/`PipeEvent` uses for streaming subprocess output, applied
-//!    here to streaming daemon round-trips instead.
+//!    derivations) - or, for a function, real documentation (see
+//!    [`doc_preview_or_fallback`]).
+//!
+//! ## One settle, never two
+//!
+//! `reedline`'s menu (`IdeMenu::update_values`, confirmed by reading
+//! `reedline` 0.52.1's own source) resets the user's navigation position
+//! back to the top on *every* settle it is handed, with no way for a
+//! `Completer` to say "update what's displayed but leave the selection
+//! alone" - there is no partial-update API, only "nothing new" vs. "here is
+//! the (whole, new) list". A first version of this module settled once when
+//! the base names landed and *again*, later, whenever their enrichment
+//! finished - exactly the gap a live report caught: navigate while
+//! enrichment is still in flight, and the cursor snaps back the moment it
+//! lands.
+//!
+//! The fix is structural, not a special case: [`ResolvedBatch`] is the
+//! *only* shape a background thread may report through [`EnrichMsg`], it
+//! always carries names and their window's enrichment together, and
+//! [`AttrCompleter::adopt_resolved`] is the *only* place `current.suggestions`
+//! is written from one. One request, one background thread
+//! ([`AttrCompleter::spawn_resolve`]), one message, one settle - whether that
+//! settle happens synchronously inside the [`INITIAL_FETCH_GRACE`] window or
+//! later via [`Completer::poll_completion`]. Any future enrichment this
+//! completer grows (another field to look up, another background check) has
+//! to fold into that same batch before it is ever shown, not bolt on a
+//! second wave of updates after the fact - there is no separate path left to
+//! bolt one onto.
 //!
 //! ## API limitation, noted honestly
 //!
@@ -170,8 +197,9 @@ fn attr_prefix(line: &str, pos: usize) -> Option<AttrPrefix> {
 }
 
 /// One completion request's state: the parsed prefix, and the suggestions
-/// for it  -  initially empty (while the base fetch is in flight) or
-/// unenriched, filled in with preview text as [`EnrichMsg::Item`]s arrive.
+/// for it - empty until its [`ResolvedBatch`] (names *and* their
+/// enrichment, together) lands; see the module doc comment's "one settle,
+/// never two" section for why there is no earlier, partial population.
 struct RequestState {
   request_id:  u64,
   base_expr:   String,
@@ -190,31 +218,29 @@ struct BaseCache {
   names:      Vec<String>,
 }
 
-/// A message from a background thread (base-fetch or enrichment) back to
-/// [`AttrCompleter::poll_completion`].
+/// Everything one request needs, resolved together on one background
+/// thread ([`AttrCompleter::spawn_resolve`]) and adopted together by one
+/// call to [`AttrCompleter::adopt_resolved`] - see the module doc
+/// comment's "one settle, never two" section for why this must never be
+/// split into separate messages the way an earlier version of this module
+/// split "names" from "their enrichment".
+struct ResolvedBatch {
+  request_id:  u64,
+  /// `base_expr`/`span_start`/`raw_names` populate [`BaseCache`] once this
+  /// lands - `raw_names` is unfiltered by `partial`, which may have kept
+  /// changing while the resolve was in flight.
+  base_expr:   String,
+  span_start:  usize,
+  raw_names:   Vec<String>,
+  /// The filtered, already-enriched suggestions ready to show as-is.
+  suggestions: Vec<Suggestion>,
+}
+
+/// The only message a background thread may report back to
+/// [`AttrCompleter::poll_completion`] - see [`ResolvedBatch`]'s doc
+/// comment for why there is only this one variant.
 enum EnrichMsg {
-  /// The base expression's raw attribute names are ready - unfiltered by
-  /// `partial`, which may have kept changing while the fetch was in flight.
-  Base {
-    request_id: u64,
-    names:      Vec<String>,
-  },
-  /// One candidate's preview text is ready.
-  Item {
-    request_id:   u64,
-    name:         String,
-    preview:      String,
-    /// Whether the candidate classified as a plain (non-derivation)
-    /// attrset - i.e. it has children reachable by dotting into it, the
-    /// same `kind: "attrs"` case `v3_handlers::classify_wrapper`'s shallow
-    /// tail reports. Drives auto-appending `.` to the suggestion so
-    /// accepting it is immediately ready for the next level instead of
-    /// making the user type the dot themselves.
-    has_children: bool,
-  },
-  /// The enrichment thread has sent every candidate in its window and is
-  /// about to exit.
-  Done { request_id: u64 },
+  Resolved(ResolvedBatch),
 }
 
 /// `reedline` [`Completer`] for Nix attribute paths, backed by the
@@ -222,14 +248,14 @@ enum EnrichMsg {
 ///
 /// See the module doc comment for the full request/enrichment flow.
 pub struct AttrCompleter {
-  socket_path:          PathBuf,
-  current:              Option<RequestState>,
-  base_cache:           Option<BaseCache>,
+  socket_path:     PathBuf,
+  current:         Option<RequestState>,
+  base_cache:      Option<BaseCache>,
   /// Documentation previews already fetched this session, keyed by the
   /// full expression they were fetched for (e.g. `"builtins.add"`).
   ///
   /// Shared (not owned outright) because it is read and written from the
-  /// enrichment background thread, not just from `&mut self` - see
+  /// resolve background thread, not just from `&mut self` - see
   /// [`doc_preview_or_fallback`]. Never evicted: a repl session's
   /// vocabulary of distinct functions is small enough that this cannot
   /// meaningfully grow unbounded, and the whole point is to stop paying
@@ -238,10 +264,14 @@ pub struct AttrCompleter {
   /// re-navigations happen in between.
   doc_cache:
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
-  rx:                   Option<mpsc::Receiver<EnrichMsg>>,
-  base_in_flight:       bool,
-  enrichment_in_flight: bool,
-  next_request_id:      u64,
+  rx:              Option<mpsc::Receiver<EnrichMsg>>,
+  /// Whether [`AttrCompleter::spawn_resolve`]'s background thread is still
+  /// working on the current request. One flag, not a "base" one and an
+  /// "enrichment" one - see the module doc comment's "one settle, never
+  /// two" section for why there is only ever one resolve in flight per
+  /// request, not two phases that could land (and so settle) separately.
+  resolving:       bool,
+  next_request_id: u64,
 }
 
 impl AttrCompleter {
@@ -259,8 +289,7 @@ impl AttrCompleter {
         std::collections::HashMap::new(),
       )),
       rx: None,
-      base_in_flight: false,
-      enrichment_in_flight: false,
+      resolving: false,
       next_request_id: 0,
     }
   }
@@ -270,7 +299,7 @@ impl AttrCompleter {
   /// Swallows every failure mode (unreachable daemon, a non-`Attrs` reply
   /// because `base_expr` isn't an attrset, a protocol mismatch) into an
   /// empty candidate list: the caller (a background thread; see
-  /// [`AttrCompleter::spawn_base_fetch`]) has no error channel back to the
+  /// [`AttrCompleter::spawn_resolve`]) has no error channel back to the
   /// editor either, so "no completions right now" is the only honest answer
   /// to give back, the same convention `reedline`'s own `HistoryCompleter`
   /// uses.
@@ -286,25 +315,44 @@ impl AttrCompleter {
     }
   }
 
-  /// Spawn the background thread that resolves `base_expr`'s raw attribute
-  /// names, replacing (and thereby abandoning) any base fetch or enrichment
-  /// still running for a previous request - same cancellation-by-dropped-`rx`
-  /// mechanism [`AttrCompleter::spawn_enrichment`] uses, see its doc comment.
+  /// Spawn the one background thread that resolves everything `request_id`
+  /// needs - base names (fetched fresh unless `cached_names` already has
+  /// them) *and* the enrichment window's preview text - and reports it all
+  /// back as one [`EnrichMsg::Resolved`]. See [`ResolvedBatch`]'s doc
+  /// comment and the module doc comment's "one settle, never two" section
+  /// for why this must stay one combined thread and one message, never
+  /// split into a "names landed" message followed later by an "enrichment
+  /// landed" one.
   ///
-  /// This is the call that can take the better part of a minute on a large,
-  /// uncached flake (see the module doc comment, point 2); running it here
-  /// instead of inline in [`Completer::complete`] is the whole point - the
-  /// editor's input thread calls `complete()` and must get control back
-  /// immediately, or every keystroke after a `.`/Tab would freeze the
-  /// terminal until the daemon answers.
-  fn spawn_base_fetch(&mut self, request_id: u64, base_expr: String) {
+  /// Replaces (and thereby abandons) any resolve still running for a
+  /// previous request: dropping the previous `rx` here disconnects its
+  /// paired `tx`, so that thread's next `tx.send` fails and it exits on its
+  /// own rather than accumulating unboundedly.
+  ///
+  /// The base-name fetch alone is the call that can take the better part
+  /// of a minute on a large, uncached flake (see the module doc comment,
+  /// point 2); running the whole thing here instead of inline in
+  /// [`Completer::complete`] is the whole point - the editor's input
+  /// thread calls `complete()` and must get control back immediately, or
+  /// every keystroke after a `.`/Tab would freeze the terminal until the
+  /// daemon answers.
+  fn spawn_resolve(
+    &mut self,
+    request_id: u64,
+    base_expr: String,
+    partial: String,
+    span: Span,
+    cached_names: Option<Vec<String>>,
+  ) {
     let (tx, rx) = mpsc::channel();
     self.rx = Some(rx);
-    self.base_in_flight = true;
+    self.resolving = true;
 
     let socket_path = self.socket_path.clone();
+    let doc_cache = std::sync::Arc::clone(&self.doc_cache);
     thread::spawn(move || {
-      let mut names = Self::fetch_attrs(&socket_path, &base_expr);
+      let mut raw_names = cached_names
+        .unwrap_or_else(|| Self::fetch_attrs(&socket_path, &base_expr));
       // At the top level, also offer `builtins` itself - the one bare
       // identifier every Nix expression has in scope regardless of the
       // flake's own outputs, and the gateway to completing Nix's actual
@@ -312,9 +360,10 @@ impl AttrCompleter {
       // only flake data. Dotting into it from here already works through
       // the ordinary (non-`FLAKE_SCOPE_EXPR`) completion path, since typed
       // text like `builtins.to` is just an ordinary expression by then.
-      if base_expr == FLAKE_SCOPE_EXPR && !names.iter().any(|n| n == "builtins")
+      if base_expr == FLAKE_SCOPE_EXPR
+        && !raw_names.iter().any(|n| n == "builtins")
       {
-        names.push("builtins".to_owned());
+        raw_names.push("builtins".to_owned());
       }
       // `builtins` carries a genuine self-reference (`builtins.builtins`
       // really does evaluate to `builtins` again, confirmed against a
@@ -323,40 +372,17 @@ impl AttrCompleter {
       // drop it specifically when `base_expr` is already `builtins` (or
       // ends with `.builtins`).
       if base_expr == "builtins" || base_expr.ends_with(".builtins") {
-        names.retain(|n| n != "builtins");
+        raw_names.retain(|n| n != "builtins");
       }
-      let _ = tx.send(EnrichMsg::Base { request_id, names });
-    });
-  }
 
-  /// Spawn the background enrichment thread for the first
-  /// [`ENRICH_WINDOW`] `names`, replacing (and thereby abandoning) any
-  /// enrichment still running for a previous request.
-  ///
-  /// Dropping the previous `rx` here disconnects its paired `tx`; the old
-  /// thread's next `tx.send` then fails and it exits on its own, so slow
-  /// enrichment for a prefix the user has already typed past never
-  /// accumulates unbounded background threads.
-  fn spawn_enrichment(
-    &mut self,
-    request_id: u64,
-    base_expr: String,
-    names: &[String],
-  ) {
-    let window: Vec<String> =
-      names.iter().take(ENRICH_WINDOW).cloned().collect();
-    let (tx, rx) = mpsc::channel();
-    self.rx = Some(rx);
-    self.enrichment_in_flight = !window.is_empty();
+      let (filtered, mut suggestions) =
+        filtered_suggestions(&raw_names, &partial, span);
 
-    if window.is_empty() {
-      return;
-    }
-
-    let socket_path = self.socket_path.clone();
-    let doc_cache = std::sync::Arc::clone(&self.doc_cache);
-    thread::spawn(move || {
-      for name in window {
+      for (name, suggestion) in filtered
+        .iter()
+        .zip(suggestions.iter_mut())
+        .take(ENRICH_WINDOW)
+      {
         // When completing at the top level, `name` (e.g. "packages") is
         // already a complete, directly-evaluable expression on its own
         // once bound via the daemon's `with`-flake wrapper - prefixing it
@@ -380,36 +406,58 @@ impl AttrCompleter {
         let Some(value) = classified else { continue };
 
         // A plain (non-derivation) attrset has children reachable by
-        // dotting into it - flagged here, before `value` is consumed
-        // below, so the suggestion can offer the `.` itself instead of
-        // making the user type it blind.
-        let has_children = matches!(value, ExprEvalResult::Attrs(_));
-
-        let preview = if matches!(value, ExprEvalResult::Lambda) {
-          // A plain "<lambda>" placeholder is a dead end for exactly the
-          // candidates a user most wants documentation for - nix's own
-          // functions. Try real `nix repl`-backed docs first (see
-          // Query::ExprDoc's doc comment); fall back to the placeholder
-          // only when there genuinely are none.
-          doc_preview_or_fallback(&doc_cache, &socket_path, &full_path, &value)
-        } else {
-          crate::render::strip_ansi(&crate::render::render(&value))
-        };
-
-        if tx
-          .send(EnrichMsg::Item {
-            request_id,
-            name,
-            preview,
-            has_children,
-          })
-          .is_err()
-        {
-          return;
+        // dotting into it - ready for the next level immediately on
+        // accept, instead of making the user type the `.` themselves.
+        if matches!(value, ExprEvalResult::Attrs(_)) {
+          suggestion.value = format!("{name}.");
         }
+
+        suggestion.description =
+          Some(if matches!(value, ExprEvalResult::Lambda) {
+            // A plain "<lambda>" placeholder is a dead end for exactly the
+            // candidates a user most wants documentation for - nix's own
+            // functions. Try real `nix repl`-backed docs first (see
+            // Query::ExprDoc's doc comment); fall back to the placeholder
+            // only when there genuinely are none.
+            doc_preview_or_fallback(
+              &doc_cache,
+              &socket_path,
+              &full_path,
+              &value,
+            )
+          } else {
+            crate::render::strip_ansi(&crate::render::render(&value))
+          });
       }
-      let _ = tx.send(EnrichMsg::Done { request_id });
+
+      let _ = tx.send(EnrichMsg::Resolved(ResolvedBatch {
+        request_id,
+        base_expr,
+        span_start: span.start,
+        raw_names,
+        suggestions,
+      }));
     });
+  }
+
+  /// Adopt a landed [`ResolvedBatch`]: the *only* place
+  /// `current.suggestions` and `base_cache` get written from a background
+  /// thread's answer, whether that answer arrived synchronously within
+  /// [`Completer::complete`]'s own [`INITIAL_FETCH_GRACE`] wait or later
+  /// via [`Completer::poll_completion`]. Returns the suggestions so both
+  /// callers can hand them straight to `CompletionResult::fresh` without
+  /// cloning twice.
+  fn adopt_resolved(&mut self, batch: ResolvedBatch) -> Vec<Suggestion> {
+    self.base_cache = Some(BaseCache {
+      base_expr:  batch.base_expr,
+      span_start: batch.span_start,
+      names:      batch.raw_names,
+    });
+    self.resolving = false;
+    if let Some(current) = &mut self.current {
+      current.suggestions.clone_from(&batch.suggestions);
+    }
+    batch.suggestions
   }
 }
 
@@ -506,9 +554,9 @@ impl Completer for AttrCompleter {
     if is_same_request {
       // Nothing moved on screen since the last request  -  this call is
       // `settle_completions` re-asking after `poll_completion` reported
-      // `Ready`. The suggestions already carry whatever enrichment has
-      // landed so far; no need to re-query the daemon for the base attrs
-      // or respawn enrichment.
+      // `Ready`. `current.suggestions` already carries the one and only
+      // [`ResolvedBatch`] this request will ever get; no need to resolve
+      // anything again.
       let suggestions = self
         .current
         .as_ref()
@@ -517,19 +565,19 @@ impl Completer for AttrCompleter {
       return CompletionResult::fresh(suggestions);
     }
 
-    // A base fetch for this exact attribute segment is already in flight
-    // (an earlier keystroke in this same segment kicked it off and it
-    // hasn't landed yet): don't spawn a second `nix eval` subprocess on top
-    // of it, just update what we'll filter by once the one already running
-    // answers. Without this check, typing several characters while a slow
-    // (uncached, tens-of-seconds) fetch is still in flight for a large
-    // flake piles up one redundant subprocess per keystroke, each paying
-    // the full cost again for an answer that gets thrown away.
-    let same_segment_already_fetching = self.base_in_flight
+    // A resolve for this exact attribute segment is already in flight (an
+    // earlier keystroke in this same segment kicked it off and it hasn't
+    // landed yet): don't spawn a second one on top of it, just update what
+    // we'll filter by once the one already running answers. Without this
+    // check, typing several characters while a slow (uncached,
+    // tens-of-seconds) fetch is still in flight for a large flake piles up
+    // one redundant subprocess per keystroke, each paying the full cost
+    // again for an answer that gets thrown away.
+    let same_segment_already_resolving = self.resolving
       && self.current.as_ref().is_some_and(|c| {
         c.base_expr == prefix.base_expr && c.span.start == prefix.span.start
       });
-    if same_segment_already_fetching {
+    if same_segment_already_resolving {
       if let Some(current) = &mut self.current {
         current.partial = prefix.partial;
         current.span = prefix.span;
@@ -542,7 +590,9 @@ impl Completer for AttrCompleter {
 
     // Cache hit: the raw names for this exact attribute segment are already
     // known (an earlier keystroke in this same segment fetched them), so
-    // just re-filter locally by the new partial - no daemon round-trip.
+    // the resolve thread below can skip the daemon round-trip for them -
+    // it still has to run, for the enrichment half, which is never cached
+    // across keystrokes the way the raw names are.
     let cached_names = self
       .base_cache
       .as_ref()
@@ -551,22 +601,6 @@ impl Completer for AttrCompleter {
       })
       .map(|c| c.names.clone());
 
-    if let Some(names) = cached_names {
-      let (filtered, suggestions) =
-        filtered_suggestions(&names, &prefix.partial, prefix.span);
-      self.spawn_enrichment(request_id, prefix.base_expr.clone(), &filtered);
-      self.current = Some(RequestState {
-        request_id,
-        base_expr: prefix.base_expr,
-        partial: prefix.partial,
-        span: prefix.span,
-        suggestions: suggestions.clone(),
-      });
-      return CompletionResult::fresh(suggestions);
-    }
-
-    // Cache miss: a brand-new attribute segment. Resolve it off-thread (see
-    // `spawn_base_fetch`'s doc comment for why).
     self.current = Some(RequestState {
       request_id,
       base_expr: prefix.base_expr.clone(),
@@ -574,32 +608,27 @@ impl Completer for AttrCompleter {
       span: prefix.span,
       suggestions: Vec::new(),
     });
-    self.spawn_base_fetch(request_id, prefix.base_expr.clone());
+    self.spawn_resolve(
+      request_id,
+      prefix.base_expr,
+      prefix.partial,
+      prefix.span,
+      cached_names,
+    );
 
-    // Give the fetch a short, bounded grace window before falling through
-    // to the empty/async path - see INITIAL_FETCH_GRACE's doc comment for
-    // why. A fetch that lands within the window skips the "no records
-    // found" flash entirely.
+    // Give the whole resolve (names *and* their enrichment, together) a
+    // short, bounded grace window before falling through to the
+    // empty/async path - see INITIAL_FETCH_GRACE's doc comment for why,
+    // and the module doc comment's "one settle, never two" section for
+    // why this waits for the *combined* result rather than returning as
+    // soon as just the names are in. A resolve that lands within the
+    // window skips the "no records found" flash entirely.
     if let Some(rx) = &self.rx
-      && let Ok(EnrichMsg::Base {
-        request_id: landed_id,
-        names,
-      }) = rx.recv_timeout(INITIAL_FETCH_GRACE)
-      && landed_id == request_id
+      && let Ok(EnrichMsg::Resolved(batch)) =
+        rx.recv_timeout(INITIAL_FETCH_GRACE)
+      && batch.request_id == request_id
     {
-      let (filtered, suggestions) =
-        filtered_suggestions(&names, &prefix.partial, prefix.span);
-      self.base_cache = Some(BaseCache {
-        base_expr: prefix.base_expr.clone(),
-        span_start: prefix.span.start,
-        names,
-      });
-      self.base_in_flight = false;
-      self.spawn_enrichment(request_id, prefix.base_expr, &filtered);
-      if let Some(current) = &mut self.current {
-        current.suggestions.clone_from(&suggestions);
-      }
-      return CompletionResult::fresh(suggestions);
+      return CompletionResult::fresh(self.adopt_resolved(batch));
     }
 
     CompletionResult::fresh(Vec::<Suggestion>::new())
@@ -607,97 +636,49 @@ impl Completer for AttrCompleter {
 
   fn poll_completion(&mut self) -> CompletionStatus {
     let mut updated = false;
-    // Deferred out of the loop below because spawning enrichment needs
+    // Deferred out of the loop below because adopting a batch needs
     // `&mut self` as a whole, which would conflict with the `&self.rx`
     // borrow the loop holds for its duration.
-    let mut pending_enrich: Option<(u64, String, Vec<String>)> = None;
+    let mut pending_batch: Option<ResolvedBatch> = None;
 
     if let Some(rx) = &self.rx {
       loop {
         match rx.try_recv() {
-          Ok(EnrichMsg::Base { request_id, names }) => {
-            if let Some(current) = &mut self.current
-              && current.request_id == request_id
-            {
-              let (filtered, suggestions) =
-                filtered_suggestions(&names, &current.partial, current.span);
-              self.base_cache = Some(BaseCache {
-                base_expr: current.base_expr.clone(),
-                span_start: current.span.start,
-                names,
-              });
-              current.suggestions = suggestions;
-              pending_enrich =
-                Some((request_id, current.base_expr.clone(), filtered));
-              updated = true;
-            }
-            self.base_in_flight = false;
-            // A fetch for a request we've since moved past: discard - its
-            // answer is stale and nothing downstream is waiting on it.
-          },
-          Ok(EnrichMsg::Item {
-            request_id,
-            name,
-            preview,
-            has_children,
-          }) => {
-            if let Some(current) = &mut self.current
-              && current.request_id == request_id
-              && let Some(suggestion) =
-                current.suggestions.iter_mut().find(|s| s.value == name)
-            {
-              suggestion.description = Some(preview);
-              if has_children {
-                // Ready for the next level immediately on accept, instead
-                // of making the user type the `.` themselves.
-                suggestion.value = format!("{name}.");
-              }
-            }
-            // Deliberately NOT marking `updated` here - `reedline`'s menu
-            // resets the selected index on every settle it's handed (see
-            // `IdeMenu::update_values`/`reset_position`, unconditional
-            // whenever a result is adopted), and this is purely enriching
-            // entries already on screen, not changing the list itself.
-            // Resetting the user's navigation position just because one
-            // more preview finished loading reads as broken. Batched into
-            // one settle on `Done` below instead - a batch of entries all
-            // in `suggestions` already have their final descriptions by
-            // the time anything is reported `Ready`.
-            //
-            // A batch for a request we've since moved past: discard, the
-            // thread that sent it is already winding down on its own.
-          },
-          Ok(EnrichMsg::Done { request_id }) => {
+          Ok(EnrichMsg::Resolved(batch)) => {
             if self
               .current
               .as_ref()
-              .is_some_and(|c| c.request_id == request_id)
+              .is_some_and(|c| c.request_id == batch.request_id)
             {
-              self.enrichment_in_flight = false;
-              // The one settle this whole enrichment pass earns - see the
-              // `Item` arm above for why individual items don't each earn
-              // their own.
-              updated = true;
+              pending_batch = Some(batch);
             }
+            // A resolve for a request we've since moved past: discard -
+            // its answer is stale and nothing downstream is waiting on it.
+            self.resolving = false;
           },
           Err(mpsc::TryRecvError::Empty) => break,
           Err(mpsc::TryRecvError::Disconnected) => {
             self.rx = None;
-            self.base_in_flight = false;
-            self.enrichment_in_flight = false;
+            self.resolving = false;
             break;
           },
         }
       }
     }
 
-    if let Some((request_id, base_expr, names)) = pending_enrich {
-      self.spawn_enrichment(request_id, base_expr, &names);
+    if let Some(batch) = pending_batch {
+      self.adopt_resolved(batch);
+      // The one settle this request will ever earn - see the module doc
+      // comment's "one settle, never two" section. There is no later
+      // message that could mark `updated` a second time for the same
+      // request: `EnrichMsg` has exactly one variant, and
+      // `spawn_resolve` sends exactly one of it.
+      updated = true;
     }
 
     if updated {
       CompletionStatus::Ready
-    } else if self.base_in_flight || self.enrichment_in_flight {
+    } else if self.resolving {
       CompletionStatus::Pending
     } else {
       CompletionStatus::Idle
@@ -1126,7 +1107,7 @@ mod tests {
   }
 
   #[test]
-  fn enrichment_settles_once_per_batch_and_marks_children_with_a_dot() {
+  fn complete_resolves_names_and_enrichment_together_in_one_settle() {
     let daemon = MultiMiniDaemon::spawn(|expr| {
       match expr {
         "pkgs" => {
@@ -1151,14 +1132,64 @@ mod tests {
     });
     let mut completer = AttrCompleter::new(daemon.socket);
 
+    // The fake daemon answers near-instantly, so the whole resolve -
+    // names *and* their enrichment, together - lands within complete()'s
+    // own INITIAL_FETCH_GRACE window. The dot-append and the preview text
+    // are already both present in this very first result: that is the
+    // whole point of bundling them into one ResolvedBatch instead of
+    // settling for names first and enrichment later (see the module doc
+    // comment's "one settle, never two" section) - there would be
+    // nothing to show here yet under the old two-settle design.
     let first = completer.complete("pkgs.", 5);
-    let mut names: Vec<_> = first
+    let hello = first
       .suggestions()
       .iter()
-      .map(|s| s.value.clone())
-      .collect();
-    names.sort();
-    assert_eq!(names, vec!["hello".to_owned(), "world".to_owned()]);
+      .find(|s| s.value.starts_with("hello"))
+      .expect("hello present");
+    assert_eq!(hello.value, "hello.", "has children - gets the dot");
+    assert!(hello.description.is_some(), "enrichment already landed too");
+    let world = first
+      .suggestions()
+      .iter()
+      .find(|s| s.value.starts_with("world"))
+      .expect("world present");
+    assert_eq!(world.value, "world", "a leaf - no dot");
+    assert!(world.description.is_some(), "enrichment already landed too");
+
+    assert_eq!(
+      completer.poll_completion(),
+      CompletionStatus::Idle,
+      "everything already landed synchronously - nothing left to settle, and \
+       settling again later is exactly the bug this design prevents"
+    );
+  }
+
+  #[test]
+  fn a_slow_combined_resolve_still_settles_exactly_once() {
+    // Each of the fake daemon's two replies (the base fetch, then the one
+    // enrichment candidate) sleeps long enough that their *sum* clears
+    // INITIAL_FETCH_GRACE, forcing this through the async
+    // poll_completion path instead of landing inside complete()'s own
+    // bounded wait - the scenario the live bug report was about:
+    // navigating while a resolve is still in flight must not be followed
+    // by a second, later settle when names and enrichment are not both
+    // ready yet.
+    let daemon = MultiMiniDaemon::spawn(|expr| {
+      thread::sleep(std::time::Duration::from_millis(500));
+      match expr {
+        "pkgs" => ExprEvalResult::Attrs(vec!["hello".to_owned()]),
+        "pkgs.hello" => ExprEvalResult::Attrs(vec!["x86_64-linux".to_owned()]),
+        other => {
+          ExprEvalResult::Error {
+            message: format!("fixture daemon has no reply for {other:?}"),
+          }
+        },
+      }
+    });
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let first = completer.complete("pkgs.", 5);
+    assert!(first.suggestions().is_empty());
 
     let mut ready_count = 0;
     let deadline =
@@ -1171,16 +1202,16 @@ mod tests {
       }
       assert!(
         std::time::Instant::now() < deadline,
-        "enrichment never settled"
+        "resolve never settled"
       );
       thread::sleep(std::time::Duration::from_millis(5));
     }
 
     assert_eq!(
       ready_count, 1,
-      "the whole enrichment batch must settle exactly once, not once per \
-       candidate - that is what resets the user's menu selection back to the \
-       top every time one more preview finishes loading"
+      "the combined resolve must settle exactly once, not once for names and \
+       again later for their enrichment - that second settle is what reset \
+       the user's menu selection in the live report"
     );
 
     let settled = completer.complete("pkgs.", 5);
@@ -1190,12 +1221,7 @@ mod tests {
       .find(|s| s.value.starts_with("hello"))
       .expect("hello present");
     assert_eq!(hello.value, "hello.", "has children - gets the dot");
-    let world = settled
-      .suggestions()
-      .iter()
-      .find(|s| s.value.starts_with("world"))
-      .expect("world present");
-    assert_eq!(world.value, "world", "a leaf - no dot");
+    assert!(hello.description.is_some());
   }
 
   /// A fake v3 daemon answering both `ExprEval` and `ExprDoc` queries,
