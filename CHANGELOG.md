@@ -22,6 +22,12 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- `tag.yaml`'s `test` job declared `needs: tag`, so a direct `push: tags:
+  v*` event (the `tag` job's own `if` only matches `main` pushes or
+  `workflow_dispatch`) skipped `tag`, which cascade-skipped `test`, `build`,
+  and `release` even though `test`'s own `if` would have matched. Added
+  `always()` to `test`'s `if` so a skipped (not failed) `tag` no longer
+  blocks it.
 - Two public doc comments (`xi-flake::project_config::load_sources_config`,
   `xi::sources` module docs) linked to module-private items via intra-doc link
   syntax, which `cargo doc -D warnings` rejects. This was never caught before
