@@ -189,6 +189,30 @@ fn assemble_url(scheme: &str, authority: &str, path: &str) -> String {
   }
 }
 
+/// Normalise any remote URL form
+/// [`super::sources::config::validate_remote_url`] accepts to a `(host, path)`
+/// pair for `[cache.<name>].match` glob matching.
+///
+/// Built directly on [`canonicalize_url`]'s scheme table rather than a
+/// second implementation, so the two can never disagree about what a
+/// `host` or a `path` is. Returns `None` for `file://` URLs and absolute
+/// local paths: there is no remote host to match a glob against.
+#[must_use]
+pub fn remote_host_path(raw: &str) -> Option<(String, String)> {
+  let trimmed = raw.trim();
+  if trimmed.starts_with("file://")
+    || std::path::Path::new(trimmed).is_absolute()
+  {
+    return None;
+  }
+
+  let canonical = canonicalize_url(trimmed);
+  let idx = canonical.find("://")?;
+  let rest = &canonical[idx + 3..];
+  let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+  Some((host.to_owned(), path.to_owned()))
+}
+
 /// Byte offset of the scp-style `host:path` separator, if this is that form.
 ///
 /// A colon that appears *after* a slash belongs to the path, not to the
@@ -345,6 +369,13 @@ pub const STATE_FILE_NAMES: &[&str] = &[
   repair::SYNC_SENTINEL_NAME,
   receipt::RECEIPT_NAME,
   bootstrap::RECEIPT_FILE,
+  // The gitops daemon's control socket (`xi-sources-daemon::control`'s
+  // `socket_path`, `state_dir.join("control.sock")`). Not a named
+  // constant here: xi-core cannot depend on xi-sources-daemon (the
+  // dependency runs the other way), so this is the literal kept in
+  // sync by hand. A bare literal rather than a cross-crate constant is
+  // the same tradeoff every other entry above it already makes.
+  "control.sock",
 ];
 
 /// Hard cap on any single state file. The state dir holds metadata only;
