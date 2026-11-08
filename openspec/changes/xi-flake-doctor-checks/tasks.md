@@ -47,7 +47,11 @@ Live state in beads under `change:xi-flake-doctor-checks`.
       (`lib.rs:1283-1322`): one `nix eval <flake_ref>#packages.<system>
       --apply <js> --json` call returning, per package name,
       `{ description, license, maintainers, platforms, version, pname,
-      mainProgram, insecure, knownVulnerabilities, binCount }`.
+      mainProgram, insecure, knownVulnerabilities }`. **Amendment:** no
+      `binCount` field - counting executables under `bin/` requires
+      reading a package's *built* output (import-from-derivation), which
+      this eval-only call is built to avoid. See the proposal's
+      "Derivation metadata checks" note and the amended `SC-FD-009`.
 - [ ] 3.2 `check_package_meta_completeness`: `Warn` per package per missing
       one of `meta.description`/`meta.license`/`meta.maintainers`/
       `meta.platforms`, naming both the package and the specific
@@ -55,8 +59,9 @@ Live state in beads under `change:xi-flake-doctor-checks`.
 - [ ] 3.3 `check_package_version`: `Warn` when `version` is absent or
       equals the literal `"unstable"`.
 - [ ] 3.4 `check_app_main_program`: cross-reference `apps.<system>.*`
-      against the same eval result; `Warn` when `binCount > 1` and
-      `mainProgram` is unset.
+      against the same eval result; `Warn` when `mainProgram` is unset,
+      for any app-exposed package (amended - see 3.1's note; no
+      `binCount` precondition).
 - [ ] 3.5 `check_package_insecure`: `Warn` when `insecure` or
       `knownVulnerabilities` is set on a package reachable from
       default-visible outputs.

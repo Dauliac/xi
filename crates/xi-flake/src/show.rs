@@ -484,7 +484,8 @@ fn render_per_system_category(
 
   // Once "default" is deduped away (as a bare entry or as an alias), a
   // single remaining entry has nothing to be "default" relative to.
-  let effective_len = attrs.len() - if default_alias_target.is_some() { 1 } else { 0 };
+  let effective_len =
+    attrs.len() - if default_alias_target.is_some() { 1 } else { 0 };
 
   for (attr_name, entry) in &attrs {
     if attr_name == "default" && default_alias_target.is_some() {
@@ -516,7 +517,8 @@ fn render_flat_category(
 
   // Once "default" is deduped away (as a bare entry or as an alias), a
   // single remaining entry has nothing to be "default" relative to.
-  let effective_len = cat_obj.len() - if default_alias_target.is_some() { 1 } else { 0 };
+  let effective_len =
+    cat_obj.len() - if default_alias_target.is_some() { 1 } else { 0 };
 
   for (name, value) in cat_obj {
     // Skip "default" if it aliases another entry.
@@ -626,6 +628,27 @@ pub const DISCOVER_ATTRS_NIX: &str =
    builtins.elem \"drvPath\" names then null else if builtins.elem \
    \"expected\" names && builtins.elem \"expr\" names then null else \
    builtins.mapAttrs (_: go (d - 1)) v; in go 4 x";
+
+/// Nix expression applied to `packages.<system>` to pull a per-package
+/// `meta`/`pname`/`version` subset for `xi doctor`'s metadata check group
+/// (`discover_package_meta` in `lib.rs`).
+///
+/// Deliberately reads *only* `meta`, `pname`, and `version` - all plain Nix
+/// attributes available on a derivation at eval time without building
+/// anything. It MUST NOT be changed to use `builtins.readDir`,
+/// `builtins.pathExists` on a derivation output, or any other mechanism
+/// that reads a package's *built* output: that would be
+/// import-from-derivation and would silently force a full build of every
+/// package just to run `xi doctor`, defeating the point of a fast health
+/// check.
+pub const PACKAGE_META_NIX: &str = "pkgs: builtins.mapAttrs (name: pkg: let \
+   meta = pkg.meta or {}; in { hasDescription = (meta.description or null) \
+   != null; hasLicense = (meta.license or null) != null; maintainersCount = \
+   builtins.length (meta.maintainers or []); hasPlatforms = (meta.platforms \
+   or null) != null; version = pkg.version or null; pname = pkg.pname or \
+   null; mainProgram = meta.mainProgram or null; insecure = meta.insecure or \
+   false; knownVulnerabilitiesCount = builtins.length \
+   (meta.knownVulnerabilities or []); }) pkgs";
 
 /// Enrich a flake JSON by discovering children of leaf categories.
 ///

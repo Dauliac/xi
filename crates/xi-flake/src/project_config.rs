@@ -6,12 +6,12 @@ use xi_core::sources::config::{ConfigError, SourcesConfig};
 /// Project-level configuration from `.xi.toml`.
 #[derive(Debug, Default)]
 pub struct ProjectConfig {
-  pub ci:          ProjectCiConfig,
-  pub consumer:    ProjectConsumerConfig,
-  pub doctor:      ProjectDoctorConfig,
-  pub test:        ProjectTestConfig,
-  pub fmt:         ProjectFmtConfig,
-  pub sources:     SourcesConfig,
+  pub ci:       ProjectCiConfig,
+  pub consumer: ProjectConsumerConfig,
+  pub doctor:   ProjectDoctorConfig,
+  pub test:     ProjectTestConfig,
+  pub fmt:      ProjectFmtConfig,
+  pub sources:  SourcesConfig,
 }
 
 /// Formatter configuration.
@@ -77,6 +77,43 @@ pub struct ProjectDoctorConfig {
   pub require_official_nixpkgs: bool,
   /// Override the list of supported nixpkgs branches.
   pub supported_branches:       Vec<String>,
+  /// Disable the structural check group entirely
+  /// (`check_flake_description`, `check_lock_present_and_tracked`,
+  /// `check_floating_input_refs`, `check_duplicate_inputs`,
+  /// `check_dirty_tree`, `check_nixconfig_substituter_pairing`). Default:
+  /// false.
+  ///
+  /// This group is static/metadata-only (`flake.nix`/`flake.lock`/
+  /// `nix flake metadata --json`) and the cheapest of the three new groups.
+  /// A project that intentionally ships a floating-ref input, duplicate
+  /// transitive inputs, or unpaired substituters can opt out here.
+  pub disable_structure_checks: bool,
+  /// Disable the derivation-metadata check group entirely
+  /// (`check_package_meta_completeness`, `check_package_version`,
+  /// `check_app_main_program`, `check_package_insecure`). Default: false.
+  ///
+  /// This group's eval helper (`discover_package_meta` in `lib.rs`) walks
+  /// every `packages.<system>.*` attribute in a single `nix eval --apply
+  /// --json` call. Per proposal.md's Open Question 1, this is the most
+  /// expensive check group added by `xi-flake-doctor-checks`: cheap for
+  /// most flakes, but on a flake with many (O(50+)) packages the eval walk
+  /// itself can be noticeably slower than the other, purely static,
+  /// `flake.lock`/`flake.nix` checks. It still runs on-by-default (the
+  /// existing `check_formatter` already pays one unconditional eval call),
+  /// but a project that finds the cost not worth it, or that
+  /// intentionally ships undocumented internal packages, can opt out here.
+  pub disable_metadata_checks:  bool,
+  /// Disable the output-hygiene check group entirely
+  /// (`check_per_system_output_gaps`, `check_checks_output_present`,
+  /// `check_nonstandard_output_keys`). Default: false.
+  ///
+  /// This group reads one `nix flake show --json` result (fetched once via
+  /// `fetch_flake_show_json` in `lib.rs` and shared across all three
+  /// checks). A project that intentionally ships asymmetric per-system
+  /// outputs, has no `checks` output by design, or deliberately exposes
+  /// non-conventional top-level output keys can opt out of the whole group
+  /// here, same posture as `disable_metadata_checks`.
+  pub disable_output_checks:    bool,
 }
 
 /// Consumer flake configuration.
@@ -167,6 +204,27 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
         .iter()
         .filter_map(|v| v.as_str().map(String::from))
         .collect();
+    }
+
+    if let Some(disable) = doctor
+      .get("disable-structure-checks")
+      .and_then(toml_edit::Item::as_bool)
+    {
+      config.doctor.disable_structure_checks = disable;
+    }
+
+    if let Some(disable) = doctor
+      .get("disable-metadata-checks")
+      .and_then(toml_edit::Item::as_bool)
+    {
+      config.doctor.disable_metadata_checks = disable;
+    }
+
+    if let Some(disable) = doctor
+      .get("disable-output-checks")
+      .and_then(toml_edit::Item::as_bool)
+    {
+      config.doctor.disable_output_checks = disable;
     }
   }
 
@@ -300,15 +358,18 @@ pub fn load_sources_config(
 
 fn default_config() -> ProjectConfig {
   ProjectConfig {
-    ci:          ProjectCiConfig::default(),
-    consumer:    ProjectConsumerConfig::default(),
-    doctor:      ProjectDoctorConfig {
+    ci:       ProjectCiConfig::default(),
+    consumer: ProjectConsumerConfig::default(),
+    doctor:   ProjectDoctorConfig {
       max_input_age_days:       None,
       require_official_nixpkgs: true,
       supported_branches:       vec![],
+      disable_structure_checks: false,
+      disable_metadata_checks:  false,
+      disable_output_checks:    false,
     },
-    test:        ProjectTestConfig::default(),
-    fmt:         ProjectFmtConfig::default(),
-    sources:     SourcesConfig::default(),
+    test:     ProjectTestConfig::default(),
+    fmt:      ProjectFmtConfig::default(),
+    sources:  SourcesConfig::default(),
   }
 }
