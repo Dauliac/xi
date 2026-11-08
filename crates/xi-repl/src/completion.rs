@@ -316,6 +316,15 @@ impl AttrCompleter {
       {
         names.push("builtins".to_owned());
       }
+      // `builtins` carries a genuine self-reference (`builtins.builtins`
+      // really does evaluate to `builtins` again, confirmed against a
+      // real daemon) - offering it back as a child of itself invites
+      // typing `builtins.builtins.builtins.…` forever for zero payoff, so
+      // drop it specifically when `base_expr` is already `builtins` (or
+      // ends with `.builtins`).
+      if base_expr == "builtins" || base_expr.ends_with(".builtins") {
+        names.retain(|n| n != "builtins");
+      }
       let _ = tx.send(EnrichMsg::Base { request_id, names });
     });
   }
@@ -915,6 +924,28 @@ mod tests {
       .map(|s| s.value.clone())
       .collect();
     assert_eq!(names, vec!["builtins".to_owned(), "packages".to_owned()]);
+  }
+
+  #[test]
+  fn builtins_does_not_offer_itself_as_its_own_child() {
+    // `builtins.builtins` really does evaluate back to `builtins` (a
+    // genuine self-reference, confirmed against a real daemon) - showing
+    // it as a completion candidate would invite
+    // `builtins.builtins.builtins.…` forever for no payoff.
+    let daemon =
+      SlowMiniDaemon::spawn(std::time::Duration::from_millis(10), vec![
+        "add".to_owned(),
+        "builtins".to_owned(),
+      ]);
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let result = completer.complete("builtins.", 9);
+    let names: Vec<_> = result
+      .suggestions()
+      .iter()
+      .map(|s| s.value.clone())
+      .collect();
+    assert_eq!(names, vec!["add".to_owned()]);
   }
 
   /// A fake v3 daemon that counts how many connections it accepts while

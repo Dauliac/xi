@@ -3687,6 +3687,7 @@ dependencies = [
  "reedline",
  "rnix",
  "serde_json",
+ "strsim",
  "tempfile",
  "thiserror 2.0.19",
  "xi-core",

@@ -42,6 +42,7 @@ use crate::{
   highlight::NixHighlighter,
   raw,
   render,
+  suggest,
 };
 
 /// Name the completion menu is registered under, shared between
@@ -273,18 +274,21 @@ pub fn run_loop(socket_path: &Path, flake_root: &Path) -> Result<()> {
         }
 
         match eval(socket_path, flake_root, input) {
+          // A genuine evaluation failure (syntax error, undefined name,
+          // missing attribute, ...) is ordinary REPL operation, not a
+          // reason to drop the user into a whole different program - no
+          // other REPL (python, node, a real `nix repl` itself) does
+          // that for a typo or an expression typed before you finished
+          // it. Print it in xi's own prompt and keep going; `:raw` stays
+          // available as an explicit escape hatch for when the user
+          // actually wants a real `nix repl` session, never automatic.
           Ok(ExprEvalResult::Error { message }) => {
-            eprintln!("{}", Paint::new(message).fg(Color::Red));
-            eprintln!(
-              "{}",
-              Paint::new(
-                "xi repl: the daemon's eval path rejected this expression - \
-                 dropping into a real `nix repl` for it (same as typing \
-                 `:raw`)"
-              )
-              .fg(Color::Yellow)
-            );
-            handle_raw(flake_root, input);
+            eprintln!("{}", Paint::new(&message).fg(Color::Red));
+            if let Some(hint) =
+              suggest::did_you_mean(socket_path, input, &message)
+            {
+              eprintln!("{}", Paint::new(hint).fg(Color::Yellow));
+            }
           },
           Ok(result) => println!("{}", render::render(&result)),
           Err(err) => {
