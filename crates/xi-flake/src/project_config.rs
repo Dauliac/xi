@@ -6,23 +6,12 @@ use xi_core::sources::config::{ConfigError, SourcesConfig};
 /// Project-level configuration from `.xi.toml`.
 #[derive(Debug, Default)]
 pub struct ProjectConfig {
-  pub build:       ProjectBuildConfig,
-  pub ci:          ProjectCiConfig,
-  pub consumer:    ProjectConsumerConfig,
-  pub doctor:      ProjectDoctorConfig,
-  pub test:        ProjectTestConfig,
-  pub fmt:         ProjectFmtConfig,
-  pub sources:     SourcesConfig,
-}
-
-/// Build settings from the `[build]` section of `.xi.toml` or
-/// `.xi.local.toml`.
-#[derive(Debug, Default)]
-pub struct ProjectBuildConfig {
-  /// Flake input overrides, each tagged with the file it was written in so
-  /// a relative value resolves against that file's own directory rather
-  /// than the process working directory.
-  pub override_input: Vec<xi_core::override_input::Entry>,
+  pub ci:       ProjectCiConfig,
+  pub consumer: ProjectConsumerConfig,
+  pub doctor:   ProjectDoctorConfig,
+  pub test:     ProjectTestConfig,
+  pub fmt:      ProjectFmtConfig,
+  pub sources:  SourcesConfig,
 }
 
 /// Formatter configuration.
@@ -88,6 +77,43 @@ pub struct ProjectDoctorConfig {
   pub require_official_nixpkgs: bool,
   /// Override the list of supported nixpkgs branches.
   pub supported_branches:       Vec<String>,
+  /// Disable the structural check group entirely
+  /// (`check_flake_description`, `check_lock_present_and_tracked`,
+  /// `check_floating_input_refs`, `check_duplicate_inputs`,
+  /// `check_dirty_tree`, `check_nixconfig_substituter_pairing`). Default:
+  /// false.
+  ///
+  /// This group is static/metadata-only (`flake.nix`/`flake.lock`/
+  /// `nix flake metadata --json`) and the cheapest of the three new groups.
+  /// A project that intentionally ships a floating-ref input, duplicate
+  /// transitive inputs, or unpaired substituters can opt out here.
+  pub disable_structure_checks: bool,
+  /// Disable the derivation-metadata check group entirely
+  /// (`check_package_meta_completeness`, `check_package_version`,
+  /// `check_app_main_program`, `check_package_insecure`). Default: false.
+  ///
+  /// This group's eval helper (`discover_package_meta` in `lib.rs`) walks
+  /// every `packages.<system>.*` attribute in a single `nix eval --apply
+  /// --json` call. Per proposal.md's Open Question 1, this is the most
+  /// expensive check group added by `xi-flake-doctor-checks`: cheap for
+  /// most flakes, but on a flake with many (O(50+)) packages the eval walk
+  /// itself can be noticeably slower than the other, purely static,
+  /// `flake.lock`/`flake.nix` checks. It still runs on-by-default (the
+  /// existing `check_formatter` already pays one unconditional eval call),
+  /// but a project that finds the cost not worth it, or that
+  /// intentionally ships undocumented internal packages, can opt out here.
+  pub disable_metadata_checks:  bool,
+  /// Disable the output-hygiene check group entirely
+  /// (`check_per_system_output_gaps`, `check_checks_output_present`,
+  /// `check_nonstandard_output_keys`). Default: false.
+  ///
+  /// This group reads one `nix flake show --json` result (fetched once via
+  /// `fetch_flake_show_json` in `lib.rs` and shared across all three
+  /// checks). A project that intentionally ships asymmetric per-system
+  /// outputs, has no `checks` output by design, or deliberately exposes
+  /// non-conventional top-level output keys can opt out of the whole group
+  /// here, same posture as `disable_metadata_checks`.
+  pub disable_output_checks:    bool,
 }
 
 /// Consumer flake configuration.
@@ -117,43 +143,22 @@ impl Default for ProjectConsumerConfig {
 /// Load project config from `.xi.toml` in the given directory.
 pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
   let dir = flake_dir.unwrap_or_else(|| Path::new("."));
+  let config_path = dir.join(".xi.toml");
+
+  let Ok(raw) = std::fs::read_to_string(&config_path) else {
+    return default_config();
+  };
+
+  let doc = match raw.parse::<toml_edit::DocumentMut>() {
+    Ok(d) => d,
+    Err(e) => {
+      warn!("Failed to parse {}: {e}", config_path.display());
+      return default_config();
+    },
+  };
+
   let mut config = default_config();
 
-  // `.xi.toml` is committed project policy. `.xi.local.toml` is its
-  // gitignored sibling, carrying machine state that would be wrong on every
-  // other machine and in CI, so it is layered on top.
-  for file in [".xi.toml", ".xi.local.toml"] {
-    let config_path = dir.join(file);
-
-    let Ok(raw) = std::fs::read_to_string(&config_path) else {
-      continue;
-    };
-
-    let doc = match raw.parse::<toml_edit::DocumentMut>() {
-      Ok(d) => d,
-      Err(e) => {
-        warn!("Failed to parse {}: {e}", config_path.display());
-        continue;
-      },
-    };
-
-    apply_project_document(&mut config, &doc, &raw, &config_path, dir, file);
-  }
-
-  debug!(?config, "Loaded project config");
-  config
-}
-
-/// Apply one project file on top of `config`. Called for `.xi.toml` first,
-/// then `.xi.local.toml`, so later values win.
-fn apply_project_document(
-  config: &mut ProjectConfig,
-  doc: &toml_edit::DocumentMut,
-  raw: &str,
-  config_path: &Path,
-  dir: &Path,
-  file: &str,
-) {
   // [ci] section
   if let Some(ci) = doc.get("ci").and_then(|v| v.as_table()) {
     if let Some(backend) = ci.get("backend").and_then(|v| v.as_str()) {
@@ -199,6 +204,27 @@ fn apply_project_document(
         .iter()
         .filter_map(|v| v.as_str().map(String::from))
         .collect();
+    }
+
+    if let Some(disable) = doctor
+      .get("disable-structure-checks")
+      .and_then(toml_edit::Item::as_bool)
+    {
+      config.doctor.disable_structure_checks = disable;
+    }
+
+    if let Some(disable) = doctor
+      .get("disable-metadata-checks")
+      .and_then(toml_edit::Item::as_bool)
+    {
+      config.doctor.disable_metadata_checks = disable;
+    }
+
+    if let Some(disable) = doctor
+      .get("disable-output-checks")
+      .and_then(toml_edit::Item::as_bool)
+    {
+      config.doctor.disable_output_checks = disable;
     }
   }
 
@@ -301,69 +327,19 @@ fn apply_project_document(
   // never enabled sources. Commands that actually read sources config go
   // through `load_sources_config`, which is strict  -  that is what makes
   // the spec's "fails at config-load time, not at first fetch" hold.
-  // Only when the file actually carries a `[sources]` table, otherwise a
-  // `.xi.local.toml` without one would reset what `.xi.toml` configured.
-  if doc.get("sources").is_some() {
-    match SourcesConfig::from_toml_str(config_path, raw) {
-      Ok(sources) => config.sources = sources,
-      Err(e) => warn!("{e}"),
-    }
+  match SourcesConfig::from_toml_str(&config_path, &raw) {
+    Ok(sources) => config.sources = sources,
+    Err(e) => warn!("{e}"),
   }
 
-  // [build] section. New: `ProjectConfig` had no build settings before.
-  //
-  // Each value is tagged with the file it came from, because a relative
-  // path resolves against that file's own directory. Recording the source
-  // here is what makes the normalizer correct; it cannot be bolted on later.
-  if let Some(build) = doc.get("build").and_then(|v| v.as_table())
-    && let Some(item) = build.get("override_input")
-  {
-    let source = if file == ".xi.local.toml" {
-      xi_core::override_input::OverrideSource::ProjectLocalToml {
-        dir: dir.to_path_buf(),
-      }
-    } else {
-      xi_core::override_input::OverrideSource::ProjectToml {
-        dir: dir.to_path_buf(),
-      }
-    };
-
-    let pairs: Vec<(String, String)> = match item {
-      toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
-        t.iter()
-          .filter_map(|(k, v)| {
-            v.as_str().map(|s| (k.to_string(), s.to_string()))
-          })
-          .collect()
-      },
-      toml_edit::Item::Table(t) => {
-        t.iter()
-          .filter_map(|(k, v)| {
-            v.as_str().map(|s| (k.to_string(), s.to_string()))
-          })
-          .collect()
-      },
-      _ => Vec::new(),
-    };
-
-    for (name, value) in pairs {
-      // A later file replaces an earlier one per input name.
-      config.build.override_input.retain(|e| e.name != name);
-      config
-        .build
-        .override_input
-        .push(xi_core::override_input::Entry::new(
-          name,
-          value,
-          source.clone(),
-        ));
-    }
-  }
+  debug!(?config, "Loaded project config from .xi.toml");
+  config
 }
 
 /// Load and validate the `.xi.toml [sources]` section, strictly.
 ///
-/// Unlike `load_project_config`, a malformed `[sources]` block is an
+/// Unlike `load_project_config`, which is crate-private and warns, a
+/// malformed `[sources]` block is an
 /// error rather than a warning: an operator who misspells `remote` must
 /// find out at config-load time, not when a gitops daemon silently never
 /// advances. A missing `.xi.toml`, or one without a `[sources]` table, is
@@ -382,16 +358,18 @@ pub fn load_sources_config(
 
 fn default_config() -> ProjectConfig {
   ProjectConfig {
-    build:       ProjectBuildConfig::default(),
-    ci:          ProjectCiConfig::default(),
-    consumer:    ProjectConsumerConfig::default(),
-    doctor:      ProjectDoctorConfig {
+    ci:       ProjectCiConfig::default(),
+    consumer: ProjectConsumerConfig::default(),
+    doctor:   ProjectDoctorConfig {
       max_input_age_days:       None,
       require_official_nixpkgs: true,
       supported_branches:       vec![],
+      disable_structure_checks: false,
+      disable_metadata_checks:  false,
+      disable_output_checks:    false,
     },
-    test:        ProjectTestConfig::default(),
-    fmt:         ProjectFmtConfig::default(),
-    sources:     SourcesConfig::default(),
+    test:     ProjectTestConfig::default(),
+    fmt:      ProjectFmtConfig::default(),
+    sources:  SourcesConfig::default(),
   }
 }

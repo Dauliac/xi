@@ -137,18 +137,38 @@ placeholder `"unstable"`.
 - **WHEN** `xi doctor` runs
 - **THEN** it reports a `Warn` naming the missing version
 
-### Requirement: Doctor flags multi-binary apps missing mainProgram
+### Requirement: Doctor flags apps missing mainProgram
 
 `xi doctor` MUST check, for each package exposed via `apps.<system>.*`,
-whether its derivation's `bin/` output contains more than one executable
-and `meta.mainProgram` is unset, emitting a `Warn` when both hold.
+whether `meta.mainProgram` is unset, emitting a `Warn` naming the app when
+it is - regardless of how many executables the package's `bin/` output
+actually contains.
 
-#### Scenario: Ambiguous multi-binary app warns
+> **Amendment note:** an earlier draft of this Requirement additionally
+> required counting executables under `bin/` and warning only when there
+> were two or more. That precondition was dropped during implementation:
+> counting `bin/` entries requires reading a package's *built* output
+> (e.g. `builtins.readDir` on `${pkg}/bin`), which is
+> import-from-derivation and would force building every app-exposed
+> package just to run `xi doctor` - defeating the point of this
+> eval-only, fast health-check group (see the proposal's "Derivation
+> metadata checks" note). This amendment supersedes the original
+> `SC-FD-009` wording in `proposal.md`.
 
-- **GIVEN** a package exposed via `apps.<system>.foo` whose `bin/`
-  contains two executables and no `meta.mainProgram`
+#### Scenario: App without mainProgram warns
+
+- **GIVEN** a package exposed via `apps.<system>.foo` with no
+  `meta.mainProgram` set
 - **WHEN** `xi doctor` runs
-- **THEN** it reports a `Warn` naming the app and its ambiguous binaries
+- **THEN** it reports a `Warn` naming the app and its missing
+  `meta.mainProgram`
+
+#### Scenario: App with mainProgram does not warn
+
+- **GIVEN** a package exposed via `apps.<system>.foo` with
+  `meta.mainProgram` set
+- **WHEN** `xi doctor` runs
+- **THEN** no warning is reported for that app
 
 ### Requirement: Doctor flags insecure packages reachable from default outputs
 

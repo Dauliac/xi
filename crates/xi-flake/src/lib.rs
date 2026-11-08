@@ -1291,6 +1291,44 @@ pub(crate) fn run_exec_streaming(base_command: Exec) -> Result<()> {
 
 /// Discover children of leaf flake output categories using `nix eval`.
 ///
+/// Fetch `nix flake show --json` for `flake_ref`, parsed as JSON.
+///
+/// Mirrors the same `nix flake show --json` invocation `ShowArgs::run`
+/// builds for its own compact-mode rendering, but as a standalone helper
+/// callable without the `--show-trace`/passthrough-extra-args handling
+/// that command-line entry point also supports. Used by `doctor`'s
+/// output-hygiene check group (`check_per_system_output_gaps`,
+/// `check_checks_output_present`, `check_nonstandard_output_keys` -
+/// xi-spmx.4.2-4.4), which fetches this once per `xi doctor` run and
+/// shares the result across all three checks rather than shelling out
+/// three times.
+///
+/// # Errors
+///
+/// Returns an error if `nix flake show --json` fails to start, exits
+/// non-zero, or its stdout doesn't parse as JSON.
+pub(crate) fn fetch_flake_show_json(flake_ref: &str) -> Result<serde_json::Value> {
+  let cmd = NixCommand::new(CommandKind::Flake)
+    .arg("show")
+    .arg("--json")
+    .arg(flake_ref);
+
+  debug!(argv = ?cmd.argv(), "Fetching nix flake show --json");
+
+  let output = cmd.output().map_err(|e| {
+    color_eyre::eyre::eyre!("nix flake show --json failed: {e}")
+  })?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!("nix flake show failed:\n{stderr}");
+  }
+
+  serde_json::from_slice(&output.stdout).map_err(|e| {
+    color_eyre::eyre::eyre!("Failed to parse flake show output: {e}")
+  })
+}
+
 /// For each category name, runs `nix eval <flake>#<cat> --apply <expr> --json`
 /// to recursively discover attribute names. Returns a list of
 /// `(category_name, discovered_tree)` pairs.
@@ -1340,6 +1378,107 @@ fn discover_single_category(
   }
 
   Some(value)
+}
+
+// ---------------------------------------------------------------------------
+// Package metadata discovery (nix eval, for `xi doctor`'s metadata checks)
+// ---------------------------------------------------------------------------
+
+/// Per-package `meta`/`pname`/`version` subset discovered from
+/// `packages.<system>.*`, used by `doctor`'s metadata check group
+/// (`check_package_meta_completeness`, `check_package_version`,
+/// `check_app_main_program`, `check_package_insecure`).
+///
+/// Field names are `snake_case` on the Rust side and deserialize from the
+/// `camelCase` JSON keys produced by [`show::PACKAGE_META_NIX`] via
+/// `#[serde(rename_all = "camelCase")]`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageMetaInfo {
+  pub has_description:            bool,
+  pub has_license:                bool,
+  pub maintainers_count:          u64,
+  pub has_platforms:              bool,
+  pub version:                    Option<String>,
+  pub pname:                      Option<String>,
+  pub main_program:               Option<String>,
+  pub insecure:                   bool,
+  pub known_vulnerabilities_count: u64,
+}
+
+/// Discover per-package metadata for every package under
+/// `packages.<system>.*` using one `nix eval --apply --json` call.
+///
+/// The apply expression is [`show::PACKAGE_META_NIX`] - see its doc comment
+/// for the exact shape and why it deliberately avoids
+/// import-from-derivation (it only reads `meta`/`pname`/`version`, never a
+/// package's built output).
+///
+/// # Errors
+///
+/// Returns an error if `nix eval` fails to start, exits non-zero, or its
+/// JSON output doesn't deserialize into the expected per-package shape.
+pub(crate) fn discover_package_meta(
+  flake_ref: &str,
+  system: &str,
+) -> Result<std::collections::HashMap<String, PackageMetaInfo>> {
+  let attr = format!("{flake_ref}#packages.{system}");
+
+  debug!(attr, "Discovering package meta");
+
+  let cmd = NixCommand::new(CommandKind::Eval)
+    .arg(&attr)
+    .arg("--apply")
+    .arg(show::PACKAGE_META_NIX)
+    .arg("--json");
+
+  let output = cmd.output()?;
+  if !output.status.success() {
+    bail!(
+      "nix eval for package meta ({attr}) failed: {}",
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  let value = serde_json::from_slice(&output.stdout)?;
+  Ok(value)
+}
+
+/// Discover the attribute names exposed via `apps.<system>.*` using one
+/// `nix eval --apply builtins.attrNames --json` call.
+///
+/// `builtins.attrNames` only reads the attrset's keys, never forcing
+/// evaluation of each app's `program`/`type` fields beyond their own
+/// (eval-time-cheap) values - no import-from-derivation.
+///
+/// # Errors
+///
+/// Returns an error if `nix eval` fails to start, exits non-zero, or its
+/// JSON output doesn't deserialize into a list of strings.
+pub(crate) fn discover_app_names(
+  flake_ref: &str,
+  system: &str,
+) -> Result<Vec<String>> {
+  let attr = format!("{flake_ref}#apps.{system}");
+
+  debug!(attr, "Discovering app names");
+
+  let cmd = NixCommand::new(CommandKind::Eval)
+    .arg(&attr)
+    .arg("--apply")
+    .arg("builtins.attrNames")
+    .arg("--json");
+
+  let output = cmd.output()?;
+  if !output.status.success() {
+    bail!(
+      "nix eval for app names ({attr}) failed: {}",
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  let value = serde_json::from_slice(&output.stdout)?;
+  Ok(value)
 }
 
 // ---------------------------------------------------------------------------
