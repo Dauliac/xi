@@ -22,6 +22,13 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- `tag.yaml`'s `build` and `release` jobs still skipped on a direct tag push
+  even after the `test`-job fix below, because a job `if` that does not call
+  a status-check function gets an implicit `success()` ANDed in, and
+  `success()` considers the whole transitive `needs` chain, not just the
+  job's direct `needs` - `build` (via `test`) and `release` (via `build`)
+  both transitively depend on the deliberately-skipped `tag` job. Both now
+  check `needs.<job>.result == 'success'` explicitly under `always()`.
 - `tag.yaml`'s `test` job declared `needs: tag`, so a direct `push: tags:
   v*` event (the `tag` job's own `if` only matches `main` pushes or
   `workflow_dispatch`) skipped `tag`, which cascade-skipped `test`, `build`,
