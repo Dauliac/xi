@@ -201,9 +201,16 @@ enum EnrichMsg {
   },
   /// One candidate's preview text is ready.
   Item {
-    request_id: u64,
-    name:       String,
-    preview:    String,
+    request_id:   u64,
+    name:         String,
+    preview:      String,
+    /// Whether the candidate classified as a plain (non-derivation)
+    /// attrset - i.e. it has children reachable by dotting into it, the
+    /// same `kind: "attrs"` case `v3_handlers::classify_wrapper`'s shallow
+    /// tail reports. Drives auto-appending `.` to the suggestion so
+    /// accepting it is immediately ready for the next level instead of
+    /// making the user type the dot themselves.
+    has_children: bool,
   },
   /// The enrichment thread has sent every candidate in its window and is
   /// about to exit.
@@ -334,7 +341,7 @@ impl AttrCompleter {
         } else {
           format!("{base_expr}.{name}")
         };
-        let preview = client_v3::expr_eval(&socket_path, &full_path, true)
+        let classified = client_v3::expr_eval(&socket_path, &full_path, true)
           .ok()
           .and_then(|outcome| {
             match outcome {
@@ -343,26 +350,32 @@ impl AttrCompleter {
               })) => Some(value),
               _ => None,
             }
-          })
-          .map(|value| {
-            if matches!(value, ExprEvalResult::Lambda) {
-              // A plain "<lambda>" placeholder is a dead end for exactly
-              // the candidates a user most wants documentation for -
-              // nix's own functions. Try real `nix repl`-backed docs
-              // first (see Query::ExprDoc's doc comment); fall back to
-              // the placeholder only when there genuinely are none.
-              doc_preview_or_fallback(&socket_path, &full_path, &value)
-            } else {
-              crate::render::strip_ansi(&crate::render::render(&value))
-            }
           });
+        let Some(value) = classified else { continue };
 
-        let Some(preview) = preview else { continue };
+        // A plain (non-derivation) attrset has children reachable by
+        // dotting into it - flagged here, before `value` is consumed
+        // below, so the suggestion can offer the `.` itself instead of
+        // making the user type it blind.
+        let has_children = matches!(value, ExprEvalResult::Attrs(_));
+
+        let preview = if matches!(value, ExprEvalResult::Lambda) {
+          // A plain "<lambda>" placeholder is a dead end for exactly the
+          // candidates a user most wants documentation for - nix's own
+          // functions. Try real `nix repl`-backed docs first (see
+          // Query::ExprDoc's doc comment); fall back to the placeholder
+          // only when there genuinely are none.
+          doc_preview_or_fallback(&socket_path, &full_path, &value)
+        } else {
+          crate::render::strip_ansi(&crate::render::render(&value))
+        };
+
         if tx
           .send(EnrichMsg::Item {
             request_id,
             name,
             preview,
+            has_children,
           })
           .is_err()
         {
@@ -580,6 +593,7 @@ impl Completer for AttrCompleter {
             request_id,
             name,
             preview,
+            has_children,
           }) => {
             if let Some(current) = &mut self.current
               && current.request_id == request_id
@@ -587,8 +601,23 @@ impl Completer for AttrCompleter {
                 current.suggestions.iter_mut().find(|s| s.value == name)
             {
               suggestion.description = Some(preview);
-              updated = true;
+              if has_children {
+                // Ready for the next level immediately on accept, instead
+                // of making the user type the `.` themselves.
+                suggestion.value = format!("{name}.");
+              }
             }
+            // Deliberately NOT marking `updated` here - `reedline`'s menu
+            // resets the selected index on every settle it's handed (see
+            // `IdeMenu::update_values`/`reset_position`, unconditional
+            // whenever a result is adopted), and this is purely enriching
+            // entries already on screen, not changing the list itself.
+            // Resetting the user's navigation position just because one
+            // more preview finished loading reads as broken. Batched into
+            // one settle on `Done` below instead - a batch of entries all
+            // in `suggestions` already have their final descriptions by
+            // the time anything is reported `Ready`.
+            //
             // A batch for a request we've since moved past: discard, the
             // thread that sent it is already winding down on its own.
           },
@@ -599,6 +628,10 @@ impl Completer for AttrCompleter {
               .is_some_and(|c| c.request_id == request_id)
             {
               self.enrichment_in_flight = false;
+              // The one settle this whole enrichment pass earns - see the
+              // `Item` arm above for why individual items don't each earn
+              // their own.
+              updated = true;
             }
           },
           Err(mpsc::TryRecvError::Empty) => break,
@@ -959,5 +992,141 @@ mod tests {
       .map(|s| s.value.clone())
       .collect();
     assert_eq!(names, vec!["hello".to_owned()]);
+  }
+
+  /// A fake v3 daemon that keeps accepting connections (unlike
+  /// [`SlowMiniDaemon`]'s single `accept()`) and answers each `ExprEval`
+  /// query via `responder` - needed here because a base fetch plus its
+  /// window of enrichment candidates each open their own connection (see
+  /// `client_v3`'s "stateless per call" doc comment).
+  struct MultiMiniDaemon {
+    socket:  PathBuf,
+    _handle: thread::JoinHandle<()>,
+    _tmp:    tempfile::TempDir,
+  }
+
+  impl MultiMiniDaemon {
+    fn spawn<F>(responder: F) -> Self
+    where
+      F: Fn(&str) -> ExprEvalResult + Send + 'static,
+    {
+      use std::{
+        io::{BufReader, BufWriter},
+        os::unix::net::UnixListener,
+      };
+
+      use xi_develop::daemon::protocol_v3::{Envelope, Payload, Query, Reply};
+
+      let tmp = tempfile::tempdir().expect("mktemp");
+      let socket = tmp.path().join("v3.sock");
+      let listener = UnixListener::bind(&socket).expect("bind");
+
+      let (ready_tx, ready_rx) = mpsc::channel::<()>();
+      let handle = thread::spawn(move || {
+        ready_tx.send(()).ok();
+        for stream in listener.incoming() {
+          let Ok(stream) = stream else { break };
+          let mut reader = BufReader::new(&stream);
+          let mut writer = BufWriter::new(&stream);
+          let Ok(env) = xi_develop::daemon::protocol::read_message::<_, Envelope>(
+            &mut reader,
+          ) else {
+            continue;
+          };
+          let Payload::Query(Query::ExprEval { expr, .. }) = env.payload else {
+            continue;
+          };
+          let value = responder(&expr);
+          let reply = Envelope::new(
+            env.id,
+            Payload::Reply(Reply::Query(QueryReply::ExprEval(
+              Availability::Ready { value },
+            ))),
+          );
+          let _ =
+            xi_develop::daemon::protocol::write_message(&mut writer, &reply);
+        }
+      });
+      ready_rx.recv().expect("listener ready");
+
+      Self {
+        socket,
+        _handle: handle,
+        _tmp: tmp,
+      }
+    }
+  }
+
+  #[test]
+  fn enrichment_settles_once_per_batch_and_marks_children_with_a_dot() {
+    let daemon = MultiMiniDaemon::spawn(|expr| {
+      match expr {
+        "pkgs" => {
+          ExprEvalResult::Attrs(vec!["hello".to_owned(), "world".to_owned()])
+        },
+        // "hello" has children of its own - should get a trailing `.`.
+        "pkgs.hello" => ExprEvalResult::Attrs(vec!["x86_64-linux".to_owned()]),
+        // "world" is a leaf - should not.
+        "pkgs.world" => {
+          ExprEvalResult::Derivation {
+            name:        Some("world".to_owned()),
+            version:     None,
+            description: None,
+          }
+        },
+        other => {
+          ExprEvalResult::Error {
+            message: format!("fixture daemon has no reply for {other:?}"),
+          }
+        },
+      }
+    });
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let first = completer.complete("pkgs.", 5);
+    let mut names: Vec<_> = first
+      .suggestions()
+      .iter()
+      .map(|s| s.value.clone())
+      .collect();
+    names.sort();
+    assert_eq!(names, vec!["hello".to_owned(), "world".to_owned()]);
+
+    let mut ready_count = 0;
+    let deadline =
+      std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+      match completer.poll_completion() {
+        CompletionStatus::Ready => ready_count += 1,
+        CompletionStatus::Idle => break,
+        CompletionStatus::Pending => {},
+      }
+      assert!(
+        std::time::Instant::now() < deadline,
+        "enrichment never settled"
+      );
+      thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert_eq!(
+      ready_count, 1,
+      "the whole enrichment batch must settle exactly once, not once per \
+       candidate - that is what resets the user's menu selection back to the \
+       top every time one more preview finishes loading"
+    );
+
+    let settled = completer.complete("pkgs.", 5);
+    let hello = settled
+      .suggestions()
+      .iter()
+      .find(|s| s.value.starts_with("hello"))
+      .expect("hello present");
+    assert_eq!(hello.value, "hello.", "has children - gets the dot");
+    let world = settled
+      .suggestions()
+      .iter()
+      .find(|s| s.value.starts_with("world"))
+      .expect("world present");
+    assert_eq!(world.value, "world", "a leaf - no dot");
   }
 }
