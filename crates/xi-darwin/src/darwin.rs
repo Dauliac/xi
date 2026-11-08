@@ -227,14 +227,12 @@ impl DarwinRebuildArgs {
     }
 
     if matches!(variant, Switch) {
-      Command::new(find_real_nix_binary())
+      let set_profile = Command::new(find_real_nix_binary())
         .args(["build", "--no-link", "--profile", SYSTEM_PROFILE])
         .arg(&out_path)
         .elevate(Some(elevation.clone()))
         .dry(self.common.dry)
-        .with_required_env()
-        .run()
-        .wrap_err("Failed to set Darwin system profile")?;
+        .with_required_env();
 
       let darwin_rebuild = out_path.join("sw/bin/darwin-rebuild");
       let activate_user = out_path.join("activate-user");
@@ -247,16 +245,24 @@ impl DarwinRebuildArgs {
           .context("Failed to read activate-user file")?
           .contains("# nix-darwin: deprecated");
 
-      // Create and run the activation command with or without elevation
-      Command::new(darwin_rebuild)
+      let activate = Command::new(darwin_rebuild)
         .arg("activate")
         .message("Activating configuration")
         .elevate(needs_elevation.then_some(elevation))
         .dry(self.common.dry)
         .show_output(self.show_activation_logs)
-        .with_required_env()
-        .run()
-        .wrap_err("Darwin activation failed")?;
+        .with_required_env();
+
+      if needs_elevation {
+        // Both steps need root: join them into one elevation prompt
+        // instead of sudo-ing twice in a row (visibly, a GUI askpass
+        // or Touch ID popup shown twice for a single `switch`).
+        Command::run_elevated_batch(&[set_profile, activate])
+          .wrap_err("Darwin activation failed")?;
+      } else {
+        set_profile.run().wrap_err("Failed to set Darwin system profile")?;
+        activate.run().wrap_err("Darwin activation failed")?;
+      }
 
       if !self.common.dry {
         xi_core::sources::switch::record_activation(

@@ -155,25 +155,26 @@ impl SystemRebuildArgs {
         .canonicalize()
         .context("Failed to resolve output path to store path")?;
 
-      Command::new(find_real_nix_binary())
+      let set_profile = Command::new(find_real_nix_binary())
         .args(["build", "--no-link", "--profile", SYSTEM_PROFILE])
         .arg(&store_path)
         .elevate(Some(elevation.clone()))
         .dry(self.common.dry)
-        .with_required_env()
-        .run()
-        .wrap_err("Failed to register system-manager profile")?;
+        .with_required_env();
 
       // Activate: run the activate script from the built store path
       let activate_script = out_path.join("bin/activate");
 
-      Command::new(activate_script)
+      let activate = Command::new(activate_script)
         .message("Activating system-manager configuration")
         .elevate(Some(elevation))
         .dry(self.common.dry)
         .show_output(self.show_activation_logs)
-        .with_required_env()
-        .run()
+        .with_required_env();
+
+      // Both steps need root: join them into one elevation prompt
+      // instead of sudo-ing twice in a row.
+      Command::run_elevated_batch(&[set_profile, activate])
         .wrap_err("system-manager activation failed")?;
 
       if !self.common.dry {

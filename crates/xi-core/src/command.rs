@@ -706,26 +706,10 @@ impl Command {
       pre_args.extend(get_sudo_opts());
     }
 
-    // XI_PRESERVE_ENV: set to "0" to disable preserving environment
-    // variables, "1" to force, unset defaults to force
-    let preserve_env = env::var("XI_PRESERVE_ENV")
-      .as_deref()
-      .map_or(true, |x| !matches!(x, "0"));
-
-    let mut env_args = Vec::new();
-    for (key, action) in &self.env_vars {
-      match action {
-        EnvAction::Set(value) => {
-          env_args.push(format!("{key}={value}"));
-        },
-        EnvAction::Preserve if preserve_env => {
-          if let Ok(value) = env::var(key) {
-            env_args.push(format!("{key}={value}"));
-          }
-        },
-        _ => {},
-      }
-    }
+    let env_args = Self::env_assignments(&self.env_vars)
+      .into_iter()
+      .map(|(key, value)| format!("{key}={value}"))
+      .collect();
 
     Ok(SudoSpec {
       program_path,
@@ -733,6 +717,35 @@ impl Command {
       pre_args,
       env_args,
     })
+  }
+
+  /// Resolve `env_vars` to the `(key, value)` pairs that should actually
+  /// reach the child, honouring `XI_PRESERVE_ENV` (set to `"0"` to
+  /// disable preserving variables marked [`EnvAction::Preserve`]).
+  ///
+  /// Shared by [`Self::resolve_sudo_spec`] (consumed as bare argv, no
+  /// quoting needed) and [`Self::run_elevated_batch`] (shell-quoted,
+  /// since those tokens land inside an `sh -c` script).
+  fn env_assignments(
+    env_vars: &HashMap<String, EnvAction>,
+  ) -> Vec<(String, String)> {
+    let preserve_env = env::var("XI_PRESERVE_ENV")
+      .as_deref()
+      .map_or(true, |x| !matches!(x, "0"));
+
+    let mut assignments = Vec::new();
+    for (key, action) in env_vars {
+      match action {
+        EnvAction::Set(value) => assignments.push((key.clone(), value.clone())),
+        EnvAction::Preserve if preserve_env => {
+          if let Ok(value) = env::var(key) {
+            assignments.push((key.clone(), value));
+          }
+        },
+        _ => {},
+      }
+    }
+    assignments
   }
 
   /// Creates an `Exec` that elevates the program with proper environment
@@ -944,6 +957,161 @@ impl Command {
     } else {
       let res = cmd.capture();
       match res {
+        Ok(capture) => {
+          let status = &capture.exit_status;
+          if !status.success() {
+            let stderr = capture.stderr_str();
+            if stderr.trim().is_empty() {
+              return Err(eyre::eyre!(format!(
+                "{} (exit status {:?})",
+                msg, status
+              )));
+            }
+            return Err(eyre::eyre!(format!(
+              "{} (exit status {:?})\nstderr:\n{}",
+              msg, status, stderr
+            )));
+          }
+          Ok(())
+        },
+        Err(e) => Err(e).wrap_err(msg),
+      }
+    }
+  }
+
+  /// Join `steps`' argv (each with its own per-step env assignments)
+  /// into a single `&&`-chained `sh -c` script, so each step's own
+  /// shell token is independently quoted. Shared by
+  /// [`Self::build_elevated_batch_cmd`] and its tests.
+  fn elevated_batch_script(steps: &[Self]) -> String {
+    let mut script_parts = Vec::with_capacity(steps.len());
+    for step in steps {
+      let mut tokens = Vec::new();
+
+      for (key, value) in Self::env_assignments(&step.env_vars) {
+        let quoted =
+          shlex::try_quote(&value).unwrap_or_else(|_| value.clone().into());
+        tokens.push(format!("{key}={quoted}"));
+      }
+
+      let command_str = step.command.to_string_lossy();
+      tokens.push(
+        shlex::try_quote(&command_str)
+          .unwrap_or_else(|_| command_str.clone())
+          .into_owned(),
+      );
+      for arg in &step.args {
+        let arg_str = arg.to_string_lossy();
+        tokens.push(
+          shlex::try_quote(&arg_str)
+            .unwrap_or_else(|_| arg_str.clone())
+            .into_owned(),
+        );
+      }
+
+      script_parts.push(tokens.join(" "));
+    }
+    script_parts.join(" && ")
+  }
+
+  /// Build the single elevated `sh -c` [`Exec`] for `steps`, using the
+  /// first step's elevation strategy. Callers must have already
+  /// checked `steps` is non-empty and its first step is elevated.
+  fn build_elevated_batch_cmd(steps: &[Self]) -> Result<Exec> {
+    let first = &steps[0];
+    let spec = first.resolve_sudo_spec()?;
+    let script = Self::elevated_batch_script(steps);
+
+    let mut cmd = Exec::cmd(&spec.program_path);
+
+    if spec.program_kind.supports_askpass()
+      && !matches!(first.elevate.as_ref(), Some(ElevationStrategy::Passwordless))
+      && let Ok(askpass) = env::var("XI_SUDO_ASKPASS")
+    {
+      cmd = cmd.env("SUDO_ASKPASS", askpass);
+    }
+
+    for arg in &spec.pre_args {
+      cmd = cmd.arg(arg);
+    }
+    Ok(cmd.arg("sh").arg("-c").arg(&script))
+  }
+
+  /// Run several related local commands that each need the same
+  /// elevation as ONE elevation prompt, instead of one per command.
+  ///
+  /// A `nixos`/`darwin`/`system-manager` activation is really a short
+  /// sequence of root-only steps (set the system profile, then run
+  /// `switch-to-configuration`/`activate`). Calling [`Self::run`] on
+  /// each separately spawns a fresh `sudo`/`doas`/`pkexec` per step;
+  /// with a GUI askpass or Touch ID (`pam_tid`) that shows as a
+  /// separate popup per step rather than once for the whole
+  /// activation, since those typically re-prompt per invocation even
+  /// within sudo's own timestamp cache window. This instead joins the
+  /// steps' argv (each with its own per-step env assignments) into a
+  /// single `sh -c 'step1 && step2 && ...'` script and wraps *that* in
+  /// one elevation invocation, so a failing step aborts the rest
+  /// exactly as the sequential `?`-chained calls did.
+  ///
+  /// If the first step isn't elevated, elevation wasn't needed for
+  /// this run (already root, `--elevation-strategy=none`, etc.) -
+  /// every step is expected to share that, so each runs via
+  /// [`Self::run`] directly rather than through an elevation program
+  /// at all.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the elevation program cannot be resolved, if
+  /// any step's command/args contain invalid UTF-8, or if the combined
+  /// script (or, when unelevated, any individual step) exits non-zero.
+  pub fn run_elevated_batch(steps: &[Self]) -> Result<()> {
+    let Some(first) = steps.first() else {
+      return Ok(());
+    };
+
+    if first.elevate.is_none() {
+      for step in steps {
+        step.run()?;
+      }
+      return Ok(());
+    }
+
+    let dry = steps.iter().any(|step| step.dry);
+    let show_output = steps.iter().any(|step| step.show_output);
+
+    for step in steps {
+      if let Some(m) = &step.message {
+        info!("{m}");
+      }
+    }
+
+    let cmd = Self::build_elevated_batch_cmd(steps)?;
+
+    let cmd = if show_output {
+      cmd.stderr(Redirection::Merge)
+    } else {
+      cmd.stderr(Redirection::None).stdout(Redirection::None)
+    };
+
+    debug!(?cmd);
+
+    if dry {
+      return Ok(());
+    }
+
+    let msg = "Elevated batch command failed".to_string();
+
+    if show_output {
+      let exit_status = cmd.join().wrap_err(msg.clone())?;
+      if !exit_status.success() {
+        return Err(eyre::eyre!(format!(
+          "{} (exit status {:?})",
+          msg, exit_status
+        )));
+      }
+      Ok(())
+    } else {
+      match cmd.capture() {
         Ok(capture) => {
           let status = &capture.exit_status;
           if !status.success() {
@@ -1574,6 +1742,58 @@ mod tests {
     // The important thing is that NIX_CONFIG appears properly quoted,
     // which prevents shell parsing issues
     assert!(cmdline.contains("'NIX_CONFIG="));
+  }
+
+  #[test]
+  fn test_elevated_batch_joins_steps_into_one_sudo_invocation() {
+    let steps = vec![
+      Command::new("/bin/one")
+        .arg("a")
+        .elevate(Some(ElevationStrategy::Force("sudo"))),
+      Command::new("/bin/two")
+        .arg("b")
+        .elevate(Some(ElevationStrategy::Force("sudo"))),
+    ];
+
+    let exec = Command::build_elevated_batch_cmd(&steps)
+      .expect("build_elevated_batch_cmd should succeed in test");
+    let cmdline = exec.to_cmdline_lossy();
+
+    // Exactly one sudo invocation...
+    assert_eq!(
+      cmdline.split_whitespace().filter(|t| t.ends_with("sudo")).count(),
+      1
+    );
+    // ...wrapping a single script that chains both steps with `&&`.
+    assert!(cmdline.contains("/bin/one a && /bin/two b"));
+  }
+
+  #[test]
+  fn test_elevated_batch_script_quotes_each_step_independently() {
+    let steps = vec![
+      Command::new("/bin/one").arg("has space"),
+      Command::new("/bin/two").set_env("KEY", "value with space"),
+    ];
+
+    let script = Command::elevated_batch_script(&steps);
+    assert_eq!(
+      script,
+      "/bin/one 'has space' && KEY='value with space' /bin/two"
+    );
+  }
+
+  #[test]
+  fn test_run_elevated_batch_without_elevation_runs_each_step() {
+    // No elevation set: run_elevated_batch must not require (or
+    // resolve) an elevation program at all.
+    let steps = [Command::new("true").dry(true), Command::new("true").dry(true)];
+    Command::run_elevated_batch(&steps)
+      .expect("unelevated batch should just run each step");
+  }
+
+  #[test]
+  fn test_run_elevated_batch_empty_is_noop() {
+    Command::run_elevated_batch(&[]).expect("an empty batch should be a no-op");
   }
 
   #[test]
