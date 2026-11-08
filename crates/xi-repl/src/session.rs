@@ -233,15 +233,81 @@ fn build_line_editor(
       .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
       .with_edit_mode(edit_mode)
       .with_highlighter(Box::new(NixHighlighter))
-      .with_history(history),
+      .with_history(history)
+      // Without this, a pasted multi-line blob arrives as the same raw
+      // keystroke stream as typing it character by character - each
+      // embedded newline hits reedline's own Enter handling immediately,
+      // submitting (and evaluating) whatever was pasted before it, with
+      // no guarantee the rest of the paste is still there to read by the
+      // time the next `read_line` call starts polling. `reedline`'s own
+      // docs name this exact failure mode and recommend this exact fix:
+      // with it enabled, the whole paste lands as one
+      // `EditCommand::InsertString` instead, letting the loop see it
+      // intact (see `run_loop`'s doc comment for what it does with a
+      // multi-line submission once it has one). No `Event::Paste` path
+      // exists on Windows (stock crossterm reads console input without
+      // an ANSI parser there), hence the `cfg!`.
+      .use_bracketed_paste(cfg!(not(target_os = "windows"))),
   )
+}
+
+/// Build the right-hand prompt segment identifying which flake this
+/// session is open against - just the directory's own name (e.g.
+/// `flake:impl-xi-repl`), shown only when `flake_root` actually has a
+/// `flake.nix` at all (a bare "no flake detected" session, e.g. against a
+/// throwaway fixture directory, gets the empty segment it always had).
+///
+/// This is deliberately minimal: a quick "which of several open sessions/
+/// worktrees is this one" glance, not a dashboard. `flake_root`'s own
+/// basename is always available with no extra eval round-trip, unlike
+/// e.g. the flake's own `description` (would need an `ExprEval` call) or
+/// git-dirty status (would need a `git` invocation) - either could be a
+/// reasonable follow-up if a session identifier alone isn't enough.
+fn flake_right_prompt_segment(flake_root: &Path) -> DefaultPromptSegment {
+  if !flake_root.join("flake.nix").is_file() {
+    return DefaultPromptSegment::Empty;
+  }
+  let name = flake_root.file_name().map_or_else(
+    || flake_root.display().to_string(),
+    |n| n.to_string_lossy().into_owned(),
+  );
+  DefaultPromptSegment::Basic(format!("flake:{name}"))
 }
 
 /// Run the reedline read-eval-print loop against `socket_path`.
 ///
-/// One expression per line; `reedline`'s own multiline handling (quote/paren
-/// balancing) is used as-is for Phase 0  -  no custom Nix-aware multiline
-/// detection yet.
+/// Usually one expression per line. A submission can still legitimately
+/// span multiple lines two different ways, and they need opposite
+/// handling:
+///
+/// - The user typed an intentionally multi-line expression (e.g. a big
+///   attrset), relying on `reedline`'s own multiline handling (quote/paren
+///   balancing) to keep inserting newlines instead of submitting until the
+///   brackets/quotes close. By the time `Signal::Success` fires for that, the
+///   whole buffer is one syntactically complete expression, and at least one of
+///   its *lines* is not (that is exactly why reedline kept waiting rather than
+///   submitting earlier) - evaluate the buffer whole.
+/// - The user pasted several already-complete, independent one-liners at once
+///   (what motivated enabling `use_bracketed_paste` on the editor above) -
+///   evaluate each one separately.
+///
+/// Both land in [`Signal::Success`] as the same plain `String` - nothing
+/// tags *why* it has embedded newlines, and asking the *daemon* whether
+/// the whole buffer parses is not a reliable way to tell them apart
+/// either: Nix's grammar allows bare juxtaposition as function
+/// application, so independent one-liners pasted back to back (e.g.
+/// `"hello"` then `1 + 1`) often parse as one one nonsensical application
+/// expression (`"hello" (1 + 1)`, a *runtime* type error, not a syntax
+/// error) rather than failing to parse at all - confirmed by hitting
+/// exactly this case live. What's reliable instead: parsing each
+/// non-empty line *on its own*, locally, with `rnix_parser` (already a
+/// dependency, used for syntax highlighting) and zero daemon round-trips.
+/// A deliberately-continued expression is guaranteed to have at least one
+/// line that fails to parse by itself (e.g. `"{ a = 1;"`, the unclosed
+/// brace that made reedline keep waiting); N independent pasted
+/// expressions are not. So: if every non-empty line parses cleanly on
+/// its own, evaluate them as N separate expressions; otherwise, evaluate
+/// the whole buffer as the one expression it was always going to be.
 ///
 /// # Errors
 ///
@@ -252,7 +318,7 @@ pub fn run_loop(socket_path: &Path, flake_root: &Path) -> Result<()> {
   let mut line_editor = build_line_editor(socket_path, flake_root)?;
   let prompt = DefaultPrompt::new(
     DefaultPromptSegment::Basic("xi".to_owned()),
-    DefaultPromptSegment::Empty,
+    flake_right_prompt_segment(flake_root),
   );
 
   loop {
@@ -273,27 +339,20 @@ pub fn run_loop(socket_path: &Path, flake_root: &Path) -> Result<()> {
           continue;
         }
 
-        match eval(socket_path, flake_root, input) {
-          // A genuine evaluation failure (syntax error, undefined name,
-          // missing attribute, ...) is ordinary REPL operation, not a
-          // reason to drop the user into a whole different program - no
-          // other REPL (python, node, a real `nix repl` itself) does
-          // that for a typo or an expression typed before you finished
-          // it. Print it in xi's own prompt and keep going; `:raw` stays
-          // available as an explicit escape hatch for when the user
-          // actually wants a real `nix repl` session, never automatic.
-          Ok(ExprEvalResult::Error { message }) => {
-            eprintln!("{}", Paint::new(&message).fg(Color::Red));
-            if let Some(hint) =
-              suggest::did_you_mean(socket_path, input, &message)
-            {
-              eprintln!("{}", Paint::new(hint).fg(Color::Yellow));
-            }
-          },
-          Ok(result) => println!("{}", render::render(&result)),
-          Err(err) => {
-            eprintln!("{}", Paint::new(err.to_string()).fg(Color::Red));
-          },
+        if input.contains('\n') && looks_like_independent_lines(input) {
+          for sub in input.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            report_eval_outcome(
+              socket_path,
+              sub,
+              eval(socket_path, flake_root, sub),
+            );
+          }
+        } else {
+          report_eval_outcome(
+            socket_path,
+            input,
+            eval(socket_path, flake_root, input),
+          );
         }
       },
       Ok(Signal::CtrlC | Signal::CtrlD) => break,
@@ -310,6 +369,48 @@ pub fn run_loop(socket_path: &Path, flake_root: &Path) -> Result<()> {
   }
 
   Ok(())
+}
+
+/// Whether every non-empty line of `input` (known to contain at least one
+/// `\n`) parses cleanly on its own, with no daemon round-trip - see
+/// [`run_loop`]'s doc comment for why this, not "does the whole buffer
+/// evaluate without error", is the reliable way to tell "N pasted
+/// one-liners" apart from "one deliberately-continued expression".
+fn looks_like_independent_lines(input: &str) -> bool {
+  input
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .all(|line| rnix_parser::Root::parse(line).errors().is_empty())
+}
+
+/// Print one [`eval`] outcome the same way every call site in
+/// [`run_loop`] needs to - the single-expression case, the "whole
+/// multi-line buffer parsed fine as one expression" case, and each
+/// per-line retry after a multi-line buffer turned out not to be that.
+fn report_eval_outcome(
+  socket_path: &Path,
+  input: &str,
+  outcome: Result<ExprEvalResult>,
+) {
+  match outcome {
+    // A genuine evaluation failure (syntax error, undefined name,
+    // missing attribute, ...) is ordinary REPL operation, not a reason
+    // to drop the user into a whole different program - no other REPL
+    // (python, node, a real `nix repl` itself) does that for a typo or
+    // an expression typed before you finished it. Print it in xi's own
+    // prompt and keep going; `:raw` stays available as an explicit
+    // escape hatch for when the user actually wants a real `nix repl`
+    // session, never automatic.
+    Ok(ExprEvalResult::Error { message }) => {
+      eprintln!("{}", Paint::new(&message).fg(Color::Red));
+      if let Some(hint) = suggest::did_you_mean(socket_path, input, &message) {
+        eprintln!("{}", Paint::new(hint).fg(Color::Yellow));
+      }
+    },
+    Ok(result) => println!("{}", render::render(&result)),
+    Err(err) => eprintln!("{}", Paint::new(err.to_string()).fg(Color::Red)),
+  }
 }
 
 /// Strip a `:name` meta-command prefix from `input`, requiring that the
@@ -358,7 +459,38 @@ fn handle_raw(flake_root: &Path, rest: &str) {
 
 #[cfg(test)]
 mod tests {
+  use reedline::Prompt as _;
+
   use super::*;
+
+  #[test]
+  fn independent_one_liners_each_parse_cleanly_alone() {
+    // The exact case that broke the first ("try whole, retry on syntax
+    // error") version of this heuristic: Nix's grammar reads consecutive
+    // juxtaposed expressions as function application, so
+    // `"hello"\n1 + 1` parses as one (nonsensical, but syntactically
+    // valid) application and never raises a syntax error at all - a
+    // *runtime* "not a function" failure instead. Checking each line in
+    // isolation sidesteps that trap entirely.
+    assert!(looks_like_independent_lines("\"hello\"\n1 + 1\ntrue\nnull"));
+  }
+
+  #[test]
+  fn a_deliberately_continued_expression_is_not_independent_lines() {
+    // Exactly what reedline's own multiline continuation produces for a
+    // manually-typed attrset spanning several lines: the first line on
+    // its own has an unclosed brace, which is why reedline kept waiting
+    // for more input instead of submitting after it.
+    assert!(!looks_like_independent_lines("{ a = 1;\n  b = 2;\n}"));
+  }
+
+  #[test]
+  fn a_single_line_with_no_newline_is_not_asked_about() {
+    // `run_loop` only calls this when `input.contains('\n')`; documented
+    // here so the one-line case is not silently assumed to pass if that
+    // guard is ever removed.
+    assert!(looks_like_independent_lines("1 + 1"));
+  }
 
   #[test]
   fn strip_meta_command_matches_exact_name() {
@@ -404,5 +536,25 @@ mod tests {
     assert!(path.components().any(|c| c.as_os_str() == "repl"));
     assert!(!path.components().any(|c| c.as_os_str() == "develop"));
     assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("history"));
+  }
+
+  #[test]
+  fn flake_prompt_segment_is_empty_without_a_flake_nix() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    let segment = flake_right_prompt_segment(tmp.path());
+    let prompt = DefaultPrompt::new(DefaultPromptSegment::Empty, segment);
+    assert_eq!(prompt.render_prompt_right(), "");
+  }
+
+  #[test]
+  fn flake_prompt_segment_names_the_flake_root_when_flake_nix_exists() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    let flake_root = tmp.path().join("my-flake");
+    std::fs::create_dir(&flake_root).expect("mkdir");
+    std::fs::write(flake_root.join("flake.nix"), "{ }").expect("write");
+
+    let segment = flake_right_prompt_segment(&flake_root);
+    let prompt = DefaultPrompt::new(DefaultPromptSegment::Empty, segment);
+    assert_eq!(prompt.render_prompt_right(), "flake:my-flake");
   }
 }

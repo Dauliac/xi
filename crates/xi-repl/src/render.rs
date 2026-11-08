@@ -119,14 +119,19 @@ fn render_tree(value: &serde_json::Value, level: usize) -> String {
       format!("{}", Paint::new(n.to_string()).fg(Color::Yellow))
     },
     // `true`/`false`/`null` are plain bound identifiers in Nix (not
-    // keywords  -  see `crate::highlight`'s doc comment), so they share
-    // the identifier-ish blue used for derivation/package names rather
-    // than getting a color of their own.
-    serde_json::Value::Bool(b) => {
-      format!("{}", Paint::new(b.to_string()).fg(Color::Blue))
+    // keywords  -  see `crate::highlight`'s doc comment), but still get
+    // their own distinct colors here rather than sharing the generic
+    // identifier blue: `true`/`false` read as a truthy/falsy pair
+    // (green/red, a common convention), `null` as the odd one out (an
+    // absence, not a boolean) in a dim, muted tone of its own.
+    serde_json::Value::Bool(true) => {
+      format!("{}", Paint::new("true").fg(Color::Green))
+    },
+    serde_json::Value::Bool(false) => {
+      format!("{}", Paint::new("false").fg(Color::Red))
     },
     serde_json::Value::Null => {
-      format!("{}", Paint::new("null").fg(Color::Blue))
+      format!("{}", Paint::new("null").dim())
     },
   }
 }
@@ -336,6 +341,28 @@ mod tests {
       render(&ExprEvalResult::Scalar(serde_json::json!([1, 2, 3])));
     let stripped = strip_ansi(&rendered);
     assert_eq!(stripped, "[\n  1\n  2\n  3\n]");
+  }
+
+  #[test]
+  fn true_false_and_null_each_get_a_distinct_color_in_a_tree() {
+    let nested = serde_json::json!([true, false, null]);
+    let rendered = render(&ExprEvalResult::Scalar(nested));
+    let stripped = strip_ansi(&rendered);
+    assert_eq!(stripped, "[\n  true\n  false\n  null\n]");
+
+    // Each of the three carries different ANSI styling - verified on
+    // the *unstripped* string, since `true`/`false`/`null`'s shared
+    // "plain bound identifier" status in Nix (see the match arm's doc
+    // comment) does not mean they should look the same in the tree
+    // view, which is exactly what was reported (null and the booleans
+    // were both plain blue before, indistinguishable at a glance).
+    let colored = |v: serde_json::Value| render(&ExprEvalResult::Scalar(v));
+    let true_rendered = colored(serde_json::json!({ "x": true }));
+    let false_rendered = colored(serde_json::json!({ "x": false }));
+    let null_rendered = colored(serde_json::json!({ "x": null }));
+    assert_ne!(true_rendered, false_rendered);
+    assert_ne!(true_rendered, null_rendered);
+    assert_ne!(false_rendered, null_rendered);
   }
 
   #[test]
