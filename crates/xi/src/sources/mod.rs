@@ -7,7 +7,7 @@
 //! stderr via `tracing`, machine output goes to stdout.
 //!
 //! Path resolution is no longer provisional  -  [`ScopePaths`] is the
-//! `xi-sources-config` table, and [`resolve_layers`] is the five-rung
+//! `xi-sources-config` table, and `resolve_layers` is the five-rung
 //! precedence ladder every value here comes through.
 
 pub mod args;
