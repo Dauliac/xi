@@ -12,7 +12,7 @@ use color_eyre::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::args::CacheTarget;
+use crate::args::{CacheCredentials, CacheProvider, CacheTarget};
 
 /// Configuration for the cache push queue.
 #[derive(Debug, Clone)]
@@ -51,21 +51,42 @@ pub struct QueueEntry {
 }
 
 /// Serializable subset of `CacheTarget` for persistence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Carries everything [`crate::cache::push_single_target`] needs to
+/// retry a push  -  `provider`/`bucket`/`credentials` included, not just
+/// the legacy `push_url`/`signing_key`/`push_command` trio, so a queued
+/// push to a provider-preset or credentialed target does not silently
+/// degrade to a no-op on retry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SerializableTarget {
   pub name:         String,
   pub push_url:     Option<String>,
+  #[serde(default)]
+  pub push_url_file: Option<String>,
   pub signing_key:  Option<String>,
   pub push_command: Vec<String>,
+  #[serde(default)]
+  pub provider:     Option<CacheProvider>,
+  #[serde(default)]
+  pub bucket:       Option<String>,
+  #[serde(default)]
+  pub credentials:  Option<CacheCredentials>,
+  #[serde(default)]
+  pub required:     bool,
 }
 
 impl From<&CacheTarget> for SerializableTarget {
   fn from(t: &CacheTarget) -> Self {
     Self {
-      name:         t.name.clone(),
-      push_url:     t.push_url.clone(),
-      signing_key:  t.signing_key.clone(),
-      push_command: t.push_command.clone(),
+      name:          t.name.clone(),
+      push_url:      t.push_url.clone(),
+      push_url_file: t.push_url_file.clone(),
+      signing_key:   t.signing_key.clone(),
+      push_command:  t.push_command.clone(),
+      provider:      t.provider.clone(),
+      bucket:        t.bucket.clone(),
+      credentials:   t.credentials.clone(),
+      required:      t.required,
     }
   }
 }
@@ -73,10 +94,16 @@ impl From<&CacheTarget> for SerializableTarget {
 impl From<&SerializableTarget> for CacheTarget {
   fn from(t: &SerializableTarget) -> Self {
     Self {
-      name:         t.name.clone(),
-      push_url:     t.push_url.clone(),
-      signing_key:  t.signing_key.clone(),
+      name: t.name.clone(),
+      push_url: t.push_url.clone(),
+      push_url_file: t.push_url_file.clone(),
+      signing_key: t.signing_key.clone(),
       push_command: t.push_command.clone(),
+      provider: t.provider.clone(),
+      bucket: t.bucket.clone(),
+      credentials: t.credentials.clone(),
+      required: t.required,
+      ..Default::default()
     }
   }
 }
@@ -250,6 +277,92 @@ pub fn drain(
   result
 }
 
+/// Drain the queue over a bounded concurrency pool rather than one
+/// entry at a time.
+///
+/// Expiry and missing-store-path checks stay sequential (cheap, no I/O);
+/// only the push attempts themselves  -  one `nix copy` subprocess each  -
+/// run concurrently, capped at `max_parallel_jobs`.
+pub fn drain_bounded(
+  push_fn: &(dyn Fn(&CacheTarget, &Path) -> Result<()> + Sync),
+  config: &QueueConfig,
+  max_parallel_jobs: usize,
+) -> DrainResult {
+  let entries = load();
+  if entries.is_empty() {
+    return DrainResult {
+      succeeded: 0,
+      failed:    0,
+      expired:   0,
+      missing:   0,
+    };
+  }
+
+  let now = now_secs();
+  let mut to_retry = Vec::new();
+  let mut result = DrainResult {
+    succeeded: 0,
+    failed:    0,
+    expired:   0,
+    missing:   0,
+  };
+
+  for entry in entries {
+    if now.saturating_sub(entry.enqueued_at) > config.expiry_secs {
+      debug!(
+        "[cache] expiring queued push for {} ({})",
+        entry.store_path, entry.target.name
+      );
+      result.expired += 1;
+      continue;
+    }
+    if !Path::new(&entry.store_path).exists() {
+      debug!(
+        "[cache] store path gone, removing from queue: {}",
+        entry.store_path
+      );
+      result.missing += 1;
+      continue;
+    }
+    to_retry.push(entry);
+  }
+
+  let outcomes =
+    crate::cache::run_bounded(&to_retry, max_parallel_jobs, |entry| {
+      let target = CacheTarget::from(&entry.target);
+      push_fn(&target, Path::new(&entry.store_path))
+    });
+
+  let mut remaining = Vec::new();
+  for (mut entry, outcome) in to_retry.into_iter().zip(outcomes) {
+    match outcome {
+      Ok(()) => {
+        info!(
+          "[cache] queued push succeeded: {} → {}",
+          entry.store_path, entry.target.name
+        );
+        result.succeeded += 1;
+      },
+      Err(e) => {
+        debug!(
+          "[cache] queued push still failing: {} → {}: {e}",
+          entry.store_path, entry.target.name
+        );
+        entry.retry_count += 1;
+        entry.last_error = format!("{e}");
+        remaining.push(entry);
+        result.failed += 1;
+      },
+    }
+  }
+
+  if let Err(e) = save(&remaining) {
+    warn!("[cache] failed to save queue after drain: {e}");
+  }
+
+  result
+}
+
 /// Clear all entries from the queue.
 pub fn clear() {
   if let Err(e) = save(&[]) {
@@ -271,10 +384,9 @@ mod tests {
   #[test]
   fn serializable_target_roundtrip() {
     let target = CacheTarget {
-      name:         "test".into(),
-      push_url:     Some("s3://bucket".into()),
-      signing_key:  None,
-      push_command: vec![],
+      name: "test".into(),
+      push_url: Some("s3://bucket".into()),
+      ..Default::default()
     };
     let ser = SerializableTarget::from(&target);
     let json = serde_json::to_string(&ser).unwrap();
@@ -288,10 +400,9 @@ mod tests {
     let entry = QueueEntry {
       store_path:  "/nix/store/abc-pkg".into(),
       target:      SerializableTarget {
-        name:         "mycache".into(),
-        push_url:     Some("s3://bucket".into()),
-        signing_key:  None,
-        push_command: vec![],
+        name: "mycache".into(),
+        push_url: Some("s3://bucket".into()),
+        ..Default::default()
       },
       enqueued_at: 1_700_000_000,
       retry_count: 2,

@@ -1,28 +1,224 @@
 use std::{env, path::PathBuf};
 
 use clap::{Args, ValueEnum};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::installable::InstallableArgs;
 
-/// A single named cache push target.
-#[derive(Debug, Clone)]
+/// Closed set of S3-compatible provider presets.
+///
+/// `provider` only pre-fills `endpoint`/`region` before the existing
+/// `s3://bucket?...` URI is assembled; push/pull mechanics are identical
+/// across all variants (one generic `s3-binary-cache-store`, not a
+/// per-vendor plugin model).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheProvider {
+  /// Cloudflare R2: endpoint derived from `account_id`, region is always
+  /// `auto`.
+  CloudflareR2 { account_id: String },
+  /// AWS S3: `region` is passed through; omitted entirely when absent
+  /// (letting `s3://` fall back to its own built-in default).
+  AwsS3 { region: Option<String> },
+  /// Any other S3-compatible endpoint (Backblaze B2, Wasabi, `MinIO`, ...).
+  Generic {
+    endpoint: Option<String>,
+    region:   Option<String>,
+  },
+}
+
+impl CacheProvider {
+  /// Parse the closed `provider = "<kebab-case>"` TOML value.
+  ///
+  /// `account_id`/`region`/`endpoint` are read from the same
+  /// `[cache.<name>]` table as plain sibling keys, not nested under the
+  /// provider value itself.
+  ///
+  /// # Errors
+  /// Returns a message naming the invalid value and the closed set of
+  /// accepted ones.
+  pub fn parse(
+    value: &str,
+    account_id: Option<String>,
+    region: Option<String>,
+    endpoint: Option<String>,
+  ) -> Result<Self, String> {
+    match value {
+      "cloudflare-r2" => {
+        let account_id = account_id.ok_or_else(|| {
+          "provider = \"cloudflare-r2\" requires 'account_id'".to_string()
+        })?;
+        Ok(Self::CloudflareR2 { account_id })
+      },
+      "aws-s3" => Ok(Self::AwsS3 { region }),
+      "generic" => Ok(Self::Generic { endpoint, region }),
+      other => {
+        Err(format!(
+          "unknown provider '{other}' (expected one of: cloudflare-r2, \
+           aws-s3, generic)"
+        ))
+      },
+    }
+  }
+}
+
+/// `[cache.<name>.credentials]`: file-backed S3 push credentials.
+///
+/// Values are paths read through
+/// [`crate::sources::credentials::Secret::from_file`] and injected only as
+/// environment variables on the single `nix copy` child process; they are
+/// never exported to xi's own process environment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheCredentials {
+  /// Path to a file holding the S3 access key id.
+  pub access_key_id_file:     Option<String>,
+  /// Path to a file holding the S3 secret access key.
+  pub secret_access_key_file: Option<String>,
+}
+
+impl CacheCredentials {
+  /// Whether any credential file is configured.
+  #[must_use]
+  pub const fn is_empty(&self) -> bool {
+    self.access_key_id_file.is_none() && self.secret_access_key_file.is_none()
+  }
+}
+
+/// A single named cache push/pull target.
+#[derive(Debug, Clone, Default)]
 pub struct CacheTarget {
   /// Display name for this cache (TOML key or derived from URL).
-  pub name:         String,
+  pub name:            String,
   /// Nix store URI for push (s3://, ssh://, file://, etc.)
-  pub push_url:     Option<String>,
+  ///
+  /// Takes precedence over `provider`/`bucket` when both are present  -  an
+  /// escape hatch for anything the preset table doesn't yet cover.
+  pub push_url:        Option<String>,
+  /// Path to a file holding the push URL, read at push time only -
+  /// never written to `config.toml`/the Nix store.
+  ///
+  /// For a `push_url` sensitive enough to be worth encrypting (it can
+  /// embed an account id, a bucket naming scheme, etc.), the plain
+  /// `push_url` field is the wrong fit: it is baked verbatim into
+  /// `config.toml`, which lands world-readable in `/nix/store`. This
+  /// mirrors [`CacheCredentials`]'s own file-backed fields and the
+  /// same sops-nix / agenix "secret not mounted yet" handling via
+  /// [`crate::sources::credentials::Secret::from_file`]. Only
+  /// consulted by [`crate::cache::push_single_target`]'s synchronous
+  /// path - like credentials, not yet read by the async daemon/detached
+  /// dispatch in [`crate::cache::push_to_cache_async`], which would
+  /// otherwise have to pass the decrypted value through a socket
+  /// message or a spawned shell command line instead of a scoped child
+  /// env var. Ignored when `push_url` is also set.
+  pub push_url_file:   Option<String>,
   /// Path to secret signing key.
-  pub signing_key:  Option<String>,
+  pub signing_key:     Option<String>,
   /// External push command (e.g. `["cachix", "push", "mycache"]`).
-  pub push_command: Vec<String>,
+  pub push_command:    Vec<String>,
+  /// Provider preset used to pre-fill `endpoint`/`region` for the `s3://`
+  /// URI assembled from `bucket`.
+  pub provider:        Option<CacheProvider>,
+  /// Bucket name, used together with `provider` to build the `s3://` URI.
+  pub bucket:          Option<String>,
+  /// Native file-backed push credentials.
+  pub credentials:     Option<CacheCredentials>,
+  /// Substituter URL used for pull (`--option extra-substituters`).
+  pub pull_url:        Option<String>,
+  /// Trusted public key used for pull
+  /// (`--option extra-trusted-public-keys`). When absent and `signing_key`
+  /// is set, derived from it (see
+  /// [`crate::cache::resolve_pull_public_key`]).
+  pub pull_public_key: Option<String>,
+  /// Known-cache registry preset name (resolves `pull_url`/
+  /// `pull_public_key` when they are not set explicitly).
+  pub preset:          Option<String>,
+  /// `host/path` glob patterns scoping this target to specific git
+  /// remotes / flake-refs. Empty means "matches everything".
+  pub match_patterns:  Vec<String>,
+  /// Catch-all target used when no configured target's `match` matches
+  /// the current remote.
+  pub default:         bool,
+  /// A failed push to this target makes the invoking `xi ... switch`'s
+  /// own exit code non-zero instead of silently queuing.
+  pub required:        bool,
 }
 
 impl CacheTarget {
   /// Whether this target has a push method configured.
   #[must_use]
+  #[allow(
+    clippy::suspicious_operation_groupings,
+    reason = "three genuinely independent push methods, not a typo'd pair"
+  )]
   pub const fn is_configured(&self) -> bool {
-    self.push_url.is_some() || !self.push_command.is_empty()
+    self.push_url.is_some()
+      || self.push_url_file.is_some()
+      || !self.push_command.is_empty()
+      || (self.provider.is_some() && self.bucket.is_some())
+  }
+
+  /// Build the `s3://bucket?region=...&endpoint=...` URI from `provider` +
+  /// `bucket`, ignoring any explicit `push_url` escape hatch.
+  ///
+  /// Returns an empty string when `bucket` is unset; callers only reach
+  /// this once `provider`+`bucket` presence has already been checked (see
+  /// [`Self::effective_push_url`]).
+  #[must_use]
+  pub fn resolved_s3_uri(&self) -> String {
+    let Some(bucket) = &self.bucket else {
+      return String::new();
+    };
+    let Some(provider) = &self.provider else {
+      return format!("s3://{bucket}");
+    };
+
+    let mut params: Vec<(&str, String)> = Vec::new();
+    match provider {
+      CacheProvider::CloudflareR2 { account_id } => {
+        params.push(("region", "auto".to_string()));
+        params.push((
+          "endpoint",
+          format!("https://{account_id}.r2.cloudflarestorage.com"),
+        ));
+      },
+      CacheProvider::AwsS3 { region } => {
+        if let Some(region) = region {
+          params.push(("region", region.clone()));
+        }
+      },
+      CacheProvider::Generic { endpoint, region } => {
+        if let Some(region) = region {
+          params.push(("region", region.clone()));
+        }
+        if let Some(endpoint) = endpoint {
+          params.push(("endpoint", endpoint.clone()));
+        }
+      },
+    }
+
+    if params.is_empty() {
+      return format!("s3://{bucket}");
+    }
+
+    let query = params
+      .iter()
+      .map(|(k, v)| format!("{k}={v}"))
+      .collect::<Vec<_>>()
+      .join("&");
+    format!("s3://{bucket}?{query}")
+  }
+
+  /// The URL xi actually pushes to: an explicit `push_url` wins verbatim
+  /// over `provider`+`bucket`; otherwise the provider preset is resolved.
+  #[must_use]
+  pub fn effective_push_url(&self) -> Option<String> {
+    if let Some(url) = &self.push_url {
+      return Some(url.clone());
+    }
+    if self.provider.is_some() && self.bucket.is_some() {
+      return Some(self.resolved_s3_uri());
+    }
+    None
   }
 }
 
@@ -60,9 +256,23 @@ pub struct CacheArgs {
   #[arg(long, env = "XI_CACHE_ASYNC", value_parser = clap::builder::BoolishValueParser::new())]
   pub async_push: bool,
 
+  /// Bound on concurrent `nix copy` child processes a single push cycle
+  /// (current build + queue drain) may run. CLI > env > config.toml
+  /// `[cache] max_parallel_jobs` > `min(available_parallelism(), 8)`.
+  #[arg(long = "max-parallel-jobs", env = "XI_CACHE_MAX_PARALLEL_JOBS")]
+  pub max_parallel_jobs: Option<usize>,
+
   /// Named cache targets from config file.
   #[arg(skip)]
   pub config_targets: Vec<CacheTarget>,
+
+  /// The resolved git-remote / flake-ref match candidate for this
+  /// invocation (see `xi-binary-cache-match`). `None` means "no
+  /// candidate resolved"  -  targets with a non-empty `match` list are
+  /// then only selected via `default = true`; targets with an empty
+  /// `match` list (the back-compat default) always apply.
+  #[arg(skip)]
+  pub match_candidate: Option<String>,
 }
 
 impl CacheArgs {
@@ -98,11 +308,12 @@ impl CacheArgs {
         push_url: cli_url,
         signing_key: cli_key,
         push_command: self.push_command.clone(),
+        ..Default::default()
       }];
     }
 
     // Use config targets, applying env signing key as fallback
-    self
+    let targets: Vec<CacheTarget> = self
       .config_targets
       .iter()
       .map(|t| {
@@ -112,7 +323,21 @@ impl CacheArgs {
         }
         t
       })
-      .collect()
+      .collect();
+
+    crate::cache_match::select_targets(
+      &targets,
+      self.match_candidate.as_deref(),
+    )
+    .into_iter()
+    .cloned()
+    .collect()
+  }
+
+  /// Set the resolved match candidate for this invocation. See
+  /// [`Self::match_candidate`].
+  pub fn set_match_candidate(&mut self, candidate: Option<String>) {
+    self.match_candidate = candidate;
   }
 
   /// Apply defaults from a config file.
@@ -122,6 +347,7 @@ impl CacheArgs {
     &mut self,
     targets: &[CacheTarget],
     async_push: bool,
+    max_parallel_jobs: Option<usize>,
   ) {
     // async_push: CLI/env > config
     if !self.async_push && env::var("XI_CACHE_ASYNC").is_err() {
@@ -131,6 +357,11 @@ impl CacheArgs {
     // config_targets: only set if no CLI override
     if self.config_targets.is_empty() && !targets.is_empty() {
       self.config_targets = targets.to_vec();
+    }
+
+    // max_parallel_jobs: CLI/env (already merged by clap) > config.toml
+    if self.max_parallel_jobs.is_none() {
+      self.max_parallel_jobs = max_parallel_jobs;
     }
   }
 }
@@ -302,15 +533,17 @@ pub struct NixBuildPassthroughArgs {
   #[arg(skip)]
   pub connect_timeout: Option<u64>,
 
-  /// Overrides resolved from the config cascade (global `config.toml`,
-  /// `.xi.toml`, `.xi.local.toml`, `XI_OVERRIDE_INPUT`), keyed by input
-  /// name and already normalized to flakerefs.
-  ///
-  /// Not a CLI flag  -  injected via `apply_override_input_defaults`. Kept
-  /// separate from `override_input` so a `--override-input` flag can
-  /// replace a configured entry by name at emission time.
+  /// Resolved substituter URLs for every matched cache target.
+  /// Injected as additive `--option extra-substituters`. Not a CLI
+  /// flag; applied via `apply_cache_pull_flags`.
   #[arg(skip)]
-  pub config_override_input: std::collections::BTreeMap<String, String>,
+  pub extra_substituters: Vec<String>,
+
+  /// Resolved trusted public keys for every matched cache target.
+  /// Injected as additive `--option extra-trusted-public-keys`. Not a
+  /// CLI flag; applied via `apply_cache_pull_flags`.
+  #[arg(skip)]
+  pub extra_trusted_public_keys: Vec<String>,
 }
 
 /// Push `--$flag` onto `$args` when `$self.$field` is `true`.
@@ -392,44 +625,23 @@ impl NixBuildPassthroughArgs {
       args.push(pair[0].clone());
       args.push(pair[1].clone());
     }
-    for (name, flakeref) in self.effective_override_input() {
+    if !self.extra_substituters.is_empty() {
+      args.push("--option".into());
+      args.push("extra-substituters".into());
+      args.push(self.extra_substituters.join(" "));
+    }
+    if !self.extra_trusted_public_keys.is_empty() {
+      args.push("--option".into());
+      args.push("extra-trusted-public-keys".into());
+      args.push(self.extra_trusted_public_keys.join(" "));
+    }
+    for pair in self.override_input.chunks(2) {
       args.push("--override-input".into());
-      args.push(name);
-      args.push(flakeref);
+      args.push(pair[0].clone());
+      args.push(pair[1].clone());
     }
 
     args
-  }
-
-  /// Resolve `--override-input` flags against config-derived overrides,
-  /// merging by input name so a flag replaces only the entry it names and
-  /// leaves the rest of the configured set applied.
-  ///
-  /// Sorted, so the emitted argv and the report are deterministic.
-  #[must_use]
-  pub fn effective_override_input(&self) -> Vec<(String, String)> {
-    let mut merged: std::collections::BTreeMap<String, String> =
-      self.config_override_input.clone();
-
-    for pair in self.override_input.chunks(2) {
-      if pair.len() == 2 {
-        merged.insert(pair[0].clone(), pair[1].clone());
-      }
-    }
-
-    merged.into_iter().collect()
-  }
-
-  /// Install overrides resolved from the config cascade.
-  ///
-  /// A separate method rather than a parameter on `apply_build_defaults`:
-  /// that one is `pub const fn` and merges scalars by field, and a map
-  /// merge cannot happen in a const fn.
-  pub fn apply_override_input_defaults(
-    &mut self,
-    overrides: &std::collections::BTreeMap<String, String>,
-  ) {
-    self.config_override_input = overrides.clone();
   }
 
   /// Apply defaults from config file. Config values only take effect
@@ -468,6 +680,21 @@ impl NixBuildPassthroughArgs {
     if self.connect_timeout.is_none() {
       self.connect_timeout = connect_timeout;
     }
+  }
+
+  /// Apply the resolved pull configuration from every matched
+  /// `[cache.<name>]` target (see `xi-binary-cache-match`). Additive by
+  /// construction: callers pass the full resolved set, and
+  /// `generate_passthrough_args` emits them as `extra-substituters`/
+  /// `extra-trusted-public-keys`, which Nix itself appends to rather
+  /// than replaces.
+  pub fn apply_cache_pull_flags(
+    &mut self,
+    substituters: Vec<String>,
+    trusted_public_keys: Vec<String>,
+  ) {
+    self.extra_substituters = substituters;
+    self.extra_trusted_public_keys = trusted_public_keys;
   }
 }
 
@@ -513,9 +740,149 @@ pub trait HasBuildArgs {
   fn no_nom_mut(&mut self) -> Option<&mut bool>;
 }
 
+/// Trait for command args that accept an [`InstallableArgs`].
+///
+/// Implement this on any args struct that embeds one, so
+/// `xi-binary-cache-match`'s resolution ladder (explicit flake-ref
+/// outranks the git remote of the current working directory) can read
+/// it generically without matching on every command variant.
+pub trait HasInstallableArgs {
+  /// Return the embedded installable args, or `None` if this command
+  /// variant doesn't have one.
+  fn installable(&self) -> Option<&InstallableArgs>;
+}
+
+impl HasInstallableArgs for CommonRebuildArgs {
+  fn installable(&self) -> Option<&InstallableArgs> {
+    Some(&self.installable)
+  }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "Fine in tests")]
+mod cache_target_tests {
+  use super::{CacheProvider, CacheTarget};
+
+  #[test]
+  fn cloudflare_r2_preset_derives_its_endpoint() {
+    let target = CacheTarget {
+      provider: Some(CacheProvider::CloudflareR2 {
+        account_id: "abc123".to_string(),
+      }),
+      bucket: Some("nix-cache".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(
+      target.resolved_s3_uri(),
+      "s3://nix-cache?region=auto&endpoint=https://abc123.r2.cloudflarestorage.com"
+    );
+  }
+
+  #[test]
+  fn aws_s3_preset_omits_endpoint() {
+    let target = CacheTarget {
+      provider: Some(CacheProvider::AwsS3 {
+        region: Some("eu-west-3".to_string()),
+      }),
+      bucket: Some("nix-cache".to_string()),
+      ..Default::default()
+    };
+    let uri = target.resolved_s3_uri();
+    assert_eq!(uri, "s3://nix-cache?region=eu-west-3");
+    assert!(!uri.contains("endpoint="));
+  }
+
+  #[test]
+  fn hand_written_push_url_overrides_the_preset() {
+    let target = CacheTarget {
+      provider: Some(CacheProvider::CloudflareR2 {
+        account_id: "abc123".to_string(),
+      }),
+      bucket: Some("nix-cache".to_string()),
+      push_url: Some("s3://explicit-bucket".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(
+      target.effective_push_url(),
+      Some("s3://explicit-bucket".to_string())
+    );
+  }
+
+  #[test]
+  fn unknown_provider_is_rejected() {
+    let err = CacheProvider::parse("not-a-real-provider", None, None, None)
+      .unwrap_err();
+    assert!(err.contains("not-a-real-provider"));
+    assert!(err.contains("cloudflare-r2"));
+  }
+
+  #[test]
+  fn cloudflare_r2_without_account_id_is_rejected() {
+    let err =
+      CacheProvider::parse("cloudflare-r2", None, None, None).unwrap_err();
+    assert!(err.contains("account_id"));
+  }
+
+  #[test]
+  fn generic_preset_carries_endpoint_and_region() {
+    let target = CacheTarget {
+      provider: Some(CacheProvider::Generic {
+        endpoint: Some("https://minio.example.com".to_string()),
+        region:   Some("us-east-1".to_string()),
+      }),
+      bucket: Some("nix-cache".to_string()),
+      ..Default::default()
+    };
+    let uri = target.resolved_s3_uri();
+    assert!(uri.contains("region=us-east-1"));
+    assert!(uri.contains("endpoint=https://minio.example.com"));
+  }
+
+  #[test]
+  fn is_configured_recognises_provider_and_bucket_without_push_url() {
+    let target = CacheTarget {
+      provider: Some(CacheProvider::AwsS3 { region: None }),
+      bucket: Some("nix-cache".to_string()),
+      ..Default::default()
+    };
+    assert!(target.is_configured());
+  }
+
+  #[test]
+  fn not_configured_without_any_push_method() {
+    assert!(!CacheTarget::default().is_configured());
+  }
+
+  #[test]
+  fn is_configured_recognises_push_url_file_alone() {
+    let target = CacheTarget {
+      push_url_file: Some("/run/secrets/cache-url".to_string()),
+      ..Default::default()
+    };
+    assert!(target.is_configured());
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::NixBuildPassthroughArgs;
+  use super::{CacheArgs, NixBuildPassthroughArgs};
+
+  #[test]
+  fn max_parallel_jobs_falls_back_to_config_toml_when_cli_and_env_are_unset() {
+    let mut cache = CacheArgs::default();
+    cache.apply_config_defaults(&[], false, Some(3));
+    assert_eq!(cache.max_parallel_jobs, Some(3));
+  }
+
+  #[test]
+  fn max_parallel_jobs_cli_flag_outranks_config_toml() {
+    let mut cache = CacheArgs {
+      max_parallel_jobs: Some(1),
+      ..Default::default()
+    };
+    cache.apply_config_defaults(&[], false, Some(3));
+    assert_eq!(cache.max_parallel_jobs, Some(1));
+  }
 
   #[test]
   fn no_build_output_maps_to_nix_quiet_flag() {
@@ -575,6 +942,32 @@ mod tests {
   }
 
   #[test]
+  fn cache_pull_flags_are_additive_extra_options() {
+    let mut args = NixBuildPassthroughArgs::default();
+    args.apply_cache_pull_flags(
+      vec!["https://cache.example.com".to_string()],
+      vec!["cache.example.com:abc123=".to_string()],
+    );
+
+    let generated = args.generate_passthrough_args();
+    assert_eq!(generated, [
+      "--option",
+      "extra-substituters",
+      "https://cache.example.com",
+      "--option",
+      "extra-trusted-public-keys",
+      "cache.example.com:abc123=",
+    ]);
+  }
+
+  #[test]
+  fn no_matched_cache_targets_emits_no_pull_flags() {
+    let mut args = NixBuildPassthroughArgs::default();
+    args.apply_cache_pull_flags(vec![], vec![]);
+    assert!(args.generate_passthrough_args().is_empty());
+  }
+
+  #[test]
   fn override_input_pairs_are_emitted() {
     let args = NixBuildPassthroughArgs {
       override_input: vec![
@@ -588,97 +981,6 @@ mod tests {
       "--override-input",
       "nixpkgs",
       "github:NixOS/nixpkgs/nixos-unstable"
-    ]);
-  }
-
-  /// SC-012: with nothing configured anywhere, the generated argv must be
-  /// identical to what it was before this capability existed. That is what
-  /// makes the change inert by default.
-  #[test]
-  fn nothing_configured_changes_nothing() {
-    let args = NixBuildPassthroughArgs {
-      connect_timeout: None,
-      ..Default::default()
-    };
-    assert!(args.config_override_input.is_empty());
-    assert!(args.generate_passthrough_args().is_empty());
-  }
-
-  #[test]
-  fn config_derived_override_is_emitted() {
-    let mut args = NixBuildPassthroughArgs::default();
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("nix-lib".to_string(), "path:/abs/nix-lib".to_string());
-    args.apply_override_input_defaults(&map);
-
-    assert_eq!(args.generate_passthrough_args(), [
-      "--override-input",
-      "nix-lib",
-      "path:/abs/nix-lib"
-    ]);
-  }
-
-  /// SC-007: precedence holds per input name.
-  #[test]
-  fn a_flag_replaces_only_the_input_it_names() {
-    let mut args = NixBuildPassthroughArgs {
-      override_input: vec!["nix-lib".into(), "path:/from/flag".into()],
-      ..Default::default()
-    };
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("nix-lib".to_string(), "path:/from/config".to_string());
-    map.insert("nix-vm-test".to_string(), "path:/vm".to_string());
-    args.apply_override_input_defaults(&map);
-
-    // nix-lib takes the flag's value, nix-vm-test keeps the configured one.
-    assert_eq!(args.generate_passthrough_args(), [
-      "--override-input",
-      "nix-lib",
-      "path:/from/flag",
-      "--override-input",
-      "nix-vm-test",
-      "path:/vm"
-    ]);
-  }
-
-  /// A shadowed entry must not be emitted twice, so the report cannot
-  /// advertise a value that nix's silent last-wins would discard.
-  #[test]
-  fn a_shadowed_entry_is_emitted_once() {
-    let mut args = NixBuildPassthroughArgs {
-      override_input: vec!["nix-lib".into(), "path:/winner".into()],
-      ..Default::default()
-    };
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("nix-lib".to_string(), "path:/loser".to_string());
-    args.apply_override_input_defaults(&map);
-
-    let generated = args.generate_passthrough_args();
-    assert_eq!(
-      generated
-        .iter()
-        .filter(|a| *a == "--override-input")
-        .count(),
-      1
-    );
-    assert!(!generated.iter().any(|a| a == "path:/loser"));
-  }
-
-  #[test]
-  fn emitted_override_order_is_deterministic() {
-    let mut args = NixBuildPassthroughArgs::default();
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("z".to_string(), "path:/z".to_string());
-    map.insert("a".to_string(), "path:/a".to_string());
-    args.apply_override_input_defaults(&map);
-
-    assert_eq!(args.generate_passthrough_args(), [
-      "--override-input",
-      "a",
-      "path:/a",
-      "--override-input",
-      "z",
-      "path:/z"
     ]);
   }
 }

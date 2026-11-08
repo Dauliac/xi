@@ -1,6 +1,9 @@
 pub mod args;
 pub mod cache;
+pub mod cache_match;
+pub mod cache_posthook;
 pub mod cache_queue;
+pub mod cache_registry;
 pub mod checks;
 pub mod command;
 pub mod complete;

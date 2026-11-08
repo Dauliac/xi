@@ -143,6 +143,13 @@ pub mod lint {
     "gpg_signature",
     "signature_body",
     "auth_header",
+    // xi-binary-cache: `[cache.<name>.credentials]`'s two S3 values.
+    // "secret" alone does not substring-match these compound field
+    // names, so a future call site logging the bare value through
+    // `Secret::with_secret` (defeating the typed path) needs its own
+    // banned entry here.
+    "access_key_id",
+    "secret_access_key",
   ];
 
   /// Macros and methods whose arguments reach an observable surface.
@@ -333,6 +340,22 @@ mod tests {
     assert_eq!(found.len(), 1, "got: {found:?}");
     assert_eq!(found[0].key, "token");
     assert_eq!(found[0].line, 2);
+  }
+
+  #[test]
+  fn lint_rejects_the_binary_cache_credential_fields() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+      tmp.path().join("cache_leak.rs"),
+      "fn f() {\n  debug!(access_key_id = %akid, \"pushing\");\n  \
+       warn!(secret_access_key = %sak, \"pushing\");\n}\n",
+    )
+    .unwrap();
+
+    let found = lint::scan_workspace(tmp.path()).unwrap();
+    assert_eq!(found.len(), 2, "got: {found:?}");
+    assert_eq!(found[0].key, "access_key_id");
+    assert_eq!(found[1].key, "secret_access_key");
   }
 
   #[test]
