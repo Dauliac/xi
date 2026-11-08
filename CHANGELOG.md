@@ -22,6 +22,10 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- `tag.yaml`'s `aarch64-darwin` release build used the `macos-14` runner
+  label, which GitHub no longer supports ("configuration
+  'macos-14-arm64-us-default' is not supported"). Switched to `macos-latest`,
+  matching `build.yaml`/`test.yaml`.
 - `tag.yaml`'s `build` and `release` jobs still skipped on a direct tag push
   even after the `test`-job fix below, because a job `if` that does not call
   a status-check function gets an implicit `success()` ANDed in, and
