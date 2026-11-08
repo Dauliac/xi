@@ -116,6 +116,27 @@ pub fn command(socket_path: &Path, c: Command) -> Result<CommandOutcome> {
   Ok(CommandOutcome::V2(response))
 }
 
+/// Send a [`Query::ExprEval`] for `expr` and return the raw [`QueryOutcome`]
+/// so the caller can branch on v3 vs the (unsupported) v2 fallback itself -
+/// mirrors the [`query`] / [`command`] free-function shape exactly; there is
+/// no v2 equivalent to map onto, so callers must handle
+/// [`QueryOutcome::V2`] themselves (xi-repl's `:raw` escape surfaces it as
+/// "daemon does not support expression evaluation").
+///
+/// # Errors
+///
+/// Returns an error only on connect / I/O failure.
+pub fn expr_eval(
+  socket_path: &Path,
+  expr: &str,
+  shallow: bool,
+) -> Result<QueryOutcome> {
+  query(socket_path, Query::ExprEval {
+    expr: expr.to_owned(),
+    shallow,
+  })
+}
+
 /// Short-hand: send `Query::HeartBeat` and report whether the daemon
 /// answered with a v3 heartbeat.
 ///

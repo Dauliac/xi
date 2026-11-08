@@ -95,6 +95,22 @@ pub enum Query {
     /// The snapshot sequence number to fetch.
     seq: SnapshotSeq,
   },
+  /// Evaluate a nix expression against the daemon's flake context.
+  ///
+  /// `shallow: true` only lists attribute names (`builtins.attrNames`) and
+  /// never forces nested values; `shallow: false` runs a real
+  /// `nix eval --json --expr` and returns the fully forced result. Either
+  /// way this runs synchronously on the connection thread the query arrived
+  /// on (see `v3_handlers::handle_query`'s doc comment on its `ExprEval`
+  /// arm for why that still satisfies the "never blocks the main loop"
+  /// contract) and never mutates `ServerState`'s eval bookkeeping - see
+  /// [`super::reply::ExprEvalResult`] for the response shapes.
+  ExprEval {
+    /// The nix expression to evaluate, e.g. `"1 + 1"` or `"pkgs.hello"`.
+    expr:    String,
+    /// `true` for the attribute-name-only, never-forcing variant.
+    shallow: bool,
+  },
 }
 
 /// The reply body returned by the daemon for a preceding [`Query`].
@@ -126,4 +142,6 @@ pub enum QueryReply {
   StateCatalog(Availability<serde_json::Value>),
   /// Reply to [`Query::Snapshot`].
   Snapshot(Availability<serde_json::Value>),
+  /// Reply to [`Query::ExprEval`].
+  ExprEval(Availability<super::reply::ExprEvalResult>),
 }

@@ -11,6 +11,63 @@ use serde::{Deserialize, Serialize};
 
 use super::{command::CommandReply, query::QueryReply};
 
+/// Classification of a [`super::query::Query::ExprEval`] result.
+///
+/// The handler never hands back raw `nix eval --json` output - it always
+/// classifies first, so callers (notably `xi-repl`'s `:raw` escape) get an
+/// explicit, named shape instead of having to sniff JSON or risk a silent
+/// hang on something unrepresentable (a lambda, an unforced thunk, a
+/// genuine eval failure).
+///
+/// - `Attrs` only appears for a *shallow* query: attribute names obtained via
+///   `builtins.attrNames`, which forces the attrset's own WHNF but never forces
+///   (or serializes) any of its values.
+/// - `Derivation` appears for either query shape: `name`/`version`/
+///   `description` are plain attrs on the `mkDerivation` convention, cheap to
+///   read without realizing any build output.
+/// - `Scalar` only appears for a *non-shallow* query: the full `nix eval
+///   --json` value (string, number, bool, list, or a plain attrset with no
+///   `type = "derivation"` marker).
+/// - `Lambda` appears for either query shape: `builtins.isFunction` only needs
+///   WHNF, so it's cheap even when shallow.
+/// - `Thunk` only appears for a *shallow* query, as the fallback for every
+///   value that is neither a function nor a (non-derivation) attrset - scalars,
+///   lists, paths, etc. A shallow query deliberately declines to serialize
+///   those (serialization would force them, deeply, same as a full query) and
+///   reports back "this exists but wasn't materialized" instead.
+/// - `Error` covers genuine failures: parse errors, undefined names, missing
+///   attrs, or a `nix eval` that exited non-zero for any other reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "expr_eval_result", content = "value", rename_all = "snake_case")]
+pub enum ExprEvalResult {
+  /// Shallow result: attribute names only. Never forces any attribute's
+  /// value.
+  Attrs(Vec<String>),
+  /// The expression evaluated to a derivation.
+  Derivation {
+    /// `v.name`, if present.
+    name:        Option<String>,
+    /// `v.version`, if present.
+    version:     Option<String>,
+    /// `v.meta.description`, if present.
+    description: Option<String>,
+  },
+  /// The expression evaluated to a JSON-representable scalar or structure
+  /// (non-shallow queries only).
+  Scalar(serde_json::Value),
+  /// The expression evaluated to a function.
+  Lambda,
+  /// Shallow query: the value exists and was forced to WHNF but is not a
+  /// function, derivation, or attrset - its contents were deliberately not
+  /// serialized.
+  Thunk,
+  /// The daemon could not evaluate the expression.
+  Error {
+    /// Human-readable message (a trimmed `nix eval` stderr summary).
+    message: String,
+  },
+}
+
 /// A top-level reply carried inside an [`super::envelope::Envelope`] on the
 /// request/response path.
 ///
