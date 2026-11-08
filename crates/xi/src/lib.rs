@@ -85,7 +85,25 @@ fn missing_subcommand_help(err: &clap::Error) -> Option<String> {
   // the usage line would show just "cache" instead of "xi cache". Use
   // the path clap's own error already resolved.
   cmd.set_bin_name(path);
-  Some(cmd.render_long_help().to_string())
+  // `.ansi()`, not the plain `Display`/`to_string()`: see
+  // `interface::grouped_help`'s doc comment for why.
+  Some(cmd.render_long_help().ansi().to_string())
+}
+
+/// Print a help string already rendered with ANSI styling
+/// (`grouped_help`/`missing_subcommand_help`), stripping that styling if
+/// stdout is not a terminal.
+///
+/// Mirrors clap's own `err.exit()`/`print_help()` behavior, which this
+/// bypasses by rendering help as a plain `String` first: the styling
+/// itself is unconditional (`StyledStr::ansi()`, not `Display`), so
+/// *something* downstream has to decide terminal-vs-not, same as any
+/// other colored CLI output.
+fn print_help(help: &str) {
+  use std::io::Write as _;
+
+  let mut out = anstream::AutoStream::auto(std::io::stdout());
+  let _ = writeln!(out, "{help}");
 }
 
 /// Run xi with arguments parsed from the process environment.
@@ -114,7 +132,7 @@ pub fn main() -> Result<()> {
       if err.kind() == clap::error::ErrorKind::DisplayHelp
         && !has_known_subcommand_token() =>
     {
-      println!("{}", crate::interface::grouped_help());
+      print_help(&crate::interface::grouped_help());
       std::process::exit(0)
     },
     // A required subcommand was missing, at ANY depth (`xi cache`, `xi
@@ -124,7 +142,7 @@ pub fn main() -> Result<()> {
     Err(err) if err.kind() == clap::error::ErrorKind::MissingSubcommand => {
       let help = missing_subcommand_help(&err)
         .unwrap_or_else(crate::interface::grouped_help);
-      println!("{help}");
+      print_help(&help);
       std::process::exit(err.exit_code())
     },
     Err(err) => err.exit(),

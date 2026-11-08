@@ -25,6 +25,7 @@ xi-remote   = { path = "crates/xi-remote", version = "4.5.0" }
 xi-search   = { path = "crates/xi-search", version = "4.5.0" }
 xi-vm       = { path = "crates/xi-vm", version = "4.5.0" }
 
+anstream = "1.0"
 anstyle = "1.0.13"
 arc-swap = "1.7"
 blake3 = "1"

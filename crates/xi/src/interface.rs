@@ -152,7 +152,14 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
 #[must_use]
 pub fn grouped_help() -> String {
   let mut cmd = <Main as CommandFactory>::command();
-  let rendered = cmd.render_long_help().to_string();
+  // `.ansi()` is required to keep the color/bold styling from
+  // `make_style()` in the rendered string: `StyledStr`'s plain
+  // `Display`/`to_string()` strips all styling unconditionally,
+  // regardless of whether the destination is a terminal - that
+  // decision belongs to whoever ultimately writes this string (see
+  // `main()`'s `anstream::AutoStream::auto` wrapping), not to the
+  // renderer.
+  let rendered = cmd.render_long_help().ansi().to_string();
   splice_command_groups(&rendered)
 }
 
@@ -179,8 +186,13 @@ fn splice_command_groups(help: &str) -> String {
     if line.trim().is_empty() {
       continue;
     }
+    // The styled command name token (e.g. `\x1b[1mos\x1b[0m`) still has
+    // no internal whitespace, so `split_whitespace` still isolates it
+    // correctly - it just needs stripping before matching against
+    // `COMMAND_GROUPS`'s plain names.
     let name = line.split_whitespace().next().unwrap_or("");
-    if let Some(group) = heading_before.get(name) {
+    let plain_name = anstream::adapter::strip_str(name).to_string();
+    if let Some(group) = heading_before.get(plain_name.as_str()) {
       if !body.is_empty() {
         body.push('\n');
       }

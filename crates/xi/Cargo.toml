@@ -11,6 +11,7 @@ rust-version.workspace = true
 default-run            = "xi"
 
 [dependencies]
+anstream.workspace              = true
 anstyle.workspace               = true
 clap.workspace                  = true
 clap-verbosity-flag.workspace   = true
