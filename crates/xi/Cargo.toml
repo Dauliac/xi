@@ -38,6 +38,7 @@ xi-diff.workspace               = true
 xi-flake.workspace              = true
 xi-home.workspace               = true
 xi-nixos.workspace              = true
+xi-repl.workspace                = true
 xi-search.workspace             = true
 yansi.workspace                 = true
 
