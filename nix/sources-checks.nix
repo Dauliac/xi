@@ -1,6 +1,7 @@
 {
   self,
   lib,
+  inputs,
   ...
 }:
 let
@@ -721,6 +722,155 @@ in
             )
           '';
         };
+
+        # SC-NMC-003: the same VM test as `xi-sources-nixos` above, but
+        # against `nixosModules.sources` instead of `.default`, proving
+        # the narrower module activates `programs.xi.sources` identically
+        # on a plain NixOS fixture that never needed the system-manager
+        # precondition in the first place.
+        xi-sources-nixos-sources-module = pkgs.testers.runNixOSTest {
+          name = "xi-sources-nixos-sources-module";
+
+          nodes.machine = {
+            imports = [ self.nixosModules.sources ];
+
+            programs.xi = {
+              enable = true;
+              sources = {
+                enable = true;
+                remote = "https://example.invalid/nix-config.git";
+                pollInterval = "5m";
+                gitops.enable = true;
+              };
+            };
+          };
+
+          testScript = ''
+            machine.wait_for_unit("multi-user.target")
+
+            machine.succeed("test -d /var/lib/xi/sources")
+            machine.succeed("test -d /var/lib/xi/state")
+            machine.succeed("test 700 = $(stat -c %a /var/lib/xi/sources)")
+            machine.succeed("test 700 = $(stat -c %a /var/lib/xi/state)")
+            machine.succeed("test root:root = $(stat -c %U:%G /var/lib/xi/sources)")
+            machine.succeed("test root:root = $(stat -c %U:%G /var/lib/xi/state)")
+
+            machine.succeed("test -f /etc/xi/sources.toml")
+            machine.succeed(
+                "grep -q '^remote = \"https://example.invalid/nix-config.git\"$' /etc/xi/sources.toml"
+            )
+            machine.succeed("grep -q '^poll-interval = \"5m\"$' /etc/xi/sources.toml")
+
+            machine.succeed(
+                "systemctl show -p ExecStart xi-sources-daemon.service | grep -q -- '--scope system '"
+            )
+            machine.succeed(
+                "systemctl show -p ExecStart xi-sources-daemon.service | grep -q '/bin/xi-sources-daemon'"
+            )
+          '';
+        };
+
+        # xi-9m39 / SC-NMC-001/002: `nixosModules.sources` is importable
+        # alongside a consumer's own, separately-provided nix-lib head
+        # (here `inputs.nix-lib.systemManagerModules.default`, standing
+        # in for `inputs.nlib.systemManagerModules.default` in a real
+        # `nix-lib.follows`-based consumer); `nixosModules.default`
+        # still reproduces the original clash against the exact same
+        # fixture, proving this is a faithful reproduction of the bug
+        # rather than a vacuous pass.
+        xi-sources-nixos-module-system-manager-clash =
+          let
+            sourcesConfig = {
+              programs.xi.enable = true;
+              programs.xi.sources.enable = true;
+            };
+            # The bare host-level option paths `sources.nix` touches that
+            # a real system-manager evaluation's own base module set
+            # (not exercised here - `inputs.nix-lib.systemManagerModules.default`
+            # alone does not provide them) would otherwise declare for
+            # free. Deliberately does *not* stub `programs.xi.*`: that
+            # comes from the real `enable.nix`/`package.nix` the heads
+            # under test import, which is exactly what this check needs
+            # to exercise unstubbed.
+            hostStub = {
+              options = {
+                assertions = assertionsOption;
+                environment.etc = fileAttrs;
+                environment.systemPackages = lib.mkOption {
+                  type = lib.types.listOf lib.types.unspecified;
+                  default = [ ];
+                };
+                # `package.nix` assigns this unconditionally; its value is
+                # never forced below (`succeeds` only forces option
+                # *paths*, not `nix.package`'s own default), so a cheap
+                # stand-in avoids pulling a real `nix` derivation through
+                # evaluation only to prove the option path merges.
+                nix.package = lib.mkOption {
+                  type = lib.types.unspecified;
+                  default = null;
+                };
+                systemd.tmpfiles.rules = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                };
+                systemd.services = unspecifiedAttrs;
+              };
+            };
+            evalWith =
+              head:
+              lib.evalModules {
+                specialArgs = {
+                  inherit pkgs;
+                };
+                modules = [
+                  inputs.nix-lib.systemManagerModules.default
+                  hostStub
+                  head
+                  sourcesConfig
+                ];
+              };
+            # Forces every option path `nixosModules.sources` is known to
+            # touch, without `deepSeq`-ing `environment.systemPackages`'s
+            # elements: those are real package derivations (xi's own
+            # build), and `deepSeq` walking a full stdenv derivation tree
+            # hits Nix's max call depth. A merge error ("option does not
+            # exist", or a declaration clash) surfaces from forcing the
+            # option *path* itself, not from walking a package's internals.
+            succeeds =
+              head:
+              (builtins.tryEval (
+                builtins.deepSeq {
+                  assertions = (evalWith head).config.assertions;
+                  etcNames = builtins.attrNames (evalWith head).config.environment.etc;
+                  systemPackagesLength = builtins.length (evalWith head).config.environment.systemPackages;
+                  serviceNames = builtins.attrNames (evalWith head).config.systemd.services;
+                  tmpfilesRules = (evalWith head).config.systemd.tmpfiles.rules;
+                } true
+              )).success;
+            narrowSucceeds = succeeds self.nixosModules.sources;
+            defaultSucceeds = succeeds self.nixosModules.default;
+          in
+          pkgs.runCommand "xi-sources-nixos-module-system-manager-clash"
+            {
+              narrowSucceeds = builtins.toJSON narrowSucceeds;
+              defaultSucceeds = builtins.toJSON defaultSucceeds;
+            }
+            ''
+              if [ "$narrowSucceeds" != "true" ]; then
+                echo "nixosModules.sources must evaluate cleanly alongside a" >&2
+                echo "consumer-provided systemManagerModules.default head (SC-NMC-001)" >&2
+                exit 1
+              fi
+
+              if [ "$defaultSucceeds" != "false" ]; then
+                echo "nixosModules.default was expected to still clash against this" >&2
+                echo "fixture (SC-NMC-002) - it no longer reproduces xi-9m39, so this" >&2
+                echo "check is not proving .sources fixed anything real" >&2
+                exit 1
+              fi
+
+              touch "$out"
+            '';
       };
     };
 }
