@@ -5,29 +5,37 @@
 //! completion request it:
 //!
 //! 1. Splits the typed token on its last `.` into a base expression and a
-//!    partial attribute name, then sends `ExprEval{expr: base, shallow: true}`
-//!    to the daemon and turns the returned `Attrs(Vec<String>)` names (filtered
-//!    by the partial) into `reedline` `Suggestion`s  -  this part is
-//!    synchronous, matching task 5.1's wording exactly ("`.`/Tab-triggered
-//!    completion ... candidate attribute names populate reedline's completion
-//!    menu"). A token with no `.` yet (including an empty line - a bare Tab
-//!    press before typing anything) sends [`FLAKE_SCOPE_EXPR`] as the base
-//!    instead of giving up - the daemon answers that with the flake's own
-//!    top-level output names (`packages`, `nixosConfigurations`, `checks`,
-//!    ...), the same thing real `nix repl`'s `:lf .` loads into scope. This
-//!    goes through the same `builtins.getFlake`-backed path as any other
-//!    expression, so it carries the same potentially-slow, uncached cost on a
-//!    large flake (see `v3_handlers::run_expr_eval`'s doc comment).
-//! 2. Enriches only a bounded window of those candidates (task 5.2) with a
-//!    `meta.description`/version preview, one further shallow `ExprEval` per
-//!    candidate, rendered through the same [`crate::render::render`] this crate
-//!    already uses for top-level results (which itself defers to
-//!    [`xi_core::nix_value::render_entry`] for derivations).
-//! 3. Runs that enrichment on a background thread, feeding results back through
-//!    an `mpsc` channel drained non-blockingly from
-//!    [`Completer::poll_completion`] (task 5.3)  -  the same thread+channel
-//!    shape `nix-command`'s `read_pipe`/`PipeEvent` uses for streaming
-//!    subprocess output, applied here to streaming daemon round-trips instead.
+//!    partial attribute name. A token with no `.` yet (including an empty line,
+//!    e.g. a bare Tab press before typing anything) uses [`FLAKE_SCOPE_EXPR`]
+//!    as the base instead of giving up  -  the daemon answers that with the
+//!    flake's own top-level output names (`packages`, `nixosConfigurations`,
+//!    `checks`, ...), the same thing real `nix repl`'s `:lf .` loads into
+//!    scope.
+//! 2. Resolves the base expression's attribute names. The *first* request for a
+//!    given base expression sends `ExprEval{expr: base, shallow: true}` to the
+//!    daemon on a background thread, never on `complete()`'s caller (reedline's
+//!    input-handling thread), because that round-trip goes through the same
+//!    `builtins.getFlake`-backed path as any other expression and can take tens
+//!    of seconds, uncached, on a large flake (see
+//!    `v3_handlers::run_expr_eval`'s doc comment and
+//!    `client_v3::EXPR_EVAL_TIMEOUT`'s 1-minute ceiling); blocking the input
+//!    thread on it would freeze the whole editor, not just the completion menu.
+//!    `complete()` returns immediately with no suggestions, and once the
+//!    background thread's answer lands, [`Completer::poll_completion`] reports
+//!    `Ready` so reedline re-asks `complete()` for the now-populated list. The
+//!    raw (unfiltered) names are cached per base expression, so narrowing the
+//!    partial by typing further characters re-filters that cache locally
+//!    instead of re-querying the daemon on every keystroke.
+//! 3. Enriches only a bounded window of the (locally filtered) candidates (task
+//!    5.2) with a `meta.description`/version preview, one further shallow
+//!    `ExprEval` per candidate, rendered through the same
+//!    [`crate::render::render`] this crate already uses for top-level results
+//!    (which itself defers to [`xi_core::nix_value::render_entry`] for
+//!    derivations). This also runs on a background thread, feeding results back
+//!    through an `mpsc` channel drained non-blockingly from `poll_completion`
+//!    (task 5.3)  -  the same thread+channel shape `nix-command`'s
+//!    `read_pipe`/`PipeEvent` uses for streaming subprocess output, applied
+//!    here to streaming daemon round-trips instead.
 //!
 //! ## API limitation, noted honestly
 //!
@@ -138,8 +146,8 @@ fn attr_prefix(line: &str, pos: usize) -> Option<AttrPrefix> {
 }
 
 /// One completion request's state: the parsed prefix, and the suggestions
-/// for it  -  initially unenriched, filled in with preview text as
-/// [`EnrichMsg::Item`]s arrive.
+/// for it  -  initially empty (while the base fetch is in flight) or
+/// unenriched, filled in with preview text as [`EnrichMsg::Item`]s arrive.
 struct RequestState {
   request_id:  u64,
   base_expr:   String,
@@ -148,9 +156,25 @@ struct RequestState {
   suggestions: Vec<Suggestion>,
 }
 
-/// A message from the background enrichment thread back to
+/// The raw (unfiltered by `partial`) attribute names last fetched for a
+/// given base expression, kept so narrowing the partial by typing further
+/// characters re-filters locally instead of re-querying the daemon - see
+/// the module doc comment, point 2.
+struct BaseCache {
+  base_expr:  String,
+  span_start: usize,
+  names:      Vec<String>,
+}
+
+/// A message from a background thread (base-fetch or enrichment) back to
 /// [`AttrCompleter::poll_completion`].
 enum EnrichMsg {
+  /// The base expression's raw attribute names are ready - unfiltered by
+  /// `partial`, which may have kept changing while the fetch was in flight.
+  Base {
+    request_id: u64,
+    names:      Vec<String>,
+  },
   /// One candidate's preview text is ready.
   Item {
     request_id: u64,
@@ -169,7 +193,9 @@ enum EnrichMsg {
 pub struct AttrCompleter {
   socket_path:          PathBuf,
   current:              Option<RequestState>,
+  base_cache:           Option<BaseCache>,
   rx:                   Option<mpsc::Receiver<EnrichMsg>>,
+  base_in_flight:       bool,
   enrichment_in_flight: bool,
   next_request_id:      u64,
 }
@@ -184,7 +210,9 @@ impl AttrCompleter {
     Self {
       socket_path,
       current: None,
+      base_cache: None,
       rx: None,
+      base_in_flight: false,
       enrichment_in_flight: false,
       next_request_id: 0,
     }
@@ -194,16 +222,44 @@ impl AttrCompleter {
   ///
   /// Swallows every failure mode (unreachable daemon, a non-`Attrs` reply
   /// because `base_expr` isn't an attrset, a protocol mismatch) into an
-  /// empty candidate list: [`Completer::complete`] has no error channel, so
-  /// "no completions right now" is the only honest answer to give back, the
-  /// same convention `reedline`'s own `HistoryCompleter` uses.
-  fn fetch_attrs(&self, base_expr: &str) -> Vec<String> {
-    match client_v3::expr_eval(&self.socket_path, base_expr, true) {
+  /// empty candidate list: the caller (a background thread; see
+  /// [`AttrCompleter::spawn_base_fetch`]) has no error channel back to the
+  /// editor either, so "no completions right now" is the only honest answer
+  /// to give back, the same convention `reedline`'s own `HistoryCompleter`
+  /// uses.
+  fn fetch_attrs(
+    socket_path: &std::path::Path,
+    base_expr: &str,
+  ) -> Vec<String> {
+    match client_v3::expr_eval(socket_path, base_expr, true) {
       Ok(QueryOutcome::V3(QueryReply::ExprEval(Availability::Ready {
         value: ExprEvalResult::Attrs(names),
       }))) => names,
       _ => Vec::new(),
     }
+  }
+
+  /// Spawn the background thread that resolves `base_expr`'s raw attribute
+  /// names, replacing (and thereby abandoning) any base fetch or enrichment
+  /// still running for a previous request - same cancellation-by-dropped-`rx`
+  /// mechanism [`AttrCompleter::spawn_enrichment`] uses, see its doc comment.
+  ///
+  /// This is the call that can take the better part of a minute on a large,
+  /// uncached flake (see the module doc comment, point 2); running it here
+  /// instead of inline in [`Completer::complete`] is the whole point - the
+  /// editor's input thread calls `complete()` and must get control back
+  /// immediately, or every keystroke after a `.`/Tab would freeze the
+  /// terminal until the daemon answers.
+  fn spawn_base_fetch(&mut self, request_id: u64, base_expr: String) {
+    let (tx, rx) = mpsc::channel();
+    self.rx = Some(rx);
+    self.base_in_flight = true;
+
+    let socket_path = self.socket_path.clone();
+    thread::spawn(move || {
+      let names = Self::fetch_attrs(&socket_path, &base_expr);
+      let _ = tx.send(EnrichMsg::Base { request_id, names });
+    });
   }
 
   /// Spawn the background enrichment thread for the first
@@ -274,6 +330,35 @@ impl AttrCompleter {
   }
 }
 
+/// Filter `names` to those starting with `partial`, sort, and turn them into
+/// `reedline` [`Suggestion`]s anchored at `span`.
+fn filtered_suggestions(
+  names: &[String],
+  partial: &str,
+  span: Span,
+) -> (Vec<String>, Vec<Suggestion>) {
+  let mut filtered: Vec<String> = names
+    .iter()
+    .filter(|n| n.starts_with(partial))
+    .cloned()
+    .collect();
+  filtered.sort();
+
+  let suggestions = filtered
+    .iter()
+    .map(|name| {
+      Suggestion {
+        value: name.clone(),
+        span,
+        append_whitespace: false,
+        ..Default::default()
+      }
+    })
+    .collect();
+
+  (filtered, suggestions)
+}
+
 impl Completer for AttrCompleter {
   fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
     let Some(prefix) = attr_prefix(line, pos) else {
@@ -303,41 +388,76 @@ impl Completer for AttrCompleter {
     self.next_request_id += 1;
     let request_id = self.next_request_id;
 
-    let mut names = self.fetch_attrs(&prefix.base_expr);
-    names.retain(|n| n.starts_with(&prefix.partial));
-    names.sort();
-
-    let suggestions: Vec<Suggestion> = names
-      .iter()
-      .map(|name| {
-        Suggestion {
-          value: name.clone(),
-          span: prefix.span,
-          append_whitespace: false,
-          ..Default::default()
-        }
+    // Cache hit: the raw names for this exact attribute segment are already
+    // known (an earlier keystroke in this same segment fetched them), so
+    // just re-filter locally by the new partial - no daemon round-trip.
+    let cached_names = self
+      .base_cache
+      .as_ref()
+      .filter(|c| {
+        c.base_expr == prefix.base_expr && c.span_start == prefix.span.start
       })
-      .collect();
+      .map(|c| c.names.clone());
 
-    self.spawn_enrichment(request_id, prefix.base_expr.clone(), &names);
+    if let Some(names) = cached_names {
+      let (filtered, suggestions) =
+        filtered_suggestions(&names, &prefix.partial, prefix.span);
+      self.spawn_enrichment(request_id, prefix.base_expr.clone(), &filtered);
+      self.current = Some(RequestState {
+        request_id,
+        base_expr: prefix.base_expr,
+        partial: prefix.partial,
+        span: prefix.span,
+        suggestions: suggestions.clone(),
+      });
+      return CompletionResult::fresh(suggestions);
+    }
 
+    // Cache miss: a brand-new attribute segment. Resolve it off-thread (see
+    // `spawn_base_fetch`'s doc comment for why) and return nothing for now;
+    // `poll_completion` picks the answer up once it lands.
     self.current = Some(RequestState {
       request_id,
-      base_expr: prefix.base_expr,
+      base_expr: prefix.base_expr.clone(),
       partial: prefix.partial,
       span: prefix.span,
-      suggestions: suggestions.clone(),
+      suggestions: Vec::new(),
     });
+    self.spawn_base_fetch(request_id, prefix.base_expr);
 
-    CompletionResult::fresh(suggestions)
+    CompletionResult::fresh(Vec::<Suggestion>::new())
   }
 
   fn poll_completion(&mut self) -> CompletionStatus {
     let mut updated = false;
+    // Deferred out of the loop below because spawning enrichment needs
+    // `&mut self` as a whole, which would conflict with the `&self.rx`
+    // borrow the loop holds for its duration.
+    let mut pending_enrich: Option<(u64, String, Vec<String>)> = None;
 
     if let Some(rx) = &self.rx {
       loop {
         match rx.try_recv() {
+          Ok(EnrichMsg::Base { request_id, names }) => {
+            if let Some(current) = &mut self.current
+              && current.request_id == request_id
+            {
+              let (filtered, suggestions) =
+                filtered_suggestions(&names, &current.partial, current.span);
+              self.base_cache = Some(BaseCache {
+                base_expr: current.base_expr.clone(),
+                span_start: current.span.start,
+                names,
+              });
+              current.suggestions = suggestions;
+              pending_enrich =
+                Some((request_id, current.base_expr.clone(), filtered));
+              updated = true;
+            }
+            self.base_in_flight = false;
+            // A fetch for a request we've since moved past: discard - its
+            // answer is stale and nothing downstream is waiting on it.
+          },
           Ok(EnrichMsg::Item {
             request_id,
             name,
@@ -366,6 +486,7 @@ impl Completer for AttrCompleter {
           Err(mpsc::TryRecvError::Empty) => break,
           Err(mpsc::TryRecvError::Disconnected) => {
             self.rx = None;
+            self.base_in_flight = false;
             self.enrichment_in_flight = false;
             break;
           },
@@ -373,9 +494,13 @@ impl Completer for AttrCompleter {
       }
     }
 
+    if let Some((request_id, base_expr, names)) = pending_enrich {
+      self.spawn_enrichment(request_id, base_expr, &names);
+    }
+
     if updated {
       CompletionStatus::Ready
-    } else if self.enrichment_in_flight {
+    } else if self.base_in_flight || self.enrichment_in_flight {
       CompletionStatus::Pending
     } else {
       CompletionStatus::Idle
@@ -449,11 +574,114 @@ mod tests {
 
   #[test]
   fn completing_against_an_unreachable_daemon_yields_no_suggestions() {
-    // No daemon is listening on this path, so `fetch_attrs` swallows the
-    // connect failure and `complete` returns an empty, authoritative
-    // result rather than hanging or panicking.
+    // No daemon is listening on this path, so the background base-fetch
+    // thread's connect fails immediately and `complete` returns an empty
+    // result right away - not hanging, not panicking.
     let mut completer = AttrCompleter::new(PathBuf::from("/nonexistent.sock"));
     let result = completer.complete("pkgs.hel", 8);
     assert!(result.suggestions().is_empty());
+  }
+
+  /// A fake v3 daemon that answers exactly one `ExprEval` query after a
+  /// deliberate delay, to prove `complete()` does not block on it.
+  ///
+  /// Mirrors `tests/bdd_repl_happy_path.rs`'s `MiniDaemon`, duplicated here
+  /// (rather than shared) because `completion` is a private module  -  an
+  /// integration test in `tests/` cannot reach `AttrCompleter` to drive this
+  /// scenario, so the test has to live in this module instead.
+  struct SlowMiniDaemon {
+    socket:  PathBuf,
+    _handle: thread::JoinHandle<()>,
+    _tmp:    tempfile::TempDir,
+  }
+
+  impl SlowMiniDaemon {
+    fn spawn(delay: std::time::Duration, names: Vec<String>) -> Self {
+      use std::{
+        io::{BufReader, BufWriter},
+        os::unix::net::UnixListener,
+      };
+
+      use xi_develop::daemon::{
+        protocol::{read_message, write_message},
+        protocol_v3::{Envelope, Payload, Query, Reply},
+      };
+
+      let tmp = tempfile::tempdir().expect("mktemp");
+      let socket = tmp.path().join("v3.sock");
+      let listener = UnixListener::bind(&socket).expect("bind");
+
+      let (ready_tx, ready_rx) = mpsc::channel::<()>();
+      let handle = thread::spawn(move || {
+        ready_tx.send(()).ok();
+        let Ok((stream, _)) = listener.accept() else {
+          return;
+        };
+        let mut reader = BufReader::new(&stream);
+        let mut writer = BufWriter::new(&stream);
+        let Ok(env) = read_message::<_, Envelope>(&mut reader) else {
+          return;
+        };
+        let Payload::Query(Query::ExprEval { .. }) = env.payload else {
+          return;
+        };
+        thread::sleep(delay);
+        let reply = Envelope::new(
+          env.id,
+          Payload::Reply(Reply::Query(QueryReply::ExprEval(
+            Availability::Ready {
+              value: ExprEvalResult::Attrs(names),
+            },
+          ))),
+        );
+        let _ = write_message(&mut writer, &reply);
+      });
+      ready_rx.recv().expect("listener ready");
+
+      Self {
+        socket,
+        _handle: handle,
+        _tmp: tmp,
+      }
+    }
+  }
+
+  #[test]
+  fn complete_does_not_block_on_a_slow_daemon() {
+    let daemon =
+      SlowMiniDaemon::spawn(std::time::Duration::from_millis(300), vec![
+        "hello".to_owned(),
+      ]);
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let started = std::time::Instant::now();
+    let first = completer.complete("pkgs.hel", 8);
+    // The whole point of backgrounding the base fetch: `complete()` returns
+    // long before the fake daemon's artificial delay elapses.
+    assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    assert!(first.suggestions().is_empty());
+    assert_eq!(completer.poll_completion(), CompletionStatus::Pending);
+
+    let deadline =
+      std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+      let status = completer.poll_completion();
+      if status == CompletionStatus::Ready {
+        break;
+      }
+      assert!(
+        std::time::Instant::now() < deadline,
+        "daemon reply never arrived"
+      );
+      thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let settled = completer.complete("pkgs.hel", 8);
+    let names: Vec<_> = settled
+      .suggestions()
+      .iter()
+      .map(|s| s.value.clone())
+      .collect();
+    assert_eq!(names, vec!["hello".to_owned()]);
   }
 }
