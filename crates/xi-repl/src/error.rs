@@ -18,15 +18,24 @@ use thiserror::Error;
 /// daemon.
 #[derive(Debug, Error)]
 pub enum ReplError {
-  /// No daemon answered on `socket` and `--no-daemon` was passed, so the
-  /// session never attempted to spawn one for `flake`.
+  /// `client_v3::expr_eval` failed - either no daemon is listening on
+  /// `socket` at all (connection refused/not found - the `--no-daemon`
+  /// case, or a daemon that died mid-session), or one is listening but
+  /// didn't answer in time (a real `nix eval` taking longer than the
+  /// client's read timeout). `eval()` doesn't know at this point whether
+  /// `--no-daemon` was passed, so the message stays neutral about why and
+  /// just surfaces `cause` rather than guessing.
   #[error(
-    "no daemon reachable at {}  -  started with --no-daemon, so none was \
-     spawned. Run `xi develop daemon start --flake {}` first, or drop \
-     --no-daemon to let `xi repl` manage it.",
-    socket.display(), flake.display()
+    "could not reach the daemon at {} for flake {}: {cause}  -  if no \
+     daemon is running, drop --no-daemon (or run `xi develop daemon \
+     start --flake {}` yourself first) to let `xi repl` manage it.",
+    socket.display(), flake.display(), flake.display()
   )]
-  DaemonUnreachable { socket: PathBuf, flake: PathBuf },
+  DaemonUnreachable {
+    socket: PathBuf,
+    flake:  PathBuf,
+    cause:  String,
+  },
 
   /// The daemon answered and classified the expression as a genuine
   /// evaluation failure ([`super::ExprEvalResult::Error`]).

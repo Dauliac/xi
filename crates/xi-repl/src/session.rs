@@ -111,10 +111,11 @@ pub fn eval(
   expr: &str,
 ) -> Result<ExprEvalResult> {
   let outcome =
-    client_v3::expr_eval(socket_path, expr, false).map_err(|_| {
+    client_v3::expr_eval(socket_path, expr, false).map_err(|e| {
       ReplError::DaemonUnreachable {
         socket: socket_path.to_path_buf(),
         flake:  flake_root.to_path_buf(),
+        cause:  e.to_string(),
       }
     })?;
 

@@ -287,18 +287,36 @@ fn handle_expr_eval(
 /// a JSON-serialization failure on a derivation's function-valued attrs
 /// (`override`, `overrideAttrs`, …) the way serializing the raw value
 /// would.
+///
+/// When `flake_root` has a `flake.nix`, the flake's own outputs are bound
+/// into scope via `with` (the same effect real `nix repl`'s `:lf .` has),
+/// so `expr` can reference `packages`, `nixosConfigurations`, etc. as bare
+/// names instead of every caller spelling out
+/// `(builtins.getFlake "path:...").packages` themselves. This needs
+/// `--impure` (an unlocked `path:` ref can't be read purely) and re-runs
+/// `builtins.getFlake` fresh on every call, with no cross-call cache - a
+/// nixpkgs-sized flake will feel this on every keystroke; see proposal
+/// Open Question 3. When there is no `flake.nix` at `flake_root` (e.g. a
+/// throwaway test fixture), this falls back to the plain, unbound,
+/// pure-eval-safe wrapper - checked once in Rust rather than inside the
+/// nix expression, since `builtins.tryEval` does not reliably catch a
+/// missing-flake.nix error from `getFlake`.
 fn run_expr_eval(
   flake_root: &std::path::Path,
   expr: &str,
   shallow: bool,
 ) -> ExprEvalResult {
-  let wrapper = classify_wrapper(expr, shallow);
+  let has_flake = flake_root.join("flake.nix").is_file();
+  let wrapper = classify_wrapper(flake_root, has_flake, expr, shallow);
 
-  let mut cmd = NixCommand::new(CommandKind::Eval)
+  let mut builder = NixCommand::new(CommandKind::Eval)
     .arg("--expr")
     .arg(&wrapper)
-    .arg("--json")
-    .to_std_command();
+    .arg("--json");
+  if has_flake {
+    builder = builder.impure(true);
+  }
+  let mut cmd = builder.to_std_command();
   cmd.current_dir(flake_root);
 
   let output = match cmd.output() {
@@ -334,7 +352,19 @@ fn run_expr_eval(
 /// no shell involved, we invoke the `nix` binary directly), wrapped in an
 /// extra pair of parens so any syntactically valid top-level expression
 /// (including a bare `let … in …`) binds cleanly to `v`.
-fn classify_wrapper(expr: &str, shallow: bool) -> String {
+///
+/// When `has_flake` is set, the whole thing is wrapped in
+/// `with (builtins.getFlake "path:<flake_root>"); ...` first, so `expr` can
+/// reach the flake's own outputs (`packages`, `nixosConfigurations`, …) as
+/// bare names - this is what the user is asking for when they type e.g.
+/// `packages.x86_64-linux.hello` without first spelling out
+/// `builtins.getFlake` themselves.
+fn classify_wrapper(
+  flake_root: &std::path::Path,
+  has_flake: bool,
+  expr: &str,
+  shallow: bool,
+) -> String {
   // Both shapes share the lambda/derivation checks (cheap: WHNF-only).
   // They diverge only on what happens to a plain (non-derivation) attrset
   // and to every other value shape (scalars, lists, ints, …):
@@ -349,7 +379,7 @@ fn classify_wrapper(expr: &str, shallow: bool) -> String {
     r#"else { kind = "scalar"; value = v; }"#
   };
 
-  format!(
+  let body = format!(
     r#"let v = ({expr}); in
   if builtins.isFunction v then {{ kind = "lambda"; }}
   else if builtins.isAttrs v && (v.type or null) == "derivation" then
@@ -359,7 +389,25 @@ fn classify_wrapper(expr: &str, shallow: bool) -> String {
        description = v.meta.description or null; }}
   {tail}
 "#
-  )
+  );
+
+  if has_flake {
+    let escaped = nix_string_literal(&flake_root.to_string_lossy());
+    format!(
+      "let __xiReplFlake = builtins.getFlake \"path:{escaped}\"; in\nwith \
+       __xiReplFlake;\n{body}"
+    )
+  } else {
+    body
+  }
+}
+
+/// Escape a raw string for use inside a Nix double-quoted string literal.
+fn nix_string_literal(raw: &str) -> String {
+  raw
+    .replace('\\', "\\\\")
+    .replace('"', "\\\"")
+    .replace("${", "\\${")
 }
 
 /// Decode the `{ kind = …; … }` JSON object the [`classify_wrapper`]
@@ -558,5 +606,52 @@ mod tests {
       },
       _ => unreachable!("test helper only handles pure queries"),
     }
+  }
+
+  #[test]
+  fn classify_wrapper_without_flake_is_unchanged() {
+    let no_flake = std::path::Path::new("/does/not/exist");
+    let wrapper = classify_wrapper(no_flake, false, "1 + 1", false);
+    assert!(
+      !wrapper.contains("getFlake"),
+      "no flake.nix present must not introduce a getFlake binding"
+    );
+    assert!(wrapper.starts_with("let v = (1 + 1); in"));
+  }
+
+  #[test]
+  fn classify_wrapper_with_flake_binds_outputs_via_with() {
+    let flake_root = std::path::Path::new("/tmp/some-flake");
+    let wrapper =
+      classify_wrapper(flake_root, true, "packages.x86_64-linux.hello", true);
+    assert!(wrapper.contains(r#"builtins.getFlake "path:/tmp/some-flake""#));
+    assert!(wrapper.contains("with __xiReplFlake;"));
+    assert!(wrapper.contains("let v = (packages.x86_64-linux.hello); in"));
+  }
+
+  #[test]
+  fn nix_string_literal_escapes_quotes_backslashes_and_interpolation() {
+    assert_eq!(nix_string_literal("plain"), "plain");
+    assert_eq!(nix_string_literal(r#"has"quote"#), r#"has\"quote"#);
+    assert_eq!(nix_string_literal(r"has\backslash"), r"has\\backslash");
+    assert_eq!(nix_string_literal("has${interp}"), r"has\${interp}");
+  }
+
+  #[test]
+  fn run_expr_eval_binds_flake_outputs_when_flake_nix_present() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      // xi-repl's fixture may not exist yet in an isolated checkout of
+      // just this crate; skip rather than fail spuriously.
+      return;
+    }
+    let result = run_expr_eval(fixture, "builtins.attrNames packages", false);
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(value, json!(["x86_64-linux"]));
   }
 }

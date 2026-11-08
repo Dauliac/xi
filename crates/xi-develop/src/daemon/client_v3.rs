@@ -43,6 +43,18 @@ use super::{
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Read/write timeout for [`expr_eval`] specifically.
+///
+/// Every other query answers from already-held `ServerState` and must
+/// stay fast, hence the generic [`IO_TIMEOUT`]. `ExprEval` is the one
+/// query that can launch a real `nix eval` subprocess server-side
+/// (`v3_handlers::run_expr_eval`) - and, once that expression's
+/// `flake_root` has a `flake.nix`, an impure `builtins.getFlake` with no
+/// cross-call cache on top of that. On a nixpkgs-sized flake this can
+/// genuinely take tens of seconds; 5s was timing out on real-world use
+/// (see the xi-repl flake-auto-load follow-up).
+const EXPR_EVAL_TIMEOUT: Duration = Duration::from_mins(1);
+
 /// Outcome of a client call on the shared v2/v3 socket.
 ///
 /// The legacy variant lets the caller know a v2 daemon answered, so it can
@@ -78,7 +90,15 @@ pub enum CommandOutcome {
 /// Returns an error only on connect / I/O failure; wire-level version
 /// negotiation is expressed via [`QueryOutcome`], not an error.
 pub fn query(socket_path: &Path, q: Query) -> Result<QueryOutcome> {
-  let stream = connect(socket_path)?;
+  query_with_timeout(socket_path, q, IO_TIMEOUT)
+}
+
+fn query_with_timeout(
+  socket_path: &Path,
+  q: Query,
+  io_timeout: Duration,
+) -> Result<QueryOutcome> {
+  let stream = connect_with_io_timeout(socket_path, io_timeout)?;
   let request = envelope(Payload::Query(q));
   write_envelope(&stream, &request)?;
   read_outcome(&stream, request.id.as_str(), OutcomeKind::Query)
@@ -131,10 +151,14 @@ pub fn expr_eval(
   expr: &str,
   shallow: bool,
 ) -> Result<QueryOutcome> {
-  query(socket_path, Query::ExprEval {
-    expr: expr.to_owned(),
-    shallow,
-  })
+  query_with_timeout(
+    socket_path,
+    Query::ExprEval {
+      expr: expr.to_owned(),
+      shallow,
+    },
+    EXPR_EVAL_TIMEOUT,
+  )
 }
 
 /// Short-hand: send `Query::HeartBeat` and report whether the daemon
@@ -234,10 +258,17 @@ enum OutcomeKind {
 }
 
 fn connect(socket_path: &Path) -> Result<UnixStream> {
+  connect_with_io_timeout(socket_path, IO_TIMEOUT)
+}
+
+fn connect_with_io_timeout(
+  socket_path: &Path,
+  io_timeout: Duration,
+) -> Result<UnixStream> {
   let stream = UnixStream::connect(socket_path)
     .map_err(|e| eyre!("Cannot connect to daemon: {e}"))?;
-  stream.set_read_timeout(Some(IO_TIMEOUT))?;
-  stream.set_write_timeout(Some(IO_TIMEOUT))?;
+  stream.set_read_timeout(Some(io_timeout))?;
+  stream.set_write_timeout(Some(io_timeout))?;
   Ok(stream)
 }
 
@@ -355,7 +386,8 @@ fn synth_status_from_v3(
   })
 }
 
-// Keep `CONNECT_TIMEOUT` alive for a future `connect_with_timeout` path
-// (Rust's stdlib `UnixStream` has no direct connect-timeout knob and needs
+// Keep `CONNECT_TIMEOUT` alive for a future connect-establishment timeout
+// (distinct from `connect_with_io_timeout`'s read/write timeout above -
+// Rust's stdlib `UnixStream` has no direct connect-timeout knob and needs
 // a socket-options dance; the daemon reconnect loop lives with the hook).
 const _: Duration = CONNECT_TIMEOUT;
