@@ -75,7 +75,7 @@ pub struct Main {
   Flake ops:    build, check, run, fmt, show, init, update, ci, lib, test, \
                 doctor, materialize
   Deployment:   deploy
-  Development:  develop, search
+  Development:  develop, search, vm
   Agent:        agent
   Auth:         auth
   Maintenance:  cache, clean, nix, completions"
@@ -116,6 +116,7 @@ pub enum XiCommand {
   // -- Development --
   Develop(xi_develop::args::DevelopArgs),
   Search(xi_search::args::SearchArgs),
+  Vm(xi_vm::args::VmArgs),
 
   // -- Agent context --
   Agent(xi_agent::args::AgentArgs),
@@ -171,6 +172,7 @@ impl XiCommand {
       | Self::Doctor(..)
       | Self::Materialize(..)
       | Self::Deploy(..) => Box::new(xi_core::checks::FlakeFeatures),
+      Self::Vm(args) => args.get_feature_requirements(),
       Self::Agent(..)
       | Self::Sources(..)
       | Self::Switch
@@ -360,6 +362,7 @@ impl XiCommand {
       Self::Deploy(args) => xi_deploy::detect_and_deploy(&args),
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
+      Self::Vm(args) => xi_vm::vm::run(args),
       Self::Auth(args) => xi_auth::run(&args),
       Self::Sources(proxy) => proxy.run(),
       Self::Switch => crate::sources::verbless_switch(),

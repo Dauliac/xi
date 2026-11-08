@@ -39,6 +39,7 @@ xi-flake.workspace              = true
 xi-home.workspace               = true
 xi-nixos.workspace              = true
 xi-search.workspace             = true
+xi-vm.workspace                 = true
 yansi.workspace                 = true
 
 [dev-dependencies]

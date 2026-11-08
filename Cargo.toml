@@ -23,6 +23,7 @@ xi-home     = { path = "crates/xi-home", version = "4.5.0" }
 xi-nixos    = { path = "crates/xi-nixos", version = "4.5.0" }
 xi-remote   = { path = "crates/xi-remote", version = "4.5.0" }
 xi-search   = { path = "crates/xi-search", version = "4.5.0" }
+xi-vm       = { path = "crates/xi-vm", version = "4.5.0" }
 
 anstyle = "1.0.13"
 arc-swap = "1.7"
@@ -50,7 +51,7 @@ indicatif = "0.18.4"
 inquire = { default-features = false, features = [ "crossterm" ], version = "0.9.1" }
 insta = { features = [ "yaml" ], version = "1.48.0" }
 
-nix = { default-features = false, features = [ "fs", "user", "hostname" ], version = "0.31.1" }
+nix = { default-features = false, features = [ "fs", "user", "hostname", "process", "signal" ], version = "0.31.1" }
 proptest = "1.9.0"
 regex = "1.12.2"
 reqwest = { default-features = false, features = [
