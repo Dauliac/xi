@@ -22,6 +22,12 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- Two public doc comments (`xi-flake::project_config::load_sources_config`,
+  `xi::sources` module docs) linked to module-private items via intra-doc
+  link syntax, which `cargo doc -D warnings` rejects. This was never caught
+  before because CI never ran `cargo doc`; it does now via `tag.yaml`'s
+  release gate.
+
 ### Removed
 
 ## 4.5.0
