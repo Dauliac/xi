@@ -20,10 +20,16 @@
 //!    `v3_handlers::run_expr_eval`'s doc comment and
 //!    `client_v3::EXPR_EVAL_TIMEOUT`'s 1-minute ceiling); blocking the input
 //!    thread on it would freeze the whole editor, not just the completion menu.
-//!    `complete()` returns immediately with no suggestions, and once the
-//!    background thread's answer lands, [`Completer::poll_completion`] reports
-//!    `Ready` so reedline re-asks `complete()` for the now-populated list. The
-//!    raw (unfiltered) names are cached per base expression, so narrowing the
+//!    `complete()` waits up to [`INITIAL_FETCH_GRACE`] for that background
+//!    thread's answer before giving up and returning empty - without this, a
+//!    fetch that resolves in, say, half a second still flashes an empty "no
+//!    records found" menu for that half second before the real one replaces it,
+//!    which reads as broken even on a perfectly healthy fetch. Past the grace
+//!    window [`Completer::poll_completion`] takes over, reporting `Ready` once
+//!    the answer lands so reedline re-asks `complete()` for the now-populated
+//!    list - this path still never blocks the editor beyond the bounded grace
+//!    window, however long the fetch itself ends up taking. The raw
+//!    (unfiltered) names are cached per base expression, so narrowing the
 //!    partial by typing further characters re-filters that cache locally
 //!    instead of re-querying the daemon on every keystroke.
 //! 3. Enriches only a bounded window of the (locally filtered) candidates (task
@@ -78,6 +84,18 @@ use xi_develop::daemon::{
 /// for "only the candidates currently visible in the dropdown" (task 5.2),
 /// which `reedline`'s `Completer` trait has no way to learn exactly.
 const ENRICH_WINDOW: usize = 12;
+
+/// How long [`Completer::complete`] waits, synchronously but boundedly, for
+/// a brand-new base fetch to land before giving up and returning an empty
+/// result for [`Completer::poll_completion`] to settle later.
+///
+/// Chosen to comfortably cover a warm `git+file://`-backed fetch against a
+/// real multi-crate flake (observed ~1-2s after the `path:` → `git+file://`
+/// fix) without reintroducing an unbounded block: a fetch slower than this
+/// still never freezes the editor, it just falls through to the async path
+/// one keystroke later than a fetch that lands inside the window.
+const INITIAL_FETCH_GRACE: std::time::Duration =
+  std::time::Duration::from_millis(800);
 
 /// Base expression and partial attribute name parsed out of the buffer
 /// immediately left of the cursor.
@@ -257,7 +275,18 @@ impl AttrCompleter {
 
     let socket_path = self.socket_path.clone();
     thread::spawn(move || {
-      let names = Self::fetch_attrs(&socket_path, &base_expr);
+      let mut names = Self::fetch_attrs(&socket_path, &base_expr);
+      // At the top level, also offer `builtins` itself - the one bare
+      // identifier every Nix expression has in scope regardless of the
+      // flake's own outputs, and the gateway to completing Nix's actual
+      // *functions* (`builtins.map`, `builtins.toString`, ...) rather than
+      // only flake data. Dotting into it from here already works through
+      // the ordinary (non-`FLAKE_SCOPE_EXPR`) completion path, since typed
+      // text like `builtins.to` is just an ordinary expression by then.
+      if base_expr == FLAKE_SCOPE_EXPR && !names.iter().any(|n| n == "builtins")
+      {
+        names.push("builtins".to_owned());
+      }
       let _ = tx.send(EnrichMsg::Base { request_id, names });
     });
   }
@@ -434,16 +463,41 @@ impl Completer for AttrCompleter {
     }
 
     // Cache miss: a brand-new attribute segment. Resolve it off-thread (see
-    // `spawn_base_fetch`'s doc comment for why) and return nothing for now;
-    // `poll_completion` picks the answer up once it lands.
+    // `spawn_base_fetch`'s doc comment for why).
     self.current = Some(RequestState {
       request_id,
       base_expr: prefix.base_expr.clone(),
-      partial: prefix.partial,
+      partial: prefix.partial.clone(),
       span: prefix.span,
       suggestions: Vec::new(),
     });
-    self.spawn_base_fetch(request_id, prefix.base_expr);
+    self.spawn_base_fetch(request_id, prefix.base_expr.clone());
+
+    // Give the fetch a short, bounded grace window before falling through
+    // to the empty/async path - see INITIAL_FETCH_GRACE's doc comment for
+    // why. A fetch that lands within the window skips the "no records
+    // found" flash entirely.
+    if let Some(rx) = &self.rx
+      && let Ok(EnrichMsg::Base {
+        request_id: landed_id,
+        names,
+      }) = rx.recv_timeout(INITIAL_FETCH_GRACE)
+      && landed_id == request_id
+    {
+      let (filtered, suggestions) =
+        filtered_suggestions(&names, &prefix.partial, prefix.span);
+      self.base_cache = Some(BaseCache {
+        base_expr: prefix.base_expr.clone(),
+        span_start: prefix.span.start,
+        names,
+      });
+      self.base_in_flight = false;
+      self.spawn_enrichment(request_id, prefix.base_expr, &filtered);
+      if let Some(current) = &mut self.current {
+        current.suggestions.clone_from(&suggestions);
+      }
+      return CompletionResult::fresh(suggestions);
+    }
 
     CompletionResult::fresh(Vec::<Suggestion>::new())
   }
@@ -668,17 +722,18 @@ mod tests {
 
   #[test]
   fn complete_does_not_block_on_a_slow_daemon() {
-    let daemon =
-      SlowMiniDaemon::spawn(std::time::Duration::from_millis(300), vec![
-        "hello".to_owned(),
-      ]);
+    // Comfortably past INITIAL_FETCH_GRACE, so the grace window itself
+    // elapses and this exercises the fully-async fallback path.
+    let slow_delay = INITIAL_FETCH_GRACE + std::time::Duration::from_secs(1);
+    let daemon = SlowMiniDaemon::spawn(slow_delay, vec!["hello".to_owned()]);
     let mut completer = AttrCompleter::new(daemon.socket);
 
     let started = std::time::Instant::now();
     let first = completer.complete("pkgs.hel", 8);
     // The whole point of backgrounding the base fetch: `complete()` returns
-    // long before the fake daemon's artificial delay elapses.
-    assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    // once the bounded grace window elapses, long before the fake daemon's
+    // much longer artificial delay does.
+    assert!(started.elapsed() < slow_delay);
     assert!(first.suggestions().is_empty());
     assert_eq!(completer.poll_completion(), CompletionStatus::Pending);
 
@@ -703,6 +758,49 @@ mod tests {
       .map(|s| s.value.clone())
       .collect();
     assert_eq!(names, vec!["hello".to_owned()]);
+  }
+
+  #[test]
+  fn complete_returns_populated_suggestions_within_the_grace_window() {
+    // Well under INITIAL_FETCH_GRACE, so `complete()`'s own bounded wait
+    // should catch the answer and return it directly - no "no records
+    // found" flash, no need to poll.
+    let daemon =
+      SlowMiniDaemon::spawn(std::time::Duration::from_millis(50), vec![
+        "hello".to_owned(),
+      ]);
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let started = std::time::Instant::now();
+    let first = completer.complete("pkgs.hel", 8);
+    assert!(started.elapsed() < INITIAL_FETCH_GRACE);
+    let names: Vec<_> = first
+      .suggestions()
+      .iter()
+      .map(|s| s.value.clone())
+      .collect();
+    assert_eq!(names, vec!["hello".to_owned()]);
+  }
+
+  #[test]
+  fn top_level_completion_always_offers_builtins() {
+    // The daemon only ever hands back the flake's own outputs
+    // ("packages") - `builtins` must still show up, merged in client-side,
+    // so completing Nix's own functions (`builtins.map`, ...) is
+    // discoverable from an empty prompt, not just flake data.
+    let daemon =
+      SlowMiniDaemon::spawn(std::time::Duration::from_millis(10), vec![
+        "packages".to_owned(),
+      ]);
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let result = completer.complete("", 0);
+    let names: Vec<_> = result
+      .suggestions()
+      .iter()
+      .map(|s| s.value.clone())
+      .collect();
+    assert_eq!(names, vec!["builtins".to_owned(), "packages".to_owned()]);
   }
 
   /// A fake v3 daemon that counts how many connections it accepts while
@@ -776,14 +874,17 @@ mod tests {
 
   #[test]
   fn typing_within_a_still_pending_segment_fetches_only_once() {
-    let daemon = CountingSlowMiniDaemon::spawn(
-      std::time::Duration::from_millis(300),
-      vec!["hello".to_owned()],
-    );
+    // Comfortably past INITIAL_FETCH_GRACE: the first `complete()` call's
+    // own bounded wait must time out and fall through to the async path,
+    // otherwise the fetch lands before the second/third keystrokes even
+    // happen and the dedup branch under test never gets exercised.
+    let slow_delay = INITIAL_FETCH_GRACE + std::time::Duration::from_secs(1);
+    let daemon =
+      CountingSlowMiniDaemon::spawn(slow_delay, vec!["hello".to_owned()]);
     let mut completer = AttrCompleter::new(daemon.socket);
 
     // Three keystrokes narrowing the same segment ("h", "he", "hel"), all
-    // typed before the fake daemon's 300ms delay elapses.
+    // typed before the fake daemon's artificial delay elapses.
     completer.complete("pkgs.h", 6);
     completer.complete("pkgs.he", 7);
     let third = completer.complete("pkgs.hel", 8);
