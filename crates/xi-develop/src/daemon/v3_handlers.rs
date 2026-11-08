@@ -293,14 +293,14 @@ fn handle_expr_eval(
 /// into scope via `with` (the same effect real `nix repl`'s `:lf .` has),
 /// so `expr` can reference `packages`, `nixosConfigurations`, etc. as bare
 /// names instead of every caller spelling out
-/// `(builtins.getFlake "path:...").packages` themselves. This needs
-/// `--impure` (an unlocked `path:` ref can't be read purely) and re-runs
-/// `builtins.getFlake` fresh on every call, with no cross-call cache - a
-/// nixpkgs-sized flake will feel this on every keystroke; see proposal
-/// Open Question 3. When there is no `flake.nix` at `flake_root` (e.g. a
-/// throwaway test fixture), this falls back to the plain, unbound,
-/// pure-eval-safe wrapper - checked once in Rust rather than inside the
-/// nix expression, since `builtins.tryEval` does not reliably catch a
+/// `(builtins.getFlake "...").packages` themselves (see [`flake_ref_for`]
+/// for the ref string itself). This needs `--impure` (an unlocked flake ref
+/// can't be read purely) and re-runs `builtins.getFlake` fresh on every
+/// call, with no cross-call cache; see proposal Open Question 3. When there
+/// is no `flake.nix` at `flake_root` (e.g. a throwaway test fixture), this
+/// falls back to the plain, unbound, pure-eval-safe wrapper - checked once
+/// in Rust rather than inside the nix expression, since `builtins.tryEval`
+/// does not reliably catch a
 /// missing-flake.nix error from `getFlake`.
 fn run_expr_eval(
   flake_root: &std::path::Path,
@@ -355,11 +355,13 @@ fn run_expr_eval(
 /// (including a bare `let … in …`) binds cleanly to `v`.
 ///
 /// When `has_flake` is set, the whole thing is wrapped in
-/// `with (builtins.getFlake "path:<flake_root>"); ...` first, so `expr` can
-/// reach the flake's own outputs (`packages`, `nixosConfigurations`, …) as
-/// bare names - this is what the user is asking for when they type e.g.
-/// `packages.x86_64-linux.hello` without first spelling out
-/// `builtins.getFlake` themselves.
+/// `with (builtins.getFlake "<flake_ref_for(flake_root)>"); ...` first, so
+/// `expr` can reach the flake's own outputs (`packages`,
+/// `nixosConfigurations`, …) as bare names - this is what the user is
+/// asking for when they type e.g. `packages.x86_64-linux.hello` without
+/// first spelling out `builtins.getFlake` themselves. See
+/// [`flake_ref_for`]'s doc comment for why the ref scheme isn't always
+/// `path:`.
 fn classify_wrapper(
   flake_root: &std::path::Path,
   has_flake: bool,
@@ -411,13 +413,33 @@ fn classify_wrapper(
   );
 
   if has_flake {
-    let escaped = nix_string_literal(&flake_root.to_string_lossy());
+    let flake_ref = flake_ref_for(flake_root);
     format!(
-      "let __xiReplFlake = builtins.getFlake \"path:{escaped}\"; in\nwith \
+      "let __xiReplFlake = builtins.getFlake \"{flake_ref}\"; in\nwith \
        __xiReplFlake;\n{body}"
     )
   } else {
     body
+  }
+}
+
+/// Build the `getFlake` ref string for `flake_root`.
+///
+/// `git+file://<path>` when `flake_root` is itself a git working tree root
+/// (has a `.git` entry, directory or worktree-pointer file alike) - nix's
+/// git fetcher reads the tree through git's own index/object store, which
+/// for a dirty working tree is dramatically cheaper than the plain `path:`
+/// fetcher's naive recursive copy+hash of every file on *every* call (measured
+/// in the tens of seconds to minutes on a real multi-crate repo, vs ~2s via
+/// git - see the xi-repl latency follow-up). Falls back to `path:<path>`
+/// (the original, always-correct-but-slow behaviour) when `flake_root` isn't
+/// a git root itself, e.g. a bare test fixture directory with no `.git`.
+fn flake_ref_for(flake_root: &std::path::Path) -> String {
+  let escaped = nix_string_literal(&flake_root.to_string_lossy());
+  if flake_root.join(".git").exists() {
+    format!("git+file://{escaped}")
+  } else {
+    format!("path:{escaped}")
   }
 }
 
@@ -538,6 +560,7 @@ fn catalog_value() -> serde_json::Value {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
   use super::*;
 
@@ -666,6 +689,25 @@ mod tests {
     let no_flake = std::path::Path::new("/does/not/exist");
     let wrapper = classify_wrapper(no_flake, false, FLAKE_SCOPE_EXPR, true);
     assert!(wrapper.starts_with(&format!("let v = ({FLAKE_SCOPE_EXPR}); in")));
+  }
+
+  #[test]
+  fn flake_ref_for_prefers_git_file_when_dot_git_exists() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    std::fs::create_dir(tmp.path().join(".git")).expect("mkdir .git");
+    assert_eq!(
+      flake_ref_for(tmp.path()),
+      format!("git+file://{}", tmp.path().display())
+    );
+  }
+
+  #[test]
+  fn flake_ref_for_falls_back_to_path_without_dot_git() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    assert_eq!(
+      flake_ref_for(tmp.path()),
+      format!("path:{}", tmp.path().display())
+    );
   }
 
   #[test]

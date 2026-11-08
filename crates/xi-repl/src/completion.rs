@@ -385,6 +385,26 @@ impl Completer for AttrCompleter {
       return CompletionResult::fresh(suggestions);
     }
 
+    // A base fetch for this exact attribute segment is already in flight
+    // (an earlier keystroke in this same segment kicked it off and it
+    // hasn't landed yet): don't spawn a second `nix eval` subprocess on top
+    // of it, just update what we'll filter by once the one already running
+    // answers. Without this check, typing several characters while a slow
+    // (uncached, tens-of-seconds) fetch is still in flight for a large
+    // flake piles up one redundant subprocess per keystroke, each paying
+    // the full cost again for an answer that gets thrown away.
+    let same_segment_already_fetching = self.base_in_flight
+      && self.current.as_ref().is_some_and(|c| {
+        c.base_expr == prefix.base_expr && c.span.start == prefix.span.start
+      });
+    if same_segment_already_fetching {
+      if let Some(current) = &mut self.current {
+        current.partial = prefix.partial;
+        current.span = prefix.span;
+      }
+      return CompletionResult::fresh(Vec::<Suggestion>::new());
+    }
+
     self.next_request_id += 1;
     let request_id = self.next_request_id;
 
@@ -676,6 +696,117 @@ mod tests {
       thread::sleep(std::time::Duration::from_millis(10));
     }
 
+    let settled = completer.complete("pkgs.hel", 8);
+    let names: Vec<_> = settled
+      .suggestions()
+      .iter()
+      .map(|s| s.value.clone())
+      .collect();
+    assert_eq!(names, vec!["hello".to_owned()]);
+  }
+
+  /// A fake v3 daemon that counts how many connections it accepts while
+  /// otherwise behaving like [`SlowMiniDaemon`] - used to prove a run of
+  /// keystrokes against the same still-pending attribute segment triggers
+  /// exactly one fetch, not one per keystroke.
+  struct CountingSlowMiniDaemon {
+    socket:      PathBuf,
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    _handle:     thread::JoinHandle<()>,
+    _tmp:        tempfile::TempDir,
+  }
+
+  impl CountingSlowMiniDaemon {
+    fn spawn(delay: std::time::Duration, names: Vec<String>) -> Self {
+      use std::{
+        io::{BufReader, BufWriter},
+        os::unix::net::UnixListener,
+        sync::{Arc, atomic::AtomicUsize},
+      };
+
+      use xi_develop::daemon::{
+        protocol::{read_message, write_message},
+        protocol_v3::{Envelope, Payload, Query, Reply},
+      };
+
+      let tmp = tempfile::tempdir().expect("mktemp");
+      let socket = tmp.path().join("v3.sock");
+      let listener = UnixListener::bind(&socket).expect("bind");
+      let connections = Arc::new(AtomicUsize::new(0));
+
+      let (ready_tx, ready_rx) = mpsc::channel::<()>();
+      let handle = thread::spawn({
+        let connections = Arc::clone(&connections);
+        move || {
+          ready_tx.send(()).ok();
+          let Ok((stream, _)) = listener.accept() else {
+            return;
+          };
+          connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+          let mut reader = BufReader::new(&stream);
+          let mut writer = BufWriter::new(&stream);
+          let Ok(env) = read_message::<_, Envelope>(&mut reader) else {
+            return;
+          };
+          let Payload::Query(Query::ExprEval { .. }) = env.payload else {
+            return;
+          };
+          thread::sleep(delay);
+          let reply = Envelope::new(
+            env.id,
+            Payload::Reply(Reply::Query(QueryReply::ExprEval(
+              Availability::Ready {
+                value: ExprEvalResult::Attrs(names),
+              },
+            ))),
+          );
+          let _ = write_message(&mut writer, &reply);
+        }
+      });
+      ready_rx.recv().expect("listener ready");
+
+      Self {
+        socket,
+        connections,
+        _handle: handle,
+        _tmp: tmp,
+      }
+    }
+  }
+
+  #[test]
+  fn typing_within_a_still_pending_segment_fetches_only_once() {
+    let daemon = CountingSlowMiniDaemon::spawn(
+      std::time::Duration::from_millis(300),
+      vec!["hello".to_owned()],
+    );
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    // Three keystrokes narrowing the same segment ("h", "he", "hel"), all
+    // typed before the fake daemon's 300ms delay elapses.
+    completer.complete("pkgs.h", 6);
+    completer.complete("pkgs.he", 7);
+    let third = completer.complete("pkgs.hel", 8);
+    assert!(third.suggestions().is_empty());
+
+    let deadline =
+      std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while completer.poll_completion() != CompletionStatus::Ready {
+      assert!(
+        std::time::Instant::now() < deadline,
+        "daemon reply never arrived"
+      );
+      thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      daemon.connections.load(std::sync::atomic::Ordering::SeqCst),
+      1,
+      "typing within one still-pending segment must not fetch more than once"
+    );
+
+    // The final answer reflects the latest-typed partial ("hel"), not a
+    // stale one from whichever keystroke actually triggered the fetch.
     let settled = completer.complete("pkgs.hel", 8);
     let names: Vec<_> = settled
       .suggestions()
