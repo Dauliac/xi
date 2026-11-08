@@ -114,6 +114,23 @@ pub enum Query {
     /// `true` for the attribute-name-only, never-forcing variant.
     shallow: bool,
   },
+  /// Fetch documentation for a nix expression, the same thing real `nix
+  /// repl`'s `:doc <expr>` command prints.
+  ///
+  /// Unlike `ExprEval`, this cannot be answered by `nix eval` at all - a
+  /// primop's doc string lives in `nix`'s own C++ primop registry, not
+  /// anywhere reachable from Nix language code. `v3_handlers::run_expr_doc`
+  /// drives a real, non-interactive `nix repl` subprocess instead (piped
+  /// stdio, not inherited - no terminal to share, so none of the pty
+  /// limitations `xi_repl::raw`'s interactive `:raw` fallback has). Also
+  /// covers non-primop values: `nix repl`'s `:doc` reports "defined at
+  /// `FILE:LINE`" plus any preceding doc comment for those, via the same
+  /// command. See [`super::reply::DocResult`] for the response shapes.
+  ExprDoc {
+    /// The nix expression to fetch documentation for, e.g.
+    /// `"builtins.add"` or `"lib.strings.concatStrings"`.
+    expr: String,
+  },
 }
 
 /// Sentinel [`Query::ExprEval`]'s `expr` value meaning "list the flake's
@@ -162,4 +179,6 @@ pub enum QueryReply {
   Snapshot(Availability<serde_json::Value>),
   /// Reply to [`Query::ExprEval`].
   ExprEval(Availability<super::reply::ExprEvalResult>),
+  /// Reply to [`Query::ExprDoc`].
+  ExprDoc(Availability<super::reply::DocResult>),
 }

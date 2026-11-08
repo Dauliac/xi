@@ -31,6 +31,7 @@ use super::{
     Availability,
     Command,
     CommandReply,
+    DocResult,
     Envelope,
     ExprEvalResult,
     FLAKE_SCOPE_EXPR,
@@ -105,6 +106,11 @@ fn handle_query(query: Query, state: &ServerState) -> QueryReply {
     },
     Query::ExprEval { expr, shallow } => {
       QueryReply::ExprEval(handle_expr_eval(state, &expr, shallow))
+    },
+    Query::ExprDoc { expr } => {
+      QueryReply::ExprDoc(Availability::Ready {
+        value: run_expr_doc(&state.flake_root, &expr),
+      })
     },
   }
 }
@@ -345,6 +351,129 @@ fn run_expr_eval(
   };
 
   decode_classified(&parsed)
+}
+
+/// Sentinel printed to the piped `nix repl`'s stdout right before `:doc`'s
+/// own output, so [`parse_doc_output`] can find exactly where the real
+/// response starts without guessing how many lines the banner or (when
+/// `has_flake`) `:lf .`'s "Added N variables" listing printed - that count
+/// varies with the flake, so counting lines would be fragile.
+const DOC_MARKER: &str = "__xi_repl_doc_marker__";
+
+/// Fetch documentation for `expr` by driving a real, non-interactive `nix
+/// repl` subprocess - see [`Query::ExprDoc`]'s doc comment for why `nix
+/// eval` cannot answer this at all (a primop's doc string lives in `nix`'s
+/// own C++ primop registry, nowhere reachable from Nix language code).
+///
+/// Piped stdio, not inherited: `nix-command`'s `CommandKind::Repl` spec
+/// marks the command `interactive: true`, which both of its own
+/// `run_with_logs`/`output` helpers honor by forcing `Stdio::inherit()` -
+/// appropriate for `xi_repl::raw`'s real interactive fallback, wrong here.
+/// This builds the same argv/env via [`NixCommand::to_std_command`] and
+/// then owns the child's stdio itself: write the whole command script,
+/// close stdin (signalling EOF, which makes `nix repl` process `:quit` and
+/// exit even though it was never told to via an explicit prompt), read
+/// everything back. No terminal is involved at all, so none of `raw.rs`'s
+/// "no pty to multiplex a shared terminal" limitation applies.
+///
+/// `nix repl` sends its banner, any `:lf .` status noise, and the real
+/// `:doc` error (if any) to **stderr**; only `:doc`'s successful output (and
+/// the `:p` marker ahead of it) goes to **stdout** - confirmed empirically
+/// against a real `nix repl`, not assumed. [`parse_doc_output`] relies on
+/// that split.
+fn run_expr_doc(flake_root: &std::path::Path, expr: &str) -> DocResult {
+  use std::{fmt::Write as _, io::Write as _};
+
+  let has_flake = flake_root.join("flake.nix").is_file();
+
+  let mut script = String::new();
+  if has_flake {
+    script.push_str(":lf .\n");
+  }
+  let _ = writeln!(script, ":p \"{DOC_MARKER}\"");
+  let _ = writeln!(script, ":doc {expr}");
+  script.push_str(":quit\n");
+
+  let mut builder = NixCommand::new(CommandKind::Repl)
+    .arg("--quiet")
+    .with_required_env();
+  if has_flake {
+    // `:lf .` on an unlocked `path:`/`git+file:` ref needs this, same as
+    // run_expr_eval's has_flake branch.
+    builder = builder.impure(true);
+  }
+  let mut cmd = builder.to_std_command();
+  cmd.current_dir(flake_root);
+  cmd.stdin(std::process::Stdio::piped());
+  cmd.stdout(std::process::Stdio::piped());
+  cmd.stderr(std::process::Stdio::piped());
+
+  let mut child = match cmd.spawn() {
+    Ok(c) => c,
+    Err(e) => {
+      return DocResult::Error {
+        message: format!("failed to run nix repl: {e}"),
+      };
+    },
+  };
+
+  let Some(mut stdin) = child.stdin.take() else {
+    return DocResult::Error {
+      message: "failed to open nix repl's stdin".to_owned(),
+    };
+  };
+  if let Err(e) = stdin.write_all(script.as_bytes()) {
+    return DocResult::Error {
+      message: format!("failed to write to nix repl's stdin: {e}"),
+    };
+  }
+  // Closes the pipe (EOF), which is what makes `nix repl` process the
+  // script and exit rather than waiting for more input.
+  drop(stdin);
+
+  let output = match child.wait_with_output() {
+    Ok(o) => o,
+    Err(e) => {
+      return DocResult::Error {
+        message: format!("failed to wait on nix repl: {e}"),
+      };
+    },
+  };
+
+  parse_doc_output(
+    &String::from_utf8_lossy(&output.stdout),
+    &String::from_utf8_lossy(&output.stderr),
+  )
+}
+
+/// Classify a piped `nix repl` session's captured stdout/stderr into a
+/// [`DocResult`]. See [`run_expr_doc`]'s doc comment for the stdout/stderr
+/// split this relies on.
+fn parse_doc_output(stdout: &str, stderr: &str) -> DocResult {
+  if stderr.lines().any(|l| l.trim().starts_with("error:")) {
+    let message = trim_nix_stderr(stderr);
+    return if message == "error: value does not have documentation" {
+      DocResult::NotFound
+    } else {
+      DocResult::Error { message }
+    };
+  }
+
+  let Some(marker_pos) = stdout.find(DOC_MARKER) else {
+    return DocResult::Error {
+      message: "nix repl produced no recognizable output".to_owned(),
+    };
+  };
+  let body = stdout[marker_pos + DOC_MARKER.len()..].trim();
+  if body.is_empty() {
+    return DocResult::Error {
+      message: "nix repl's :doc produced no output".to_owned(),
+    };
+  }
+
+  DocResult::Found {
+    doc: body.to_owned(),
+  }
 }
 
 /// Build the classifying wrapper expression fed to `nix eval --expr`.
@@ -734,5 +863,96 @@ mod tests {
       panic!("expected Scalar, got {result:?}");
     };
     assert_eq!(value, json!(["x86_64-linux"]));
+  }
+
+  #[test]
+  fn run_expr_doc_finds_a_real_primop_synopsis() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_doc(fixture, "builtins.add");
+    let DocResult::Found { doc } = result else {
+      panic!("expected Found, got {result:?}");
+    };
+    assert!(doc.contains("Synopsis: builtins.add"));
+    assert!(doc.contains("sum"));
+  }
+
+  #[test]
+  fn run_expr_doc_reports_not_found_for_a_doc_less_value() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_doc(fixture, "(1 + 1)");
+    assert!(matches!(result, DocResult::NotFound), "got {result:?}");
+  }
+
+  #[test]
+  fn run_expr_doc_reports_error_for_an_undefined_name() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_doc(fixture, "builtins.notARealFunction");
+    let DocResult::Error { message } = result else {
+      panic!("expected Error, got {result:?}");
+    };
+    assert!(message.contains("missing"));
+  }
+
+  #[test]
+  fn parse_doc_output_extracts_the_body_after_the_marker_on_success() {
+    let stdout = format!(
+      "\n{DOC_MARKER}\n\nSynopsis: builtins.add e1 e2\n\nReturn the sum.\n\n"
+    );
+    let stderr = "Nix 2.34.7\nType :? for help.\n";
+    let result = parse_doc_output(&stdout, stderr);
+    let DocResult::Found { doc } = result else {
+      panic!("expected Found, got {result:?}");
+    };
+    assert_eq!(doc, "Synopsis: builtins.add e1 e2\n\nReturn the sum.");
+  }
+
+  #[test]
+  fn parse_doc_output_reports_not_found_for_the_exact_nix_repl_message() {
+    let stdout = format!("\n{DOC_MARKER}\n\n\n");
+    let stderr =
+      "Nix 2.34.7\nType :? for help.\nerror: value does not have documentation";
+    assert!(matches!(
+      parse_doc_output(&stdout, stderr),
+      DocResult::NotFound
+    ));
+  }
+
+  #[test]
+  fn parse_doc_output_skips_arbitrary_lf_noise_before_the_real_error() {
+    // The ":lf ." variable-count listing varies with the flake, so the
+    // parser must not assume a fixed number of stderr lines before a real
+    // error - only that an "error:"-prefixed line exists somewhere.
+    let stdout = format!("\n{DOC_MARKER}\n\n\n");
+    let stderr = "Nix 2.34.7\nType :? for help.\nAdded 24 variables.\n_type, \
+                  apps, checks\n... and 4 more; view with :ll\nerror: \
+                  attribute 'notAFunction' missing\n       at «string»:1:1:";
+    let DocResult::Error { message } = parse_doc_output(&stdout, stderr) else {
+      panic!("expected Error");
+    };
+    assert!(message.starts_with("error: attribute 'notAFunction' missing"));
+  }
+
+  #[test]
+  fn parse_doc_output_errors_when_the_marker_never_appears() {
+    let result = parse_doc_output("", "Nix 2.34.7\nType :? for help.\n");
+    assert!(matches!(result, DocResult::Error { .. }));
   }
 }

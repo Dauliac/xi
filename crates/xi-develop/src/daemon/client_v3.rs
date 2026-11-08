@@ -161,6 +161,25 @@ pub fn expr_eval(
   )
 }
 
+/// Send a [`Query::ExprDoc`] for `expr` and return the raw [`QueryOutcome`].
+///
+/// Shares [`EXPR_EVAL_TIMEOUT`]'s 1-minute bound: `v3_handlers::run_expr_doc`
+/// spawns a fresh `nix repl` subprocess with the same `:lf .`-driven,
+/// first-load cost profile `ExprEval`'s `has_flake` path already has.
+///
+/// # Errors
+///
+/// Returns an error only on connect / I/O failure.
+pub fn expr_doc(socket_path: &Path, expr: &str) -> Result<QueryOutcome> {
+  query_with_timeout(
+    socket_path,
+    Query::ExprDoc {
+      expr: expr.to_owned(),
+    },
+    EXPR_EVAL_TIMEOUT,
+  )
+}
+
 /// Short-hand: send `Query::HeartBeat` and report whether the daemon
 /// answered with a v3 heartbeat.
 ///

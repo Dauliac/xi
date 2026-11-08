@@ -75,7 +75,13 @@ use reedline::{
 };
 use xi_develop::daemon::{
   client_v3::{self, QueryOutcome},
-  protocol_v3::{Availability, ExprEvalResult, FLAKE_SCOPE_EXPR, QueryReply},
+  protocol_v3::{
+    Availability,
+    DocResult,
+    ExprEvalResult,
+    FLAKE_SCOPE_EXPR,
+    QueryReply,
+  },
 };
 
 /// Upper bound on how many candidates get enriched per completion request.
@@ -339,7 +345,16 @@ impl AttrCompleter {
             }
           })
           .map(|value| {
-            crate::render::strip_ansi(&crate::render::render(&value))
+            if matches!(value, ExprEvalResult::Lambda) {
+              // A plain "<lambda>" placeholder is a dead end for exactly
+              // the candidates a user most wants documentation for -
+              // nix's own functions. Try real `nix repl`-backed docs
+              // first (see Query::ExprDoc's doc comment); fall back to
+              // the placeholder only when there genuinely are none.
+              doc_preview_or_fallback(&socket_path, &full_path, &value)
+            } else {
+              crate::render::strip_ansi(&crate::render::render(&value))
+            }
           });
 
         let Some(preview) = preview else { continue };
@@ -386,6 +401,35 @@ fn filtered_suggestions(
     .collect();
 
   (filtered, suggestions)
+}
+
+/// Fetch real documentation for `expr` (a lambda-classified candidate) via
+/// `Query::ExprDoc`, falling back to the ordinary placeholder render of
+/// `fallback` (the already-known [`ExprEvalResult::Lambda`]) when there is
+/// none, the lookup errors, or the daemon is unreachable.
+///
+/// Called from the enrichment background thread, same as the ordinary
+/// classify-and-render path it supplements - never on `complete()`'s
+/// caller.
+fn doc_preview_or_fallback(
+  socket_path: &std::path::Path,
+  expr: &str,
+  fallback: &ExprEvalResult,
+) -> String {
+  let doc = client_v3::expr_doc(socket_path, expr)
+    .ok()
+    .and_then(|outcome| {
+      match outcome {
+        QueryOutcome::V3(QueryReply::ExprDoc(Availability::Ready {
+          value: DocResult::Found { doc },
+        })) => Some(doc),
+        _ => None,
+      }
+    });
+
+  doc.unwrap_or_else(|| {
+    crate::render::strip_ansi(&crate::render::render(fallback))
+  })
 }
 
 impl Completer for AttrCompleter {

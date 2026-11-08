@@ -68,6 +68,34 @@ pub enum ExprEvalResult {
   },
 }
 
+/// The result of a [`super::query::Query::ExprDoc`] lookup.
+///
+/// Mirrors real `nix repl`'s `:doc <expr>` three outcomes: documentation
+/// text, the explicit "this value has none" case (kept distinct from
+/// `Error` so callers can render it as an unremarkable "no docs" state
+/// rather than a failure), and a genuine evaluation error (undefined name,
+/// syntax error, or the `nix repl` subprocess itself failing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocResult {
+  /// Documentation text was found - either a primop's synopsis+description,
+  /// or a non-primop's "defined at `FILE:LINE`" plus any preceding doc
+  /// comment, verbatim as `nix repl`'s `:doc` printed it.
+  Found {
+    /// The doc text, trimmed of leading/trailing blank lines.
+    doc: String,
+  },
+  /// The expression evaluated fine but has no documentation attached -
+  /// `nix repl`'s own "value does not have documentation" case.
+  NotFound,
+  /// The expression itself failed to evaluate, or the `nix repl`
+  /// subprocess could not be run at all.
+  Error {
+    /// Human-readable message.
+    message: String,
+  },
+}
+
 /// A top-level reply carried inside an [`super::envelope::Envelope`] on the
 /// request/response path.
 ///
