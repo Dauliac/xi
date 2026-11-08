@@ -1,4 +1,5 @@
 use std::{
+  collections::HashSet,
   env,
   fs,
   io::{self, Write},
@@ -11,6 +12,15 @@ use color_eyre::{
   eyre::{Context, bail},
 };
 use toml_edit::DocumentMut;
+use tracing::debug;
+
+/// Maximum `!include`/`!include_try` nesting depth before erroring out.
+///
+/// Bounds the recursive include walk the same way
+/// `devshell-flake-discovery` bounds its own filesystem walk  -  a
+/// generous ceiling that only ever fires on a real cycle or a
+/// pathological include chain, never on realistic configuration.
+const MAX_INCLUDE_DEPTH: usize = 16;
 
 const CONFIG_ENV: &str = "XI_CONFIG";
 const CONFIG_FILE: &str = "config.toml";
@@ -134,11 +144,15 @@ impl Default for LocateConfig {
 #[derive(Debug, Clone, Default)]
 pub struct CacheConfig {
   /// Named cache targets from `[cache.<name>]` sub-tables.
-  pub targets:    Vec<xi_core::args::CacheTarget>,
+  pub targets:           Vec<xi_core::args::CacheTarget>,
   /// Whether to push asynchronously in the background.
-  pub async_push: bool,
+  pub async_push:        bool,
   /// Queue configuration.
-  pub queue:      xi_core::cache_queue::QueueConfig,
+  pub queue:             xi_core::cache_queue::QueueConfig,
+  /// Bound on concurrent `nix copy` child processes a single push cycle
+  /// may run. `None` defers to the CLI flag / env var / built-in
+  /// default ladder in [`xi_core::cache::resolve_max_parallel_jobs`].
+  pub max_parallel_jobs: Option<usize>,
 }
 
 impl ConfigStore {
@@ -163,7 +177,11 @@ impl ConfigStore {
   pub fn load_from(path: impl Into<PathBuf>) -> Result<Self> {
     let path = path.into();
     let document = match fs::read_to_string(&path) {
-      Ok(raw) => parse_document(&path, &raw)?,
+      Ok(raw) => {
+        let mut seen = HashSet::new();
+        seen.insert(canonical_or_self(&path));
+        parse_with_includes(&path, &raw, 0, &mut seen)?
+      },
       Err(err) if err.kind() == io::ErrorKind::NotFound => DocumentMut::new(),
       Err(err) => {
         return Err(err)
@@ -187,7 +205,7 @@ impl ConfigStore {
   /// when unknown keys are found in the configuration.
   pub fn config(&self) -> Result<Config> {
     self.validate_unknown_keys()?;
-    let cache = self.read_cache_config();
+    let cache = self.read_cache_config()?;
     let develop = self.read_develop_config();
     let build = self.read_build_config();
     let locate = self.read_locate_config();
@@ -207,8 +225,28 @@ impl ConfigStore {
       "queue_max_size",
       "queue_expiry_days",
       "queue_drain_interval",
+      "max_parallel_jobs",
     ];
-    const CACHE_TARGET: &[&str] = &["push_url", "signing_key", "push_command"];
+    const CACHE_TARGET: &[&str] = &[
+      "push_url",
+      "push-url-file",
+      "signing_key",
+      "push_command",
+      "provider",
+      "account_id",
+      "bucket",
+      "region",
+      "endpoint",
+      "pull_url",
+      "pull_public_key",
+      "preset",
+      "match",
+      "default",
+      "required",
+      "credentials",
+    ];
+    const CACHE_CREDENTIALS: &[&str] =
+      &["access-key-id-file", "secret-access-key-file"];
     const DEVELOP: &[&str] = &["eval_interval", "watch_extra"];
     const BUILD: &[&str] = &[
       "nom",
@@ -248,6 +286,15 @@ impl ConfigStore {
       for (name, value) in table {
         if let Some(sub) = value.as_table() {
           reject_unknown(&format!("cache.{name}"), sub, CACHE_TARGET)?;
+          if let Some(credentials) =
+            sub.get("credentials").and_then(toml_edit::Item::as_table)
+          {
+            reject_unknown(
+              &format!("cache.{name}.credentials"),
+              credentials,
+              CACHE_CREDENTIALS,
+            )?;
+          }
         }
       }
     }
@@ -394,9 +441,9 @@ impl ConfigStore {
     LocateConfig { cache_level }
   }
 
-  fn read_cache_config(&self) -> CacheConfig {
+  fn read_cache_config(&self) -> Result<CacheConfig> {
     let Some(cache_item) = self.document.get("cache") else {
-      return CacheConfig::default();
+      return Ok(CacheConfig::default());
     };
 
     let defaults = xi_core::cache_queue::QueueConfig::default();
@@ -424,18 +471,24 @@ impl ConfigStore {
       .and_then(toml_edit::Item::as_integer)
       .map_or(defaults.drain_interval_secs, |v| v.max(10).cast_unsigned());
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let max_parallel_jobs = cache_item
+      .get("max_parallel_jobs")
+      .and_then(toml_edit::Item::as_integer)
+      .map(|v| v.max(1) as usize);
+
     let mut targets = Vec::new();
 
     // Parse named sub-tables: [cache.<name>]
     if let Some(table) = cache_item.as_table() {
       for (key, value) in table {
         if let Some(sub) = value.as_table() {
-          targets.push(Self::parse_cache_target(key, sub));
+          targets.push(Self::parse_cache_target(key, sub)?);
         }
       }
     }
 
-    CacheConfig {
+    Ok(CacheConfig {
       targets,
       async_push,
       queue: xi_core::cache_queue::QueueConfig {
@@ -443,42 +496,117 @@ impl ConfigStore {
         expiry_secs:         queue_expiry_secs,
         drain_interval_secs: queue_drain_interval,
       },
-    }
+      max_parallel_jobs,
+    })
   }
 
   /// Parse a named cache target from a `[cache.<name>]` sub-table.
+  ///
+  /// # Errors
+  /// Returns an error naming the target when `provider`/`preset` is an
+  /// unknown value, or when `provider = "cloudflare-r2"` is missing its
+  /// required `account_id`.
   fn parse_cache_target(
     name: &str,
     table: &toml_edit::Table,
-  ) -> xi_core::args::CacheTarget {
-    let push_url = table
-      .get("push_url")
-      .and_then(toml_edit::Item::as_str)
-      .map(String::from);
+  ) -> Result<xi_core::args::CacheTarget> {
+    let str_field = |key: &str| -> Option<String> {
+      table
+        .get(key)
+        .and_then(toml_edit::Item::as_str)
+        .map(String::from)
+    };
+    let bool_field = |key: &str| -> bool {
+      table
+        .get(key)
+        .and_then(toml_edit::Item::as_bool)
+        .unwrap_or(false)
+    };
+    let str_array = |key: &str| -> Vec<String> {
+      table
+        .get(key)
+        .and_then(toml_edit::Item::as_array)
+        .map(|arr| {
+          arr
+            .iter()
+            .filter_map(toml_edit::Value::as_str)
+            .map(String::from)
+            .collect()
+        })
+        .unwrap_or_default()
+    };
 
-    let signing_key = table
-      .get("signing_key")
-      .and_then(toml_edit::Item::as_str)
-      .map(String::from);
+    let push_url = str_field("push_url");
+    let push_url_file = str_field("push-url-file");
+    let signing_key = str_field("signing_key");
+    let push_command = str_array("push_command");
+    let bucket = str_field("bucket");
+    let account_id = str_field("account_id");
+    let region = str_field("region");
+    let endpoint = str_field("endpoint");
+    let mut pull_url = str_field("pull_url");
+    let mut pull_public_key = str_field("pull_public_key");
+    let match_patterns = str_array("match");
+    let default = bool_field("default");
+    let required = bool_field("required");
 
-    let push_command = table
-      .get("push_command")
-      .and_then(toml_edit::Item::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(toml_edit::Value::as_str)
-          .map(String::from)
-          .collect()
-      })
-      .unwrap_or_default();
+    let provider = match str_field("provider") {
+      Some(value) => {
+        Some(
+          xi_core::args::CacheProvider::parse(
+            &value, account_id, region, endpoint,
+          )
+          .map_err(|e| color_eyre::eyre::eyre!("[cache.{name}]: {e}"))?,
+        )
+      },
+      None => None,
+    };
 
-    xi_core::args::CacheTarget {
+    if let Some(preset_name) = str_field("preset") {
+      let preset =
+        xi_core::cache_registry::lookup(&preset_name).ok_or_else(|| {
+          color_eyre::eyre::eyre!(
+            "[cache.{name}]: unknown preset '{preset_name}' (expected one of: \
+             {})",
+            xi_core::cache_registry::known_names().join(", ")
+          )
+        })?;
+      pull_url.get_or_insert_with(|| preset.url.to_string());
+      pull_public_key.get_or_insert_with(|| preset.public_key.to_string());
+    }
+
+    let credentials = table
+      .get("credentials")
+      .and_then(toml_edit::Item::as_table)
+      .map(|creds| {
+        xi_core::args::CacheCredentials {
+          access_key_id_file:     creds
+            .get("access-key-id-file")
+            .and_then(toml_edit::Item::as_str)
+            .map(String::from),
+          secret_access_key_file: creds
+            .get("secret-access-key-file")
+            .and_then(toml_edit::Item::as_str)
+            .map(String::from),
+        }
+      });
+
+    Ok(xi_core::args::CacheTarget {
       name: name.to_string(),
       push_url,
+      push_url_file,
       signing_key,
       push_command,
-    }
+      provider,
+      bucket,
+      credentials,
+      pull_url,
+      pull_public_key,
+      preset: str_field("preset"),
+      match_patterns,
+      default,
+      required,
+    })
   }
 
   /// Save the document, creating parent directories as needed.
@@ -548,6 +676,146 @@ fn parse_document(path: &Path, raw: &str) -> Result<DocumentMut> {
   raw.parse::<DocumentMut>().with_context(|| {
     format!("failed to parse xi configuration at {}", path.display())
   })
+}
+
+fn canonical_or_self(path: &Path) -> PathBuf {
+  path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// One `!include <path>` / `!include_try <path>` directive line.
+struct IncludeDirective {
+  path: String,
+  try_: bool,
+}
+
+/// Pull every leading `!include`/`!include_try` directive line out of
+/// `raw`, returning them alongside the remaining body (directive lines
+/// blanked out so error line numbers in the rest of the file stay
+/// accurate).
+///
+/// Mirrors the two spellings `nix.conf` itself uses for the same
+/// feature.
+fn extract_include_directives(raw: &str) -> (Vec<IncludeDirective>, String) {
+  let mut directives = Vec::new();
+  let mut body_lines = Vec::new();
+
+  for line in raw.lines() {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("!include_try ") {
+      directives.push(IncludeDirective {
+        path: rest.trim().to_owned(),
+        try_: true,
+      });
+      body_lines.push(String::new());
+    } else if let Some(rest) = trimmed.strip_prefix("!include ") {
+      directives.push(IncludeDirective {
+        path: rest.trim().to_owned(),
+        try_: false,
+      });
+      body_lines.push(String::new());
+    } else {
+      body_lines.push(line.to_owned());
+    }
+  }
+
+  (directives, body_lines.join("\n"))
+}
+
+/// Resolve `raw` (the contents of `path`) into a merged [`DocumentMut`],
+/// recursively folding in every `!include`/`!include_try` directive it
+/// names.
+///
+/// `seen` tracks paths currently on the include stack (not "ever
+/// included"), so a genuine cycle (A includes B includes A) is rejected
+/// while a diamond (A and B both include C) is not.
+fn parse_with_includes(
+  path: &Path,
+  raw: &str,
+  depth: usize,
+  seen: &mut HashSet<PathBuf>,
+) -> Result<DocumentMut> {
+  if depth > MAX_INCLUDE_DEPTH {
+    bail!(
+      "include depth exceeded {MAX_INCLUDE_DEPTH} while loading {} (possible \
+       cycle)",
+      path.display()
+    );
+  }
+
+  let (directives, body) = extract_include_directives(raw);
+  let mut doc = parse_document(path, &body)?;
+  let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+
+  for directive in directives {
+    let included_path = resolve_include_path(base_dir, &directive.path);
+
+    if !included_path.exists() {
+      if directive.try_ {
+        debug!(
+          "[config] skipping missing !include_try {}",
+          included_path.display()
+        );
+        continue;
+      }
+      bail!(
+        "included config file not found: {} (from {})",
+        included_path.display(),
+        path.display()
+      );
+    }
+
+    let canon = canonical_or_self(&included_path);
+    if !seen.insert(canon.clone()) {
+      bail!(
+        "include cycle detected: {} is already being included (from {})",
+        included_path.display(),
+        path.display()
+      );
+    }
+
+    let included_raw = fs::read_to_string(&included_path)
+      .with_context(|| format!("failed to read {}", included_path.display()))?;
+    let included_doc =
+      parse_with_includes(&included_path, &included_raw, depth + 1, seen)?;
+    seen.remove(&canon);
+
+    merge_table_into(doc.as_table_mut(), included_doc.as_table());
+  }
+
+  Ok(doc)
+}
+
+/// Resolve an `!include`/`!include_try` path relative to the including
+/// file's directory; an already-absolute path is used verbatim.
+fn resolve_include_path(base_dir: &Path, raw: &str) -> PathBuf {
+  let candidate = Path::new(raw);
+  if candidate.is_absolute() {
+    candidate.to_path_buf()
+  } else {
+    base_dir.join(candidate)
+  }
+}
+
+/// Recursively merge `incoming` into `base`: per top-level (and nested)
+/// table, later-loaded (`incoming`) wins on a key collision. Collisions
+/// are logged at debug, never raised as an error.
+fn merge_table_into(base: &mut toml_edit::Table, incoming: &toml_edit::Table) {
+  for (key, incoming_item) in incoming {
+    if let (Some(base_table), Some(incoming_table)) = (
+      base.get_mut(key).and_then(toml_edit::Item::as_table_mut),
+      incoming_item.as_table(),
+    ) {
+      merge_table_into(base_table, incoming_table);
+      continue;
+    }
+
+    if let Some(existing) = base.get(key)
+      && existing.to_string() != incoming_item.to_string()
+    {
+      debug!("[config] include overrides key '{key}' (later file wins)");
+    }
+    base.insert(key, incoming_item.clone());
+  }
 }
 
 fn non_empty_var(name: &str) -> Option<std::ffi::OsString> {
@@ -860,6 +1128,245 @@ mod tests {
     assert!(config.cache.async_push);
     assert_eq!(config.cache.targets.len(), 1);
     assert_eq!(config.cache.targets[0].name, "my-s3");
+    Ok(())
+  }
+
+  #[test]
+  fn cloudflare_r2_target_parses_provider_and_bucket() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(
+      &path,
+      "[cache.personal]\nprovider = \"cloudflare-r2\"\naccount_id = \
+       \"abc123\"\nbucket = \"nix-cache\"\n",
+    )?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    let target = &config.cache.targets[0];
+    assert_eq!(
+      target.resolved_s3_uri(),
+      "s3://nix-cache?region=auto&endpoint=https://abc123.r2.cloudflarestorage.com"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn unknown_provider_is_a_load_time_error() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+      &path,
+      "[cache.bad]\nprovider = \"not-a-real-provider\"\nbucket = \"x\"\n",
+    )
+    .unwrap();
+
+    let store = ConfigStore::load_from(&path).unwrap();
+    let err = store.config().unwrap_err();
+    assert!(err.to_string().contains("not-a-real-provider"));
+  }
+
+  #[test]
+  fn credentials_sub_table_parses_both_files() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(
+      &path,
+      "[cache.my-s3]\npush_url = \
+       \"s3://bucket\"\n\n[cache.my-s3.credentials]\naccess-key-id-file = \
+       \"/run/secrets/akid\"\nsecret-access-key-file = \
+       \"/run/secrets/secret\"\n",
+    )?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    let creds = config.cache.targets[0].credentials.as_ref().unwrap();
+    assert_eq!(
+      creds.access_key_id_file.as_deref(),
+      Some("/run/secrets/akid")
+    );
+    assert_eq!(
+      creds.secret_access_key_file.as_deref(),
+      Some("/run/secrets/secret")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn push_url_file_key_parses() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(
+      &path,
+      "[cache.my-s3]\npush-url-file = \"/run/secrets/cache-url\"\n",
+    )?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    assert_eq!(
+      config.cache.targets[0].push_url_file.as_deref(),
+      Some("/run/secrets/cache-url")
+    );
+    assert_eq!(config.cache.targets[0].push_url, None);
+    Ok(())
+  }
+
+  #[test]
+  fn rejects_unknown_credentials_key() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[cache.my-s3.credentials]\nbogus = \"x\"\n").unwrap();
+
+    let store = ConfigStore::load_from(&path).unwrap();
+    let err = store.config().unwrap_err();
+    assert!(
+      err
+        .to_string()
+        .contains("unknown key(s) in [cache.my-s3.credentials]"),
+      "unexpected: {err}"
+    );
+  }
+
+  #[test]
+  fn match_default_and_required_parse() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(
+      &path,
+      "[cache.corp]\npush_url = \"s3://bucket\"\nmatch = \
+       [\"gitlab.corp.example.com/*\"]\ndefault = true\nrequired = true\n",
+    )?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    let target = &config.cache.targets[0];
+    assert_eq!(target.match_patterns, vec!["gitlab.corp.example.com/*"]);
+    assert!(target.default);
+    assert!(target.required);
+    Ok(())
+  }
+
+  #[test]
+  fn preset_resolves_pull_url_and_public_key() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[cache.community]\npreset = \"nix-community\"\n")?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    let target = &config.cache.targets[0];
+    assert_eq!(
+      target.pull_url.as_deref(),
+      Some("https://nix-community.cachix.org")
+    );
+    assert!(target.pull_public_key.is_some());
+    Ok(())
+  }
+
+  #[test]
+  fn unknown_preset_is_a_load_time_error() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[cache.x]\npreset = \"not-a-real-preset\"\n").unwrap();
+
+    let store = ConfigStore::load_from(&path).unwrap();
+    let err = store.config().unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not-a-real-preset"));
+    assert!(msg.contains("nix-community"));
+  }
+
+  #[test]
+  fn max_parallel_jobs_parses_at_cache_top_level() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[cache]\nmax_parallel_jobs = 3\n")?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    assert_eq!(config.cache.max_parallel_jobs, Some(3));
+    Ok(())
+  }
+
+  // -- !include / !include_try (xi-binary-cache-include) ------------------
+
+  #[test]
+  fn include_try_of_a_missing_file_loads_successfully() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(
+      &path,
+      "!include_try ./not-mounted-yet.toml\n[build]\nnom = false\n",
+    )?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    assert!(!config.build.nom);
+    assert!(config.cache.targets.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn bare_include_of_a_missing_file_is_a_load_error_naming_the_path() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "!include ./does-not-exist.toml\n").unwrap();
+
+    let err = ConfigStore::load_from(&path).unwrap_err();
+    assert!(err.to_string().contains("does-not-exist.toml"));
+  }
+
+  #[test]
+  fn included_files_table_overrides_the_base_files() -> Result<()> {
+    let dir = tempdir()?;
+    let base_path = dir.path().join("config.toml");
+    let fragment_path = dir.path().join("fragment.toml");
+    fs::write(&fragment_path, "[cache.corp]\nbucket = \"real-bucket\"\n")?;
+    fs::write(
+      &base_path,
+      "!include_try ./fragment.toml\n[cache.corp]\npush_url = \
+       \"s3://placeholder\"\nbucket = \"placeholder\"\n",
+    )?;
+
+    let store = ConfigStore::load_from(&base_path)?;
+    let config = store.config()?;
+    assert_eq!(
+      config.cache.targets[0].bucket.as_deref(),
+      Some("real-bucket")
+    );
+    // Keys the fragment didn't mention survive from the base file.
+    assert_eq!(
+      config.cache.targets[0].push_url.as_deref(),
+      Some("s3://placeholder")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn include_cycle_is_detected() {
+    let dir = tempdir().unwrap();
+    let a_path = dir.path().join("a.toml");
+    let b_path = dir.path().join("b.toml");
+    fs::write(&a_path, "!include_try ./b.toml\n").unwrap();
+    fs::write(&b_path, "!include_try ./a.toml\n").unwrap();
+
+    let err = ConfigStore::load_from(&a_path).unwrap_err();
+    assert!(err.to_string().contains("cycle"));
+  }
+
+  #[test]
+  fn include_path_is_resolved_relative_to_the_including_file() -> Result<()> {
+    let dir = tempdir()?;
+    let sub_dir = dir.path().join("nested");
+    fs::create_dir_all(&sub_dir)?;
+    let base_path = sub_dir.join("config.toml");
+    let fragment_path = sub_dir.join("fragment.toml");
+    fs::write(&fragment_path, "[build]\nnom = false\n")?;
+    fs::write(&base_path, "!include ./fragment.toml\n")?;
+
+    let store = ConfigStore::load_from(&base_path)?;
+    let config = store.config()?;
+    assert!(!config.build.nom);
     Ok(())
   }
 }
