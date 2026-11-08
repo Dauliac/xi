@@ -107,11 +107,29 @@ pub enum Query {
   /// [`super::reply::ExprEvalResult`] for the response shapes.
   ExprEval {
     /// The nix expression to evaluate, e.g. `"1 + 1"` or `"pkgs.hello"`.
+    /// [`FLAKE_SCOPE_EXPR`] is a reserved sentinel value meaning "the
+    /// flake's own top-level output names" instead of a literal
+    /// expression - see its doc comment.
     expr:    String,
     /// `true` for the attribute-name-only, never-forcing variant.
     shallow: bool,
   },
 }
+
+/// Sentinel [`Query::ExprEval`]'s `expr` value meaning "list the flake's
+/// own top-level output names" (`packages`, `nixosConfigurations`,
+/// `checks`, ...) - the same thing real `nix repl`'s `:lf .` loads into
+/// scope, requested explicitly rather than by evaluating an actual
+/// expression (which an empty or otherwise-unparseable string can't be).
+///
+/// `v3_handlers::run_expr_eval` recognizes this exact string and binds the
+/// classifying wrapper's `v` directly to the already-`with`-bound flake
+/// value instead of trying to parse it as Nix source. Only meaningful when
+/// the daemon's `flake_root` actually has a `flake.nix`; on a daemon
+/// pointed at a flake-less fixture directory this falls through to the
+/// same "no such variable" class of error any other unresolvable
+/// expression gets.
+pub const FLAKE_SCOPE_EXPR: &str = "__xi_repl_flake_scope__";
 
 /// The reply body returned by the daemon for a preceding [`Query`].
 ///

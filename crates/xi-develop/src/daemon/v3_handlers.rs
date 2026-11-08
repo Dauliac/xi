@@ -33,6 +33,7 @@ use super::{
     CommandReply,
     Envelope,
     ExprEvalResult,
+    FLAKE_SCOPE_EXPR,
     IdempotencyKey,
     Payload,
     Query,
@@ -379,8 +380,26 @@ fn classify_wrapper(
     r#"else { kind = "scalar"; value = v; }"#
   };
 
+  // `FLAKE_SCOPE_EXPR` is not Nix source to parse - it asks for the
+  // flake's own top-level outputs directly, which only has an answer when
+  // `__xiReplFlake` is actually bound below (`has_flake`). `.outputs`
+  // specifically (not `__xiReplFlake` itself) because `getFlake`'s return
+  // value also carries its own metadata (`_type`, `inputs`, `lastModified`,
+  // `narHash`, `outPath`, `sourceInfo`, …) merged in at the top level
+  // alongside the real outputs - `.outputs` is the actual
+  // `outputs = inputs: {...}` result on its own, which is exactly what
+  // real `nix repl`'s `:lf` scopes to. Binding `v` to a syntax error
+  // string in the no-flake case still produces a sensible "no such
+  // variable" class of ExprEvalResult::Error rather than silently
+  // returning something wrong.
+  let v_binding = if expr == FLAKE_SCOPE_EXPR && has_flake {
+    "__xiReplFlake.outputs".to_owned()
+  } else {
+    format!("({expr})")
+  };
+
   let body = format!(
-    r#"let v = ({expr}); in
+    r#"let v = {v_binding}; in
   if builtins.isFunction v then {{ kind = "lambda"; }}
   else if builtins.isAttrs v && (v.type or null) == "derivation" then
     {{ kind = "derivation";
@@ -627,6 +646,26 @@ mod tests {
     assert!(wrapper.contains(r#"builtins.getFlake "path:/tmp/some-flake""#));
     assert!(wrapper.contains("with __xiReplFlake;"));
     assert!(wrapper.contains("let v = (packages.x86_64-linux.hello); in"));
+  }
+
+  #[test]
+  fn classify_wrapper_flake_scope_sentinel_binds_v_to_the_flake_outputs() {
+    let flake_root = std::path::Path::new("/tmp/some-flake");
+    let wrapper = classify_wrapper(flake_root, true, FLAKE_SCOPE_EXPR, true);
+    assert!(wrapper.contains("with __xiReplFlake;"));
+    assert!(wrapper.contains("let v = __xiReplFlake.outputs; in"));
+    assert!(
+      !wrapper.contains(&format!("({FLAKE_SCOPE_EXPR})")),
+      "the sentinel must never be pasted as if it were Nix source"
+    );
+  }
+
+  #[test]
+  fn classify_wrapper_flake_scope_sentinel_without_flake_is_an_undefined_variable()
+   {
+    let no_flake = std::path::Path::new("/does/not/exist");
+    let wrapper = classify_wrapper(no_flake, false, FLAKE_SCOPE_EXPR, true);
+    assert!(wrapper.starts_with(&format!("let v = ({FLAKE_SCOPE_EXPR}); in")));
   }
 
   #[test]

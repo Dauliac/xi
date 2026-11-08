@@ -11,14 +11,13 @@
 //!    synchronous, matching task 5.1's wording exactly ("`.`/Tab-triggered
 //!    completion ... candidate attribute names populate reedline's completion
 //!    menu"). A token with no `.` yet (including an empty line - a bare Tab
-//!    press before typing anything) sends the empty-expression "current scope"
-//!    sentinel instead of giving up, which `handle_expr_eval` answers from
-//!    already-cached devshell package names without shelling out - this lists
-//!    what the running devshell provides, not the flake's own output names
-//!    (`packages`, `nixosConfigurations`, ...); those still need the `.` after
-//!    typing them, since listing the flake's actual top level needs the
-//!    (potentially slow, uncached) `builtins.getFlake` path `session::eval`
-//!    uses for any other expression.
+//!    press before typing anything) sends [`FLAKE_SCOPE_EXPR`] as the base
+//!    instead of giving up - the daemon answers that with the flake's own
+//!    top-level output names (`packages`, `nixosConfigurations`, `checks`,
+//!    ...), the same thing real `nix repl`'s `:lf .` loads into scope. This
+//!    goes through the same `builtins.getFlake`-backed path as any other
+//!    expression, so it carries the same potentially-slow, uncached cost on a
+//!    large flake (see `v3_handlers::run_expr_eval`'s doc comment).
 //! 2. Enriches only a bounded window of those candidates (task 5.2) with a
 //!    `meta.description`/version preview, one further shallow `ExprEval` per
 //!    candidate, rendered through the same [`crate::render::render`] this crate
@@ -62,7 +61,7 @@ use reedline::{
 };
 use xi_develop::daemon::{
   client_v3::{self, QueryOutcome},
-  protocol_v3::{Availability, ExprEvalResult, QueryReply},
+  protocol_v3::{Availability, ExprEvalResult, FLAKE_SCOPE_EXPR, QueryReply},
 };
 
 /// Upper bound on how many candidates get enriched per completion request.
@@ -92,12 +91,12 @@ fn is_token_char(ch: char) -> bool {
 /// to filter the daemon's answer locally, never sent over the wire).
 ///
 /// When the token has no `.` at all (including an empty token - a bare Tab
-/// press on an otherwise-empty line), `base_expr` comes back as `""`, the
-/// same empty-expression sentinel `xi-develop`'s `handle_expr_eval` already
-/// fast-paths to "what's in scope right now" (the running devshell's
-/// resolved package names) without shelling out to `nix eval` - so Tab at
-/// an empty prompt completes against that instead of returning nothing.
-/// `partial` is then whatever's typed so far, to filter it locally.
+/// press on an otherwise-empty line), `base_expr` comes back as
+/// [`FLAKE_SCOPE_EXPR`] - the sentinel that asks the daemon for the
+/// flake's own top-level output names (`packages`, `nixosConfigurations`,
+/// `checks`, ...), the same thing real `nix repl`'s `:lf .` loads into
+/// scope. `partial` is then whatever's typed so far, to filter it
+/// locally.
 ///
 /// Returns `None` only for a leading `.` with nothing before it (e.g.
 /// `.hel`) - that is not valid Nix syntax to complete attributes *of*,
@@ -118,7 +117,7 @@ fn attr_prefix(line: &str, pos: usize) -> Option<AttrPrefix> {
 
   let Some(dot_pos) = token.rfind('.') else {
     return Some(AttrPrefix {
-      base_expr: String::new(),
+      base_expr: FLAKE_SCOPE_EXPR.to_owned(),
       partial:   token.to_owned(),
       span:      Span::new(start, pos),
     });
@@ -234,7 +233,16 @@ impl AttrCompleter {
     let socket_path = self.socket_path.clone();
     thread::spawn(move || {
       for name in window {
-        let full_path = format!("{base_expr}.{name}");
+        // When completing at the top level, `name` (e.g. "packages") is
+        // already a complete, directly-evaluable expression on its own
+        // once bound via the daemon's `with`-flake wrapper - prefixing it
+        // with the `FLAKE_SCOPE_EXPR` sentinel itself would send nonsense
+        // like `__xi_repl_flake_scope__.packages`.
+        let full_path = if base_expr == FLAKE_SCOPE_EXPR {
+          name.clone()
+        } else {
+          format!("{base_expr}.{name}")
+        };
         let preview = client_v3::expr_eval(&socket_path, &full_path, true)
           .ok()
           .and_then(|outcome| {
@@ -381,17 +389,17 @@ mod tests {
   use super::*;
 
   #[test]
-  fn no_dot_completes_against_current_scope() {
+  fn no_dot_completes_against_flake_scope() {
     let prefix = attr_prefix("hel", 3).expect("should complete against scope");
-    assert_eq!(prefix.base_expr, "");
+    assert_eq!(prefix.base_expr, FLAKE_SCOPE_EXPR);
     assert_eq!(prefix.partial, "hel");
     assert_eq!(prefix.span, Span::new(0, 3));
   }
 
   #[test]
-  fn bare_tab_on_an_empty_line_completes_against_current_scope() {
+  fn bare_tab_on_an_empty_line_completes_against_flake_scope() {
     let prefix = attr_prefix("", 0).expect("should complete against scope");
-    assert_eq!(prefix.base_expr, "");
+    assert_eq!(prefix.base_expr, FLAKE_SCOPE_EXPR);
     assert_eq!(prefix.partial, "");
     assert_eq!(prefix.span, Span::new(0, 0));
   }
