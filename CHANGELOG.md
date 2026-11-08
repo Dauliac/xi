@@ -22,6 +22,10 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- `tag.yaml` never declared `permissions:`, so `GITHUB_TOKEN` fell back to
+  this repo's read-only default and `gh release create` failed with `HTTP
+  403: Resource not accessible by integration`. Added `permissions:
+  contents: write` at the workflow level.
 - `tag.yaml`'s `aarch64-darwin` release build used the `macos-14` runner
   label, which GitHub no longer supports ("configuration
   'macos-14-arm64-us-default' is not supported"). Switched to `macos-latest`,

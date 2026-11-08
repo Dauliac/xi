@@ -1,5 +1,8 @@
 name: Tag and release
 
+permissions:
+  contents: write
+
 concurrency: tag
 
 on:
