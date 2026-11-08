@@ -447,15 +447,20 @@ fn render_per_system_category(
       .map(|(k, _)| k.clone())
   });
 
+  // Once "default" is deduped away (as a bare entry or as an alias), a
+  // single remaining entry has nothing to be "default" relative to.
+  let effective_len = attrs.len() - if default_alias_target.is_some() { 1 } else { 0 };
+
   for (attr_name, entry) in &attrs {
     if attr_name == "default" && default_alias_target.is_some() {
       continue;
     }
 
-    let is_default = attr_name == "default"
-      || default_alias_target
-        .as_deref()
-        .is_some_and(|target| target == attr_name);
+    let is_default = effective_len > 1
+      && (attr_name == "default"
+        || default_alias_target
+          .as_deref()
+          .is_some_and(|target| target == attr_name));
 
     print_entry(attr_name, entry, is_default);
   }
@@ -474,16 +479,21 @@ fn render_flat_category(
       .map(|(k, _)| k.clone())
   });
 
+  // Once "default" is deduped away (as a bare entry or as an alias), a
+  // single remaining entry has nothing to be "default" relative to.
+  let effective_len = cat_obj.len() - if default_alias_target.is_some() { 1 } else { 0 };
+
   for (name, value) in cat_obj {
     // Skip "default" if it aliases another entry.
     if name == "default" && default_alias_target.is_some() {
       continue;
     }
 
-    let is_default = name == "default"
-      || default_alias_target
-        .as_deref()
-        .is_some_and(|target| target == name);
+    let is_default = effective_len > 1
+      && (name == "default"
+        || default_alias_target
+          .as_deref()
+          .is_some_and(|target| target == name));
 
     let entry = parse_entry(value);
     let kind = detect_output_kind(cat_name, value);
