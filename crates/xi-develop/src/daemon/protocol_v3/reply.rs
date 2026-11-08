@@ -61,6 +61,16 @@ pub enum ExprEvalResult {
   /// function, derivation, or attrset - its contents were deliberately not
   /// serialized.
   Thunk,
+  /// Non-shallow query only: the value forced fine but contains a function
+  /// somewhere inside it (a list or attrset element, not the top-level
+  /// value itself - that case is [`ExprEvalResult::Lambda`]) and so cannot
+  /// be JSON-serialized - e.g. a flake-parts/NixOS module's
+  /// `imports = [ { ... }: {...} ]`. `nix`'s own `--json` output flag
+  /// crashes the whole `nix eval` process on this rather than raising a
+  /// catchable evaluation error, so `v3_handlers::classify_wrapper` checks
+  /// for it ahead of time and reports this distinct, nameable shape
+  /// instead of a generic [`ExprEvalResult::Error`].
+  Unrepresentable,
   /// The daemon could not evaluate the expression.
   Error {
     /// Human-readable message (a trimmed `nix eval` stderr summary).

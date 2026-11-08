@@ -503,12 +503,29 @@ fn classify_wrapper(
   // - shallow lists attribute names without forcing any of them, and declines
   //   (reports `thunk`) rather than serializing anything else.
   // - non-shallow serializes the forced value as-is (`scalar`), covering plain
-  //   attrsets, lists, and primitives alike.
+  //   attrsets, lists, and primitives alike - *except* a list/attrset that
+  //   contains a function anywhere inside it (e.g. a flake-parts/NixOS module's
+  //   `imports = [ { ... }: {...} ... ]`), which this checks for first and
+  //   reports as `unrepresentable` instead.
+  //
+  //   `builtins.toJSON`'s "cannot convert a function to JSON" is NOT a
+  //   catchable Nix evaluation error - confirmed empirically,
+  //   `builtins.tryEval (builtins.toJSON v)` still throws it straight
+  //   through. Serializing a function anywhere inside `v` via the CLI's
+  //   own `--json` output flag (which runs *after* this expression
+  //   already evaluated successfully) crashes the whole `nix eval`
+  //   process, which `run_expr_eval` then reports as a plain `Error` -
+  //   indistinguishable from a genuine eval failure, and in `xi
+  //   repl`'s own `:raw` fallback that reads as "it just crashed" for
+  //   what is really an ordinary, nameable value shape. `hasFunction`'s
+  //   plain `isFunction`/`isList`/`isAttrs` checks never call `toJSON` on
+  //   the function itself, so the uncatchable case never fires.
   let tail = if shallow {
     r#"else if builtins.isAttrs v then { kind = "attrs"; names = builtins.attrNames v; }
   else { kind = "thunk"; }"#
   } else {
-    r#"else { kind = "scalar"; value = v; }"#
+    r#"else if hasFunction v then { kind = "unrepresentable"; }
+  else { kind = "scalar"; value = v; }"#
   };
 
   // `FLAKE_SCOPE_EXPR` is not Nix source to parse - it asks for the
@@ -530,7 +547,14 @@ fn classify_wrapper(
   };
 
   let body = format!(
-    r#"let v = {v_binding}; in
+    r#"let
+  v = {v_binding};
+  hasFunction = x:
+    if builtins.isFunction x then true
+    else if builtins.isList x then builtins.any hasFunction x
+    else if builtins.isAttrs x then builtins.any hasFunction (builtins.attrValues x)
+    else false;
+in
   if builtins.isFunction v then {{ kind = "lambda"; }}
   else if builtins.isAttrs v && (v.type or null) == "derivation" then
     {{ kind = "derivation";
@@ -616,6 +640,7 @@ fn decode_classified(value: &serde_json::Value) -> ExprEvalResult {
     Some("scalar") => {
       ExprEvalResult::Scalar(value.get("value").cloned().unwrap_or_default())
     },
+    Some("unrepresentable") => ExprEvalResult::Unrepresentable,
     _ => {
       ExprEvalResult::Error {
         message: format!("daemon could not classify eval result: {value}"),
@@ -787,7 +812,7 @@ mod tests {
       !wrapper.contains("getFlake"),
       "no flake.nix present must not introduce a getFlake binding"
     );
-    assert!(wrapper.starts_with("let v = (1 + 1); in"));
+    assert!(wrapper.contains("v = (1 + 1);"));
   }
 
   #[test]
@@ -797,7 +822,7 @@ mod tests {
       classify_wrapper(flake_root, true, "packages.x86_64-linux.hello", true);
     assert!(wrapper.contains(r#"builtins.getFlake "path:/tmp/some-flake""#));
     assert!(wrapper.contains("with __xiReplFlake;"));
-    assert!(wrapper.contains("let v = (packages.x86_64-linux.hello); in"));
+    assert!(wrapper.contains("v = (packages.x86_64-linux.hello);"));
   }
 
   #[test]
@@ -805,7 +830,7 @@ mod tests {
     let flake_root = std::path::Path::new("/tmp/some-flake");
     let wrapper = classify_wrapper(flake_root, true, FLAKE_SCOPE_EXPR, true);
     assert!(wrapper.contains("with __xiReplFlake;"));
-    assert!(wrapper.contains("let v = __xiReplFlake.outputs; in"));
+    assert!(wrapper.contains("v = __xiReplFlake.outputs;"));
     assert!(
       !wrapper.contains(&format!("({FLAKE_SCOPE_EXPR})")),
       "the sentinel must never be pasted as if it were Nix source"
@@ -817,7 +842,7 @@ mod tests {
    {
     let no_flake = std::path::Path::new("/does/not/exist");
     let wrapper = classify_wrapper(no_flake, false, FLAKE_SCOPE_EXPR, true);
-    assert!(wrapper.starts_with(&format!("let v = ({FLAKE_SCOPE_EXPR}); in")));
+    assert!(wrapper.contains(&format!("v = ({FLAKE_SCOPE_EXPR});")));
   }
 
   #[test]
@@ -863,6 +888,44 @@ mod tests {
       panic!("expected Scalar, got {result:?}");
     };
     assert_eq!(value, json!(["x86_64-linux"]));
+  }
+
+  #[test]
+  fn run_expr_eval_reports_unrepresentable_for_a_list_containing_a_function() {
+    // `nix eval --json` crashes the whole process on this (confirmed
+    // empirically - `builtins.tryEval (builtins.toJSON v)` does not catch
+    // it either) rather than raising a catchable evaluation error, which
+    // is exactly the scenario `hasFunction` in `classify_wrapper` guards
+    // against. A real flake's `imports = [ { ... }: {...} ]` hits this
+    // same shape.
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(fixture, "[ (x: x) 1 2 ]", false);
+    assert!(
+      matches!(result, ExprEvalResult::Unrepresentable),
+      "got {result:?}"
+    );
+  }
+
+  #[test]
+  fn run_expr_eval_still_handles_a_plain_list_as_a_normal_scalar() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(fixture, "[ 1 2 3 ]", false);
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(value, json!([1, 2, 3]));
   }
 
   #[test]

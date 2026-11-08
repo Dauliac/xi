@@ -225,6 +225,19 @@ pub struct AttrCompleter {
   socket_path:          PathBuf,
   current:              Option<RequestState>,
   base_cache:           Option<BaseCache>,
+  /// Documentation previews already fetched this session, keyed by the
+  /// full expression they were fetched for (e.g. `"builtins.add"`).
+  ///
+  /// Shared (not owned outright) because it is read and written from the
+  /// enrichment background thread, not just from `&mut self` - see
+  /// [`doc_preview_or_fallback`]. Never evicted: a repl session's
+  /// vocabulary of distinct functions is small enough that this cannot
+  /// meaningfully grow unbounded, and the whole point is to stop paying
+  /// `nix repl`'s subprocess-spawn cost again for a candidate the user
+  /// has already looked at, no matter how many keystrokes or
+  /// re-navigations happen in between.
+  doc_cache:
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
   rx:                   Option<mpsc::Receiver<EnrichMsg>>,
   base_in_flight:       bool,
   enrichment_in_flight: bool,
@@ -237,11 +250,14 @@ impl AttrCompleter {
   /// Does not connect eagerly  -  the first connection attempt happens on
   /// the first `.`/Tab press, same as [`crate::session::eval`].
   #[must_use]
-  pub const fn new(socket_path: PathBuf) -> Self {
+  pub fn new(socket_path: PathBuf) -> Self {
     Self {
       socket_path,
       current: None,
       base_cache: None,
+      doc_cache: std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::new(),
+      )),
       rx: None,
       base_in_flight: false,
       enrichment_in_flight: false,
@@ -329,6 +345,7 @@ impl AttrCompleter {
     }
 
     let socket_path = self.socket_path.clone();
+    let doc_cache = std::sync::Arc::clone(&self.doc_cache);
     thread::spawn(move || {
       for name in window {
         // When completing at the top level, `name` (e.g. "packages") is
@@ -365,7 +382,7 @@ impl AttrCompleter {
           // functions. Try real `nix repl`-backed docs first (see
           // Query::ExprDoc's doc comment); fall back to the placeholder
           // only when there genuinely are none.
-          doc_preview_or_fallback(&socket_path, &full_path, &value)
+          doc_preview_or_fallback(&doc_cache, &socket_path, &full_path, &value)
         } else {
           crate::render::strip_ansi(&crate::render::render(&value))
         };
@@ -421,14 +438,29 @@ fn filtered_suggestions(
 /// `fallback` (the already-known [`ExprEvalResult::Lambda`]) when there is
 /// none, the lookup errors, or the daemon is unreachable.
 ///
+/// Checks `doc_cache` first and stores whatever it ends up returning (doc
+/// text or fallback alike) before returning - `Query::ExprDoc` spawns a
+/// whole `nix repl` subprocess per lookup, and the same candidate
+/// otherwise pays that cost again every time it re-enters the enrichment
+/// window, however many keystrokes or re-navigations apart.
+///
 /// Called from the enrichment background thread, same as the ordinary
 /// classify-and-render path it supplements - never on `complete()`'s
 /// caller.
 fn doc_preview_or_fallback(
+  doc_cache: &std::sync::Mutex<std::collections::HashMap<String, String>>,
   socket_path: &std::path::Path,
   expr: &str,
   fallback: &ExprEvalResult,
 ) -> String {
+  if let Some(cached) = doc_cache
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner)
+    .get(expr)
+  {
+    return cached.clone();
+  }
+
   let doc = client_v3::expr_doc(socket_path, expr)
     .ok()
     .and_then(|outcome| {
@@ -440,9 +472,14 @@ fn doc_preview_or_fallback(
       }
     });
 
-  doc.unwrap_or_else(|| {
+  let result = doc.unwrap_or_else(|| {
     crate::render::strip_ansi(&crate::render::render(fallback))
-  })
+  });
+  doc_cache
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner)
+    .insert(expr.to_owned(), result.clone());
+  result
 }
 
 impl Completer for AttrCompleter {
@@ -1128,5 +1165,129 @@ mod tests {
       .find(|s| s.value.starts_with("world"))
       .expect("world present");
     assert_eq!(world.value, "world", "a leaf - no dot");
+  }
+
+  /// A fake v3 daemon answering both `ExprEval` and `ExprDoc` queries,
+  /// counting how many `ExprDoc` connections it serves - used to prove a
+  /// repeat lookup for the same candidate hits [`AttrCompleter`]'s doc
+  /// cache instead of spawning another `nix repl` subprocess.
+  struct DocCountingMiniDaemon {
+    socket:          PathBuf,
+    doc_connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    _handle:         thread::JoinHandle<()>,
+    _tmp:            tempfile::TempDir,
+  }
+
+  impl DocCountingMiniDaemon {
+    fn spawn() -> Self {
+      use std::{
+        io::{BufReader, BufWriter},
+        os::unix::net::UnixListener,
+        sync::{Arc, atomic::AtomicUsize},
+      };
+
+      use xi_develop::daemon::protocol_v3::{Envelope, Payload, Query, Reply};
+
+      let tmp = tempfile::tempdir().expect("mktemp");
+      let socket = tmp.path().join("v3.sock");
+      let listener = UnixListener::bind(&socket).expect("bind");
+      let doc_connections = Arc::new(AtomicUsize::new(0));
+
+      let (ready_tx, ready_rx) = mpsc::channel::<()>();
+      let handle = thread::spawn({
+        let doc_connections = Arc::clone(&doc_connections);
+        move || {
+          ready_tx.send(()).ok();
+          for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            let mut reader = BufReader::new(&stream);
+            let mut writer = BufWriter::new(&stream);
+            let Ok(env) = xi_develop::daemon::protocol::read_message::<
+              _,
+              Envelope,
+            >(&mut reader) else {
+              continue;
+            };
+            let reply_payload = match env.payload {
+              Payload::Query(Query::ExprEval { expr, .. }) => {
+                let value = match expr.as_str() {
+                  "pkgs" => ExprEvalResult::Attrs(vec!["addFn".to_owned()]),
+                  "pkgs.addFn" => ExprEvalResult::Lambda,
+                  other => {
+                    ExprEvalResult::Error {
+                      message: format!("no reply for {other:?}"),
+                    }
+                  },
+                };
+                Reply::Query(QueryReply::ExprEval(Availability::Ready {
+                  value,
+                }))
+              },
+              Payload::Query(Query::ExprDoc { .. }) => {
+                doc_connections
+                  .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Reply::Query(QueryReply::ExprDoc(Availability::Ready {
+                  value: DocResult::Found {
+                    doc: "Synopsis: pkgs.addFn".to_owned(),
+                  },
+                }))
+              },
+              _ => continue,
+            };
+            let reply = Envelope::new(env.id, Payload::Reply(reply_payload));
+            let _ =
+              xi_develop::daemon::protocol::write_message(&mut writer, &reply);
+          }
+        }
+      });
+      ready_rx.recv().expect("listener ready");
+
+      Self {
+        socket,
+        doc_connections,
+        _handle: handle,
+        _tmp: tmp,
+      }
+    }
+  }
+
+  #[test]
+  fn doc_lookups_are_cached_across_separate_completion_requests() {
+    let daemon = DocCountingMiniDaemon::spawn();
+    let mut completer = AttrCompleter::new(daemon.socket);
+
+    let settle = |completer: &mut AttrCompleter| {
+      let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(5);
+      loop {
+        match completer.poll_completion() {
+          CompletionStatus::Idle => break,
+          _ => {
+            assert!(
+              std::time::Instant::now() < deadline,
+              "enrichment never settled"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+          },
+        }
+      }
+    };
+
+    completer.complete("pkgs.", 5);
+    settle(&mut completer);
+    // A different request (new partial) that still resolves to the same
+    // candidate - not the `is_same_request` fast path, which would skip
+    // re-enriching (and thus not exercise the cache) entirely.
+    completer.complete("pkgs.a", 6);
+    settle(&mut completer);
+
+    assert_eq!(
+      daemon
+        .doc_connections
+        .load(std::sync::atomic::Ordering::SeqCst),
+      1,
+      "the second request's enrichment pass must hit the doc cache instead of \
+       looking the same candidate up again"
+    );
   }
 }

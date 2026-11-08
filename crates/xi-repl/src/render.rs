@@ -50,6 +50,12 @@ pub fn render(result: &ExprEvalResult) -> String {
     ExprEvalResult::Thunk => {
       format!("{}", Paint::new("<thunk>").fg(Color::Yellow))
     },
+    ExprEvalResult::Unrepresentable => {
+      format!(
+        "{}",
+        Paint::new("<unrepresentable: contains a function>").fg(Color::Yellow)
+      )
+    },
     ExprEvalResult::Error { message } => {
       format!("{}", Paint::new(message).fg(Color::Red))
     },
