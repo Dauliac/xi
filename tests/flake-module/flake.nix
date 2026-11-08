@@ -8,6 +8,12 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    # Only this test fixture's own flake, not xi's: a `kind = "distro"`
+    # entry needs a `nix-vm-test` backend (see modules/flake-parts/vm.nix's
+    # `xiVmTestInput` perSystem arg), which xi's own flake.nix does not add
+    # (adding a new third-party input to the shipped flake is a different,
+    # bigger call than exercising it in a disposable test fixture).
+    nix-vm-test.url = "github:numtide/nix-vm-test";
   };
 
   outputs =
@@ -27,5 +33,9 @@
         "x86_64-darwin"
         "aarch64-darwin"
       ];
+
+      perSystem = {
+        _module.args.xiVmTestInput = inputs.nix-vm-test;
+      };
     };
 }

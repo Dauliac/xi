@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use color_eyre::Result;
 use serde::Serialize;
+use xi_core::style::{self, Icon};
 
 use crate::{
   args::{
@@ -80,13 +81,32 @@ fn list(manifest: &Manifest, state_dir: &std::path::Path) -> Result<()> {
   }
 
   if rows.is_empty() {
-    println!("No VMs declared. See `xi.vm.<name>` in docs/guides/vm.md.");
+    println!(
+      "{}",
+      style::dim("No VMs declared. See `xi.vm.<name>` in docs/guides/vm.md.")
+    );
     return Ok(());
   }
 
-  println!("{:<20} {:<10} {:<10}", "NAME", "KIND", "STATUS");
+  println!(
+    "{} {:<10} {:<10}",
+    style::bold(&format!("{:<20}", "NAME")),
+    "KIND",
+    "STATUS"
+  );
   for row in rows {
-    println!("{:<20} {:<10} {:<10}", row.name, row.kind, row.running);
+    let status_icon = match row.running {
+      "running" => Icon::Success,
+      "stopped" => Icon::Info,
+      _ => Icon::Warn,
+    };
+    println!(
+      "{:<20} {:<10} {} {}",
+      row.name,
+      row.kind,
+      status_icon.render(),
+      row.running
+    );
   }
   Ok(())
 }
@@ -147,14 +167,17 @@ fn run_check(flakeref: &str, manifest: &Manifest, args: VmCheckArgs) -> Result<(
   } else {
     for outcome in &outcomes {
       match outcome.reason.as_deref() {
-        None => println!("{}: ok", outcome.name),
+        None => {
+          println!("{} {}: ok", Icon::Success.render(), outcome.name);
+        },
         Some(reason) => println!(
-          "{}: failed ({reason}){}",
+          "{} {}: failed ({reason}){}",
+          Icon::Error.render(),
           outcome.name,
           outcome
             .detail
             .as_deref()
-            .map(|d| format!("\n  {d}"))
+            .map(|d| format!("\n  {}", style::dim(d)))
             .unwrap_or_default()
         ),
       }
@@ -243,8 +266,12 @@ fn run_status(
     println!("{}", serde_json::to_string_pretty(&envelope)?);
   } else {
     for status in &statuses {
-      let running = if status.running { "running" } else { "stopped" };
-      println!("{}: {running}", status.name);
+      let (icon, running) = if status.running {
+        (Icon::Success, "running")
+      } else {
+        (Icon::Info, "stopped")
+      };
+      println!("{} {}: {running}", icon.render(), status.name);
     }
   }
   Ok(())
