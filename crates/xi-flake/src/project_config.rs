@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+  collections::HashMap,
+  path::{Path, PathBuf},
+};
 
 use tracing::{debug, warn};
 use xi_core::sources::config::{ConfigError, SourcesConfig};
@@ -68,6 +71,26 @@ impl Default for ProjectTestConfig {
   }
 }
 
+/// Per-rule override for a single `xi doctor` check, keyed by the check's
+/// stable `CheckResult::code` (e.g. `"dirty-tree"`).
+///
+/// Parsed from `[doctor.rules]` in `.xi.toml`: a plain `false` maps to
+/// `Off`; the strings `"off"`/`"warn"`/`"fail"` map directly. `true` or
+/// the string `"on"` is accepted but never stored (it is the default, a
+/// no-op -- `rules` only ever holds actual overrides).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleSetting {
+  /// Drop this check's result entirely -- it neither prints nor counts
+  /// toward the warning/failure tally.
+  Off,
+  /// Force this check's result to `Warn` when it fires, even if its own
+  /// logic would normally produce `Fail`. Has no effect on an `Ok` result.
+  Warn,
+  /// Force this check's result to `Fail` when it fires, even if its own
+  /// logic would normally produce `Warn`. Has no effect on an `Ok` result.
+  Fail,
+}
+
 /// Doctor/health-check configuration.
 #[derive(Debug, Default)]
 pub struct ProjectDoctorConfig {
@@ -114,6 +137,17 @@ pub struct ProjectDoctorConfig {
   /// non-conventional top-level output keys can opt out of the whole group
   /// here, same posture as `disable_metadata_checks`.
   pub disable_output_checks:    bool,
+  /// Per-rule overrides, keyed by `CheckResult::code` (e.g.
+  /// `"dirty-tree"`, `"package-version"`). Checked in addition to, and
+  /// independently of, the three group-level `disable_*_checks` flags
+  /// above and `require_official_nixpkgs`: a rule can be off because its
+  /// whole group is disabled, or individually, via this map, or both.
+  ///
+  /// This is the generalized mechanism (one override per check, covering
+  /// all ~17 checks uniformly); the group flags and
+  /// `require_official_nixpkgs` predate it and stay for backward
+  /// compatibility rather than being folded into this map.
+  pub rules: HashMap<String, RuleSetting>,
 }
 
 /// Consumer flake configuration.
@@ -140,23 +174,147 @@ impl Default for ProjectConsumerConfig {
   }
 }
 
-/// Load project config from `.xi.toml` in the given directory.
+// ---------------------------------------------------------------------------
+// Layered multi-file config discovery
+//
+// Three tiers, each possibly itself multiple files, later files winning
+// key-by-key (recursively into sub-tables, so e.g. a global `[doctor]`
+// table and a repo-local `[doctor.rules]` table both survive rather than
+// one replacing the other wholesale):
+//
+//   1. global:      sorted *.toml files in the XDG config dir for `xi`
+//                    (same directory `xi::config::default_config_path()`
+//                    resolves to; `$XI_CONFIG` overrides to a single
+//                    explicit file instead of globbing its directory).
+//   2. repo-shared:  ./xi.toml, then ./.xi.toml (first found; both do NOT
+//                    merge with each other -- pick one spelling), then
+//                    every sorted *.toml in ./.config/xi/.
+//   3. repo-local:   ./.xi.local.toml (personal, meant to be gitignored).
+//
+// This loader is deliberately lenient end to end (unparseable or missing
+// files are skipped with a warning, matching this function's existing
+// posture for every section) -- it is NOT used for the stricter `[sources]`
+// path below, which keeps reading a single repo-shared file only.
+// ---------------------------------------------------------------------------
+
+/// Every `*.toml` file directly inside `dir`, sorted by filename for a
+/// deterministic merge order. Returns an empty list if `dir` doesn't
+/// exist or can't be read.
+fn glob_toml_files(dir: &Path) -> Vec<PathBuf> {
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return vec![];
+  };
+
+  let mut files: Vec<PathBuf> = entries
+    .filter_map(Result::ok)
+    .map(|e| e.path())
+    .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
+    .collect();
+  files.sort();
+  files
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+  std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// Resolve the global config directory the same way
+/// `xi::config::default_config_path()` does (duplicated here rather than
+/// shared: `xi-flake` cannot depend on the `xi` binary crate, and this is
+/// a handful of lines, not worth a cross-crate refactor for).
+fn global_config_dir() -> Option<PathBuf> {
+  let base = non_empty_env("XDG_CONFIG_HOME")
+    .map(PathBuf::from)
+    .or_else(|| non_empty_env("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+  Some(base.join("xi"))
+}
+
+/// Tier 1: global config sources, in merge order.
+fn global_config_sources() -> Vec<PathBuf> {
+  if let Some(explicit) = non_empty_env("XI_CONFIG") {
+    return vec![PathBuf::from(explicit)];
+  }
+  global_config_dir().map(|dir| glob_toml_files(&dir)).unwrap_or_default()
+}
+
+/// The single repo-shared config file, if any: `xi.toml` takes
+/// precedence over `.xi.toml` when both exist (first found wins, they do
+/// not merge with each other).
+fn repo_shared_config_file(dir: &Path) -> Option<PathBuf> {
+  for name in ["xi.toml", ".xi.toml"] {
+    let p = dir.join(name);
+    if p.is_file() {
+      return Some(p);
+    }
+  }
+  None
+}
+
+/// Tier 2: repo-shared config sources, in merge order -- the single
+/// `xi.toml`/`.xi.toml` file (if any), then every `.config/xi/*.toml`
+/// fragment.
+fn repo_shared_config_sources(dir: &Path) -> Vec<PathBuf> {
+  let mut sources = Vec::new();
+  if let Some(shared) = repo_shared_config_file(dir) {
+    sources.push(shared);
+  }
+  sources.extend(glob_toml_files(&dir.join(".config").join("xi")));
+  sources
+}
+
+/// Tier 3: the personal, repo-local override file, if present.
+fn repo_local_config_source(dir: &Path) -> Option<PathBuf> {
+  let p = dir.join(".xi.local.toml");
+  p.is_file().then_some(p)
+}
+
+/// Deep-merge `incoming` into `base`: for a key present as a table on
+/// both sides, recurse; otherwise `incoming`'s value replaces `base`'s
+/// (whole arrays/scalars, not element-wise) -- "later file wins" applied
+/// per leaf key rather than per top-level table.
+fn merge_table_into(base: &mut toml_edit::Table, incoming: &toml_edit::Table) {
+  for (key, incoming_item) in incoming.iter() {
+    let merged_as_table = base
+      .get_mut(key)
+      .and_then(toml_edit::Item::as_table_mut)
+      .zip(incoming_item.as_table());
+
+    if let Some((base_table, incoming_table)) = merged_as_table {
+      merge_table_into(base_table, incoming_table);
+    } else {
+      base.insert(key, incoming_item.clone());
+    }
+  }
+}
+
+/// Load and merge every layer (global, repo-shared, repo-local) into one
+/// document. Unreadable or unparseable files are skipped with a warning,
+/// not a hard failure -- consistent with this module's existing leniency.
+fn merged_config_document(flake_dir: &Path) -> toml_edit::DocumentMut {
+  let mut sources = global_config_sources();
+  sources.extend(repo_shared_config_sources(flake_dir));
+  if let Some(local) = repo_local_config_source(flake_dir) {
+    sources.push(local);
+  }
+
+  let mut doc = toml_edit::DocumentMut::new();
+  for path in sources {
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+      continue;
+    };
+    match raw.parse::<toml_edit::DocumentMut>() {
+      Ok(layer) => merge_table_into(doc.as_table_mut(), layer.as_table()),
+      Err(e) => warn!("Failed to parse {}: {e}", path.display()),
+    }
+  }
+  doc
+}
+
+/// Load project config, merging the global and per-repo `.xi.toml`-family
+/// files (see [`merged_config_document`] for the exact tiers/precedence).
 pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
   let dir = flake_dir.unwrap_or_else(|| Path::new("."));
-  let config_path = dir.join(".xi.toml");
-
-  let Ok(raw) = std::fs::read_to_string(&config_path) else {
-    return default_config();
-  };
-
-  let doc = match raw.parse::<toml_edit::DocumentMut>() {
-    Ok(d) => d,
-    Err(e) => {
-      warn!("Failed to parse {}: {e}", config_path.display());
-      return default_config();
-    },
-  };
-
+  let doc = merged_config_document(dir);
   let mut config = default_config();
 
   // [ci] section
@@ -225,6 +383,40 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
       .and_then(toml_edit::Item::as_bool)
     {
       config.doctor.disable_output_checks = disable;
+    }
+
+    // [doctor.rules] -- one entry per check code, e.g.
+    // `rules.dirty-tree = "off"` or `rules.package-version = false`.
+    if let Some(rules) = doctor.get("rules").and_then(|v| v.as_table()) {
+      for (code, item) in rules.iter() {
+        let setting = if let Some(b) = item.as_bool() {
+          if b {
+            continue; // "on" is the default -- not stored as an override.
+          }
+          RuleSetting::Off
+        } else if let Some(s) = item.as_str() {
+          match s {
+            "off" => RuleSetting::Off,
+            "warn" => RuleSetting::Warn,
+            "fail" => RuleSetting::Fail,
+            "on" => continue,
+            other => {
+              warn!(
+                "[doctor.rules.{code}] unknown setting '{other}' (expected \
+                 a bool, or one of \"off\"/\"warn\"/\"fail\"/\"on\"); \
+                 ignoring"
+              );
+              continue;
+            },
+          }
+        } else {
+          warn!(
+            "[doctor.rules.{code}] must be a bool or a string; ignoring"
+          );
+          continue;
+        };
+        config.doctor.rules.insert(code.to_string(), setting);
+      }
     }
   }
 
@@ -327,9 +519,21 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
   // never enabled sources. Commands that actually read sources config go
   // through `load_sources_config`, which is strict  -  that is what makes
   // the spec's "fails at config-load time, not at first fetch" hold.
-  match SourcesConfig::from_toml_str(&config_path, &raw) {
-    Ok(sources) => config.sources = sources,
-    Err(e) => warn!("{e}"),
+  //
+  // Deliberately NOT part of the layered global/repo-local merge above:
+  // `SourcesConfig::from_toml_str`'s errors name an exact file and line,
+  // and extending that contract to "whichever of several merged files
+  // held the bad key" is a bigger design question than this change's
+  // scope. This keeps reading only the single repo-shared file, exactly
+  // as before, now accepting either `xi.toml` or `.xi.toml` as its
+  // spelling.
+  if let Some(shared_path) = repo_shared_config_file(dir)
+    && let Ok(raw) = std::fs::read_to_string(&shared_path)
+  {
+    match SourcesConfig::from_toml_str(&shared_path, &raw) {
+      Ok(sources) => config.sources = sources,
+      Err(e) => warn!("{e}"),
+    }
   }
 
   debug!(?config, "Loaded project config from .xi.toml");
@@ -353,7 +557,9 @@ pub fn load_sources_config(
   flake_dir: Option<&Path>,
 ) -> Result<SourcesConfig, ConfigError> {
   let dir = flake_dir.unwrap_or_else(|| Path::new("."));
-  SourcesConfig::from_toml_file(&dir.join(".xi.toml"))
+  let path =
+    repo_shared_config_file(dir).unwrap_or_else(|| dir.join(".xi.toml"));
+  SourcesConfig::from_toml_file(&path)
 }
 
 fn default_config() -> ProjectConfig {
@@ -367,9 +573,275 @@ fn default_config() -> ProjectConfig {
       disable_structure_checks: false,
       disable_metadata_checks:  false,
       disable_output_checks:    false,
+      rules:                    HashMap::new(),
     },
     test:     ProjectTestConfig::default(),
     fmt:      ProjectFmtConfig::default(),
     sources:  SourcesConfig::default(),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn write(dir: &Path, name: &str, contents: &str) {
+    if let Some(parent) = dir.join(name).parent() {
+      std::fs::create_dir_all(parent).expect("create parent dir");
+    }
+    std::fs::write(dir.join(name), contents).expect("write fixture file");
+  }
+
+  /// Pins `HOME`/`XDG_CONFIG_HOME` to an empty temp dir for the duration
+  /// of a test, so `load_project_config`'s global tier reads nothing from
+  /// whatever real config happens to exist on the machine running the
+  /// test. Restores the previous values on drop.
+  struct GlobalConfigGuard {
+    empty_dir:     tempfile::TempDir,
+    prior_xi:      Option<std::ffi::OsString>,
+    prior_xdg:     Option<std::ffi::OsString>,
+    prior_home:    Option<std::ffi::OsString>,
+  }
+
+  impl GlobalConfigGuard {
+    fn new() -> Self {
+      let empty_dir = tempfile::tempdir().expect("create empty global dir");
+      let prior_xi = std::env::var_os("XI_CONFIG");
+      let prior_xdg = std::env::var_os("XDG_CONFIG_HOME");
+      let prior_home = std::env::var_os("HOME");
+      // SAFETY-equivalent note: this mutates process-wide env state, same
+      // as `xi::config`'s own `EnvGuard` test helper -- acceptable here
+      // because every test using it is `#[test]`, single-process, and
+      // restores the prior value on drop.
+      unsafe {
+        std::env::remove_var("XI_CONFIG");
+        std::env::set_var("XDG_CONFIG_HOME", empty_dir.path());
+        std::env::remove_var("HOME");
+      }
+      Self { empty_dir, prior_xi, prior_xdg, prior_home }
+    }
+  }
+
+  impl Drop for GlobalConfigGuard {
+    fn drop(&mut self) {
+      unsafe {
+        match &self.prior_xi {
+          Some(v) => std::env::set_var("XI_CONFIG", v),
+          None => std::env::remove_var("XI_CONFIG"),
+        }
+        match &self.prior_xdg {
+          Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+          None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        match &self.prior_home {
+          Some(v) => std::env::set_var("HOME", v),
+          None => std::env::remove_var("HOME"),
+        }
+      }
+      let _ = &self.empty_dir; // kept alive until here
+    }
+  }
+
+  // -- merge_table_into ------------------------------------------------
+
+  #[test]
+  fn merge_recurses_into_nested_tables_instead_of_replacing_them() {
+    let mut base = "[doctor]\nmax-input-age-days = 30\n"
+      .parse::<toml_edit::DocumentMut>()
+      .expect("parse base")
+      .as_table()
+      .clone();
+    let incoming = "[doctor.rules]\ndirty-tree = \"off\"\n"
+      .parse::<toml_edit::DocumentMut>()
+      .expect("parse incoming")
+      .as_table()
+      .clone();
+
+    merge_table_into(&mut base, &incoming);
+
+    let doctor = base.get("doctor").and_then(|v| v.as_table()).expect("doctor table");
+    assert_eq!(
+      doctor.get("max-input-age-days").and_then(toml_edit::Item::as_integer),
+      Some(30),
+      "the earlier layer's leaf key must survive a later layer's merge \
+       into a sibling nested table, not be wiped by it"
+    );
+    assert!(
+      doctor.get("rules").and_then(|v| v.as_table()).is_some(),
+      "the later layer's nested table must be present after merging"
+    );
+  }
+
+  #[test]
+  fn merge_leaf_key_is_overridden_by_later_layer() {
+    let mut base = "[doctor]\nrequire-official-nixpkgs = true\n"
+      .parse::<toml_edit::DocumentMut>()
+      .expect("parse base")
+      .as_table()
+      .clone();
+    let incoming = "[doctor]\nrequire-official-nixpkgs = false\n"
+      .parse::<toml_edit::DocumentMut>()
+      .expect("parse incoming")
+      .as_table()
+      .clone();
+
+    merge_table_into(&mut base, &incoming);
+
+    let doctor = base.get("doctor").and_then(|v| v.as_table()).expect("doctor table");
+    assert_eq!(
+      doctor.get("require-official-nixpkgs").and_then(toml_edit::Item::as_bool),
+      Some(false),
+      "a later layer's leaf value must win over an earlier layer's"
+    );
+  }
+
+  // -- repo-shared file discovery --------------------------------------
+
+  #[test]
+  fn repo_shared_prefers_xi_toml_over_dot_xi_toml() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(dir.path(), "xi.toml", "");
+    write(dir.path(), ".xi.toml", "");
+
+    let found = repo_shared_config_file(dir.path()).expect("one file found");
+    assert_eq!(found.file_name().and_then(|n| n.to_str()), Some("xi.toml"));
+  }
+
+  #[test]
+  fn repo_shared_falls_back_to_dot_xi_toml() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(dir.path(), ".xi.toml", "");
+
+    let found = repo_shared_config_file(dir.path()).expect("one file found");
+    assert_eq!(found.file_name().and_then(|n| n.to_str()), Some(".xi.toml"));
+  }
+
+  #[test]
+  fn repo_shared_sources_include_config_dir_fragments() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(dir.path(), ".xi.toml", "");
+    write(dir.path(), ".config/xi/a.toml", "");
+    write(dir.path(), ".config/xi/b.toml", "");
+    write(dir.path(), ".config/xi/not-toml.txt", "");
+
+    let sources = repo_shared_config_sources(dir.path());
+    let names: Vec<String> = sources
+      .iter()
+      .filter_map(|p| p.file_name()?.to_str().map(String::from))
+      .collect();
+
+    assert_eq!(
+      names,
+      vec![".xi.toml", "a.toml", "b.toml"],
+      "the single shared file comes first, then fragment-dir *.toml \
+       files in sorted order, with non-.toml files excluded: {names:?}"
+    );
+  }
+
+  // -- repo-local override file ----------------------------------------
+
+  #[test]
+  fn repo_local_source_absent_when_no_file() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    assert!(repo_local_config_source(dir.path()).is_none());
+  }
+
+  #[test]
+  fn repo_local_source_present_when_file_exists() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(dir.path(), ".xi.local.toml", "");
+    assert!(repo_local_config_source(dir.path()).is_some());
+  }
+
+  // -- [doctor.rules] parsing, end to end via load_project_config -------
+
+  #[test]
+  fn rules_table_bool_false_maps_to_off() {
+    let _guard = GlobalConfigGuard::new();
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(
+      dir.path(),
+      ".xi.toml",
+      "[doctor.rules]\nflake-description = false\n",
+    );
+
+    let config = load_project_config(Some(dir.path()));
+    assert_eq!(
+      config.doctor.rules.get("flake-description"),
+      Some(&RuleSetting::Off)
+    );
+  }
+
+  #[test]
+  fn rules_table_string_settings_parse() {
+    let _guard = GlobalConfigGuard::new();
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(
+      dir.path(),
+      ".xi.toml",
+      "[doctor.rules]\na = \"off\"\nb = \"warn\"\nc = \"fail\"\n",
+    );
+
+    let config = load_project_config(Some(dir.path()));
+    assert_eq!(config.doctor.rules.get("a"), Some(&RuleSetting::Off));
+    assert_eq!(config.doctor.rules.get("b"), Some(&RuleSetting::Warn));
+    assert_eq!(config.doctor.rules.get("c"), Some(&RuleSetting::Fail));
+  }
+
+  #[test]
+  fn rules_table_true_and_on_are_not_stored() {
+    let _guard = GlobalConfigGuard::new();
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(
+      dir.path(),
+      ".xi.toml",
+      "[doctor.rules]\na = true\nb = \"on\"\n",
+    );
+
+    let config = load_project_config(Some(dir.path()));
+    assert!(
+      config.doctor.rules.is_empty(),
+      "explicit 'on'/true is the default -- it must not be stored as an \
+       override: {:?}",
+      config.doctor.rules
+    );
+  }
+
+  #[test]
+  fn rules_table_unknown_string_is_ignored() {
+    let _guard = GlobalConfigGuard::new();
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(
+      dir.path(),
+      ".xi.toml",
+      "[doctor.rules]\na = \"not-a-real-setting\"\n",
+    );
+
+    let config = load_project_config(Some(dir.path()));
+    assert!(config.doctor.rules.get("a").is_none());
+  }
+
+  #[test]
+  fn repo_local_overrides_repo_shared_for_the_same_rule() {
+    let _guard = GlobalConfigGuard::new();
+    let dir = tempfile::tempdir().expect("create tempdir");
+    write(
+      dir.path(),
+      ".xi.toml",
+      "[doctor.rules]\ndirty-tree = \"warn\"\n",
+    );
+    write(
+      dir.path(),
+      ".xi.local.toml",
+      "[doctor.rules]\ndirty-tree = \"off\"\n",
+    );
+
+    let config = load_project_config(Some(dir.path()));
+    assert_eq!(
+      config.doctor.rules.get("dirty-tree"),
+      Some(&RuleSetting::Off),
+      "the repo-local layer must win over the repo-shared layer for the \
+       same key"
+    );
   }
 }

@@ -1,6 +1,7 @@
 use std::{
   collections::{HashMap, HashSet},
   path::Path,
+  thread,
   time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -48,6 +49,11 @@ pub enum CheckStatus {
 
 #[derive(Debug)]
 pub struct CheckResult {
+  /// Stable, kebab-case identifier used to look this check up in
+  /// `.xi.toml`'s `[doctor.rules]` table (e.g. `rules.dirty-tree = "off"`).
+  /// Never changes across releases once assigned -- it is a public,
+  /// documented config key, not a display label.
+  pub code:   &'static str,
   pub name:   &'static str,
   pub status: CheckStatus,
 }
@@ -57,23 +63,26 @@ impl CheckResult {
     match &self.status {
       CheckStatus::Ok(msg) => {
         println!(
-          "    {} {}",
+          "    {} {} [{}]",
           Paint::new(self.name).bold(),
           Paint::new(format!("ok — {msg}")).fg(Color::Green),
+          self.code,
         );
       },
       CheckStatus::Warn(msg) => {
         println!(
-          "    {} {}",
+          "    {} {} [{}]",
           Paint::new(self.name).bold(),
           Paint::new(format!("warn — {msg}")).fg(Color::Yellow),
+          self.code,
         );
       },
       CheckStatus::Fail(msg) => {
         println!(
-          "    {} {}",
+          "    {} {} [{}]",
           Paint::new(self.name).bold(),
           Paint::new(format!("FAIL — {msg}")).fg(Color::Red),
+          self.code,
         );
       },
     }
@@ -360,6 +369,7 @@ fn check_nixpkgs_branch(
 
   let Some(ref git_ref) = input.git_ref else {
     return Some(CheckResult {
+      code:   "nixpkgs-branch",
       name:   "Nixpkgs branch",
       status: CheckStatus::Warn(format!(
         "input '{}' has no branch ref",
@@ -370,11 +380,13 @@ fn check_nixpkgs_branch(
 
   if supported.iter().any(|b| b == git_ref) {
     Some(CheckResult {
+      code:   "nixpkgs-branch",
       name:   "Nixpkgs branch",
       status: CheckStatus::Ok(format!("{} ({})", input.name, git_ref)),
     })
   } else {
     Some(CheckResult {
+      code:   "nixpkgs-branch",
       name:   "Nixpkgs branch",
       status: CheckStatus::Warn(format!(
         "input '{}' uses branch '{}' which is not in the supported list",
@@ -400,6 +412,7 @@ fn check_input_freshness(
 
   if age_days <= max_age_days {
     Some(CheckResult {
+      code:   "input-freshness",
       name:   "Input freshness",
       status: CheckStatus::Ok(format!(
         "{} — {} days old (threshold: {})",
@@ -408,6 +421,7 @@ fn check_input_freshness(
     })
   } else {
     Some(CheckResult {
+      code:   "input-freshness",
       name:   "Input freshness",
       status: CheckStatus::Warn(format!(
         "input '{}' is {} days old (threshold: {}). Run `xi update` to \
@@ -428,6 +442,7 @@ fn check_nixpkgs_owner(input: &FlakeInput) -> Option<CheckResult> {
 
   if owner == "NixOS" {
     Some(CheckResult {
+      code:   "nixpkgs-owner",
       name:   "Nixpkgs source",
       status: CheckStatus::Ok(format!(
         "{} (github:{}/{})",
@@ -438,6 +453,7 @@ fn check_nixpkgs_owner(input: &FlakeInput) -> Option<CheckResult> {
     })
   } else {
     Some(CheckResult {
+      code:   "nixpkgs-owner",
       name:   "Nixpkgs source",
       status: CheckStatus::Warn(format!(
         "input '{}' uses fork from '{}' instead of NixOS",
@@ -460,12 +476,14 @@ fn check_formatter(flake_ref: &str) -> CheckResult {
   match output {
     Ok(o) if o.status.success() => {
       CheckResult {
+        code:   "formatter",
         name:   "Formatter",
         status: CheckStatus::Ok("declared".to_string()),
       }
     },
     _ => {
       CheckResult {
+        code:   "formatter",
         name:   "Formatter",
         status: CheckStatus::Warn(
           "no formatter declared. Consider adding one or using \
@@ -518,6 +536,7 @@ fn check_floating_input_refs(input: &FlakeInput) -> Option<CheckResult> {
   }
 
   Some(CheckResult {
+    code:   "floating-input-ref",
     name:   "Floating input ref",
     status: CheckStatus::Warn(format!(
       "input '{}' is pinned to floating ref '{}' with no explicit rev  -  it \
@@ -583,6 +602,7 @@ fn check_duplicate_inputs(graph: &LockGraph) -> Vec<CheckResult> {
         .join(", ");
 
       results.push(CheckResult {
+        code:   "duplicate-inputs",
         name:   "Duplicate inputs",
         status: CheckStatus::Warn(format!(
           "multiple inputs resolve to github:{owner}/{repo} at different \
@@ -620,12 +640,14 @@ fn check_flake_description(metadata: &serde_json::Value) -> CheckResult {
   match metadata.get("description").and_then(serde_json::Value::as_str) {
     Some(desc) if !desc.trim().is_empty() => {
       CheckResult {
+        code:   "flake-description",
         name:   "Flake description",
         status: CheckStatus::Ok(desc.to_string()),
       }
     },
     _ => {
       CheckResult {
+        code:   "flake-description",
         name:   "Flake description",
         status: CheckStatus::Warn(
           "flake has no top-level `description`".to_string(),
@@ -648,6 +670,7 @@ fn check_dirty_tree(metadata: &serde_json::Value) -> CheckResult {
 
   if dirty {
     CheckResult {
+      code:   "dirty-tree",
       name:   "Dirty tree",
       status: CheckStatus::Fail(
         "the flake's git tree is dirty  -  evaluation is not reproducible \
@@ -657,6 +680,7 @@ fn check_dirty_tree(metadata: &serde_json::Value) -> CheckResult {
     }
   } else {
     CheckResult {
+      code:   "dirty-tree",
       name:   "Dirty tree",
       status: CheckStatus::Ok("clean".to_string()),
     }
@@ -683,6 +707,7 @@ fn check_lock_present_and_tracked(flake_dir: &Path) -> CheckResult {
   match output {
     Ok(o) if o.status.success() => {
       CheckResult {
+        code:   "lock-tracked",
         name:   "Lock file tracked",
         status: CheckStatus::Fail(
           "flake.lock is matched by .gitignore and would never be \
@@ -693,6 +718,7 @@ fn check_lock_present_and_tracked(flake_dir: &Path) -> CheckResult {
     },
     _ => {
       CheckResult {
+        code:   "lock-tracked",
         name:   "Lock file tracked",
         status: CheckStatus::Ok("flake.lock is not git-ignored".to_string()),
       }
@@ -775,6 +801,7 @@ fn check_nixconfig_substituter_pairing(flake_nix: &str) -> Vec<CheckResult> {
     .filter(|(idx, _)| trusted_keys.get(*idx).is_none())
     .map(|(idx, sub)| {
       CheckResult {
+        code:   "nixconfig-substituter-pairing",
         name:   "Substituter/key pairing",
         status: CheckStatus::Warn(format!(
           "nixConfig.extra-substituters[{idx}] '{sub}' has no \
@@ -811,6 +838,7 @@ fn check_package_meta_completeness(
 
   if !info.has_description {
     results.push(CheckResult {
+      code:   "package-meta-completeness",
       name:   "Package meta",
       status: CheckStatus::Warn(format!(
         "packages.*.{name} is missing meta.description"
@@ -819,6 +847,7 @@ fn check_package_meta_completeness(
   }
   if !info.has_license {
     results.push(CheckResult {
+      code:   "package-meta-completeness",
       name:   "Package meta",
       status: CheckStatus::Warn(format!(
         "packages.*.{name} is missing meta.license"
@@ -827,6 +856,7 @@ fn check_package_meta_completeness(
   }
   if info.maintainers_count == 0 {
     results.push(CheckResult {
+      code:   "package-meta-completeness",
       name:   "Package meta",
       status: CheckStatus::Warn(format!(
         "packages.*.{name} is missing meta.maintainers"
@@ -835,6 +865,7 @@ fn check_package_meta_completeness(
   }
   if !info.has_platforms {
     results.push(CheckResult {
+      code:   "package-meta-completeness",
       name:   "Package meta",
       status: CheckStatus::Warn(format!(
         "packages.*.{name} is missing meta.platforms"
@@ -857,6 +888,7 @@ fn check_package_version(
   match info.version.as_deref() {
     None => {
       Some(CheckResult {
+        code:   "package-version",
         name:   "Package version",
         status: CheckStatus::Warn(format!(
           "packages.*.{name} has no version attribute"
@@ -865,6 +897,7 @@ fn check_package_version(
     },
     Some("unstable") => {
       Some(CheckResult {
+        code:   "package-version",
         name:   "Package version",
         status: CheckStatus::Warn(format!(
           "packages.*.{name} uses placeholder version \"unstable\""
@@ -910,6 +943,7 @@ fn check_app_main_program(
   }
 
   Some(CheckResult {
+    code:   "app-main-program",
     name:   "App main program",
     status: CheckStatus::Warn(format!(
       "apps.*.{app_name} has no meta.mainProgram set"
@@ -929,6 +963,7 @@ fn check_package_insecure(
 ) -> Option<CheckResult> {
   if info.insecure || info.known_vulnerabilities_count > 0 {
     Some(CheckResult {
+      code:   "package-insecure",
       name:   "Package security",
       status: CheckStatus::Warn(format!(
         "packages.*.{name} is marked insecure (meta.insecure={}, \
@@ -1006,6 +1041,7 @@ fn check_per_system_output_gaps(
 
       for system in missing_systems {
         results.push(CheckResult {
+          code:   "per-system-output-gap",
           name:   "Per-system output gap",
           status: CheckStatus::Warn(format!(
             "{category}.{system}.{leaf_name} is missing, but {leaf_name} \
@@ -1035,11 +1071,13 @@ fn check_checks_output_present(show_json: &serde_json::Value) -> CheckResult {
 
   if has_checks {
     CheckResult {
+      code:   "checks-output-missing",
       name:   "Checks output",
       status: CheckStatus::Ok("checks output declared".to_string()),
     }
   } else {
     CheckResult {
+      code:   "checks-output-missing",
       name:   "Checks output",
       status: CheckStatus::Warn(
         "flake declares no `checks` output for any system".to_string(),
@@ -1073,6 +1111,7 @@ fn check_nonstandard_output_keys(
     .filter(|key| FlakeOutput::from_nix_name(key).is_none())
     .map(|key| {
       CheckResult {
+        code:   "nonstandard-output-key",
         name:   "Non-standard output key",
         status: CheckStatus::Warn(format!(
           "output key '{key}' is not part of the conventional flake-output \
@@ -1120,7 +1159,7 @@ pub fn run_health_checks(
 
   let mut results = Vec::new();
 
-  // Per-input checks
+  // Per-input checks (no subprocess calls, cheap enough to stay sequential)
   for input in &inputs {
     if let Some(r) = check_nixpkgs_branch(input, &supported_branches) {
       results.push(r);
@@ -1140,32 +1179,73 @@ pub fn run_health_checks(
     }
   }
 
-  // Formatter check (requires nix eval, may be slow on first run)
-  results.push(check_formatter(flake_ref));
+  let system = crate::current_nix_system();
+
+  // Every check group below shells out to a slow, independent `nix`
+  // subprocess (eval / flake metadata / flake show) that does not depend
+  // on any other group's output. Running them one after another made
+  // `xi doctor`'s wall-clock time the SUM of every group's subprocess
+  // call; running them concurrently on `std::thread::scope` makes it the
+  // MAX of whichever group is slowest. Only the subprocess calls
+  // themselves are parallelized here -- interpreting each result into
+  // `CheckResult`s afterward is cheap, in-memory, and stays sequential.
+  let (
+    formatter_result,
+    metadata_result,
+    package_meta_result,
+    app_names_result,
+    show_result,
+  ) = thread::scope(|scope| {
+    let formatter_handle = scope.spawn(|| check_formatter(flake_ref));
+
+    let metadata_handle = (!config.disable_structure_checks)
+      .then(|| scope.spawn(|| fetch_flake_metadata_json(flake_dir)));
+
+    let package_meta_handle = (!config.disable_metadata_checks).then(|| {
+      scope.spawn(|| crate::discover_package_meta(flake_ref, &system))
+    });
+
+    let app_names_handle = (!config.disable_metadata_checks)
+      .then(|| scope.spawn(|| crate::discover_app_names(flake_ref, &system)));
+
+    let show_handle = (!config.disable_output_checks)
+      .then(|| scope.spawn(|| crate::fetch_flake_show_json(flake_ref)));
+
+    (
+      formatter_handle.join().expect("formatter check thread panicked"),
+      metadata_handle.map(|h| h.join().expect("flake metadata thread panicked")),
+      package_meta_handle
+        .map(|h| h.join().expect("package meta thread panicked")),
+      app_names_handle.map(|h| h.join().expect("app names thread panicked")),
+      show_handle.map(|h| h.join().expect("flake show thread panicked")),
+    )
+  });
+
+  // Formatter check.
+  results.push(formatter_result);
 
   // Structural checks (xi-spmx.2.1 - 2.6): description, lock-tracked,
   // duplicate-inputs, dirty-tree, substituter-pairing. Floating-ref
   // checking above is part of this same group. Gated by the
   // `disable-structure-checks` opt-out (xi-spmx.5.1), mirroring the
-  // metadata/output groups below  -  skipped entirely, including their
-  // subprocess calls (`nix flake metadata --json`), rather than run and
-  // discarded.
+  // metadata/output groups below -- skipped entirely, including their
+  // subprocess calls, rather than run and discarded.
   if config.disable_structure_checks {
     debug!("structure check group disabled via .xi.toml [doctor]");
   } else {
     // flake.lock present-but-gitignored check.
     results.push(check_lock_present_and_tracked(flake_dir));
 
-    // Duplicate (un-followed, divergent-rev) transitive inputs  -  walks
+    // Duplicate (un-followed, divergent-rev) transitive inputs -- walks
     // every node in flake.lock, not just the direct ones parsed above.
     match parse_all_lock_nodes(&lock_path) {
       Ok(graph) => results.extend(check_duplicate_inputs(&graph)),
       Err(e) => debug!("failed to walk full flake.lock node graph: {e}"),
     }
 
-    // Flake description + dirty-tree checks share one `nix flake metadata
-    // --json` call rather than shelling out twice.
-    match fetch_flake_metadata_json(flake_dir) {
+    // Flake description + dirty-tree checks share the one `nix flake
+    // metadata --json` call fetched concurrently above.
+    match metadata_result.expect("structure group is enabled, so the metadata thread was spawned") {
       Ok(metadata) => {
         results.push(check_flake_description(&metadata));
         results.push(check_dirty_tree(&metadata));
@@ -1173,22 +1253,21 @@ pub fn run_health_checks(
       Err(e) => debug!("failed to fetch nix flake metadata --json: {e}"),
     }
 
-    // nixConfig substituter/trusted-key pairing  -  textual flake.nix parse.
+    // nixConfig substituter/trusted-key pairing -- textual flake.nix parse.
     if let Ok(flake_nix) = std::fs::read_to_string(flake_dir.join("flake.nix"))
     {
       results.extend(check_nixconfig_substituter_pairing(&flake_nix));
     }
   }
 
-  // Derivation metadata checks (xi-spmx.3.2 - 3.5)  -  one `nix eval
-  // --apply --json` call across `packages.<system>.*`, gated by the
+  // Derivation metadata checks (xi-spmx.3.2 - 3.5) -- the `nix eval
+  // --apply --json` calls across `packages.<system>.*` and
+  // `apps.<system>.*` were fetched concurrently above, gated by the
   // `disable-metadata-checks` opt-out (xi-spmx.3.6).
   if config.disable_metadata_checks {
     debug!("metadata check group disabled via .xi.toml [doctor]");
   } else {
-    let system = crate::current_nix_system();
-
-    match crate::discover_package_meta(flake_ref, &system) {
+    match package_meta_result.expect("metadata group is enabled, so the package-meta thread was spawned") {
       Ok(package_meta) => {
         for (name, info) in &package_meta {
           results.extend(check_package_meta_completeness(name, info));
@@ -1201,9 +1280,9 @@ pub fn run_health_checks(
         }
 
         // apps.<system>.<name> matched to packages.<system>.<name> by
-        // identical attribute name  -  see check_app_main_program's doc
+        // identical attribute name -- see check_app_main_program's doc
         // comment for the heuristic limitation this carries.
-        match crate::discover_app_names(flake_ref, &system) {
+        match app_names_result.expect("metadata group is enabled, so the app-names thread was spawned") {
           Ok(app_names) => {
             for app_name in &app_names {
               if let Some(info) = package_meta.get(app_name)
@@ -1220,14 +1299,13 @@ pub fn run_health_checks(
     }
   }
 
-  // Output hygiene checks (xi-spmx.4.2 - 4.4)  -  one `nix flake show
-  // --json` call shared across all three, gated by the
-  // `disable-output-checks` opt-out (xi-spmx.4's analogue of the metadata
-  // group's `disable-metadata-checks`).
+  // Output hygiene checks (xi-spmx.4.2 - 4.4) -- the `nix flake show
+  // --json` call shared across all three was fetched concurrently above,
+  // gated by the `disable-output-checks` opt-out.
   if config.disable_output_checks {
     debug!("output check group disabled via .xi.toml [doctor]");
   } else {
-    match crate::fetch_flake_show_json(flake_ref) {
+    match show_result.expect("output group is enabled, so the flake-show thread was spawned") {
       Ok(show_json) => {
         results.extend(check_per_system_output_gaps(&show_json));
         results.push(check_checks_output_present(&show_json));
@@ -1237,7 +1315,42 @@ pub fn run_health_checks(
     }
   }
 
-  Ok(results)
+  Ok(apply_rule_overrides(config, results))
+}
+
+/// Apply `[doctor.rules]` overrides to every produced result: drop a rule
+/// set to `Off` entirely, or force the severity of one set to `Warn`/
+/// `Fail` when it fires. A passing (`Ok`) result is only ever dropped by
+/// `Off` -- a severity override on an `Ok` result is a no-op, since there
+/// is nothing to escalate or downgrade.
+///
+/// Applied once over the whole accumulated list rather than threaded
+/// through every individual check call site, since it only needs each
+/// result's `code`, not any of the check-specific context that produced
+/// it.
+fn apply_rule_overrides(
+  config: &ProjectDoctorConfig,
+  results: Vec<CheckResult>,
+) -> Vec<CheckResult> {
+  results
+    .into_iter()
+    .filter_map(|mut result| match config.rules.get(result.code) {
+      None => Some(result),
+      Some(crate::project_config::RuleSetting::Off) => None,
+      Some(crate::project_config::RuleSetting::Warn) => {
+        if let CheckStatus::Fail(msg) = result.status {
+          result.status = CheckStatus::Warn(msg);
+        }
+        Some(result)
+      },
+      Some(crate::project_config::RuleSetting::Fail) => {
+        if let CheckStatus::Warn(msg) = result.status {
+          result.status = CheckStatus::Fail(msg);
+        }
+        Some(result)
+      },
+    })
+    .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -2368,5 +2481,96 @@ mod tests {
       "expected a warning for the missing top-level description: \
        {description:?}"
     );
+  }
+
+  // -- [doctor.rules] per-rule overrides (apply_rule_overrides) --------
+  //
+  // Unlike the group-disable tests above, these exercise the pure
+  // `apply_rule_overrides` function directly on hand-built `CheckResult`s
+  // -- no flake fixture or subprocess needed, since the function only
+  // ever looks at `code` and `status`.
+
+  fn rules_with(
+    pairs: impl IntoIterator<Item = (&'static str, crate::project_config::RuleSetting)>,
+  ) -> ProjectDoctorConfig {
+    ProjectDoctorConfig {
+      rules: pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+      ..Default::default()
+    }
+  }
+
+  #[test]
+  fn rule_set_to_off_drops_the_result_entirely() {
+    let config = rules_with([("x", crate::project_config::RuleSetting::Off)]);
+    let results = vec![CheckResult {
+      code:   "x",
+      name:   "X",
+      status: CheckStatus::Warn("whatever".to_string()),
+    }];
+
+    assert!(apply_rule_overrides(&config, results).is_empty());
+  }
+
+  #[test]
+  fn rule_set_to_fail_escalates_a_warn() {
+    let config = rules_with([("x", crate::project_config::RuleSetting::Fail)]);
+    let results = vec![CheckResult {
+      code:   "x",
+      name:   "X",
+      status: CheckStatus::Warn("message".to_string()),
+    }];
+
+    let overridden = apply_rule_overrides(&config, results);
+    assert_eq!(overridden.len(), 1);
+    assert!(matches!(overridden[0].status, CheckStatus::Fail(ref m) if m == "message"));
+  }
+
+  #[test]
+  fn rule_set_to_warn_downgrades_a_fail() {
+    let config = rules_with([("x", crate::project_config::RuleSetting::Warn)]);
+    let results = vec![CheckResult {
+      code:   "x",
+      name:   "X",
+      status: CheckStatus::Fail("message".to_string()),
+    }];
+
+    let overridden = apply_rule_overrides(&config, results);
+    assert_eq!(overridden.len(), 1);
+    assert!(matches!(overridden[0].status, CheckStatus::Warn(ref m) if m == "message"));
+  }
+
+  #[test]
+  fn severity_override_is_a_no_op_on_an_ok_result() {
+    let config = rules_with([("x", crate::project_config::RuleSetting::Fail)]);
+    let results = vec![CheckResult {
+      code:   "x",
+      name:   "X",
+      status: CheckStatus::Ok("fine".to_string()),
+    }];
+
+    let overridden = apply_rule_overrides(&config, results);
+    assert_eq!(overridden.len(), 1);
+    assert!(matches!(overridden[0].status, CheckStatus::Ok(_)));
+  }
+
+  #[test]
+  fn override_on_one_code_does_not_affect_another() {
+    let config = rules_with([("x", crate::project_config::RuleSetting::Off)]);
+    let results = vec![
+      CheckResult {
+        code:   "x",
+        name:   "X",
+        status: CheckStatus::Warn("x warning".to_string()),
+      },
+      CheckResult {
+        code:   "y",
+        name:   "Y",
+        status: CheckStatus::Warn("y warning".to_string()),
+      },
+    ];
+
+    let overridden = apply_rule_overrides(&config, results);
+    assert_eq!(overridden.len(), 1);
+    assert_eq!(overridden[0].code, "y");
   }
 }

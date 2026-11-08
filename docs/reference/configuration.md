@@ -134,10 +134,28 @@ backends = ["nix-unit", "namaka"]
 
 ## .xi.toml — project configuration
 
-Located at the root of your flake directory. Controls per-project behaviour for
-CI, doctor, formatting, testing, and materialization.
+Controls per-project behaviour for CI, doctor, formatting, testing, and
+materialization. Loaded from three tiers, merged in order (later tiers win,
+key by key, recursing into sub-tables - e.g. a global `[doctor]` setting and
+a repo-local `[doctor.rules]` entry both survive rather than one replacing
+the other wholesale):
 
-If `.xi.toml` is missing or fails to parse, xi uses defaults silently.
+1. **Global** - every `*.toml` file (sorted by name) in the same directory
+   `config.toml` lives in (`$XI_CONFIG`'s directory, or
+   `$XDG_CONFIG_HOME/xi/`, or `~/.config/xi/`). If `$XI_CONFIG` is set, only
+   that one file is read here, not its whole directory.
+2. **Repo-shared** - `xi.toml` or `.xi.toml` at the flake root (first one
+   found; they do not merge with each other), then every `*.toml` (sorted) in
+   `.config/xi/` at the flake root. Meant to be committed.
+3. **Repo-local** - `.xi.local.toml` at the flake root. Meant to be
+   gitignored: personal overrides (e.g. silencing a doctor rule just for
+   you) that should not land in the shared repo-level file.
+
+If every layer is missing or fails to parse, xi uses defaults silently - this
+section's settings are deliberately lenient (a typo here must not break
+`xi build`). The one exception is `[sources]`, which only ever reads the
+single repo-shared file (see its own section below) and is strict: a
+malformed `[sources]` block is a load-time error.
 
 ### `[ci]` — CI pipeline
 
@@ -154,11 +172,14 @@ extra-outputs = ["containers", "images"]
 
 ### `[doctor]` — health check thresholds
 
-| Key                        | Type            | Default | Description                                |
-| -------------------------- | --------------- | ------- | ------------------------------------------ |
-| `max-input-age-days`       | int             | `30`    | Warn if any flake input is older than this |
-| `require-official-nixpkgs` | bool            | `true`  | Fail on unofficial nixpkgs forks           |
-| `supported-branches`       | list of strings | `[]`    | Allowed nixpkgs branches (empty = any)     |
+| Key                        | Type            | Default | Description                                   |
+| -------------------------- | --------------- | ------- | ---------------------------------------------- |
+| `max-input-age-days`       | int             | `30`    | Warn if any flake input is older than this     |
+| `require-official-nixpkgs` | bool            | `true`  | Fail on unofficial nixpkgs forks                |
+| `supported-branches`       | list of strings | `[]`    | Allowed nixpkgs branches (empty = any)          |
+| `disable-structure-checks` | bool            | `false` | Skip the structure check group entirely         |
+| `disable-metadata-checks`  | bool            | `false` | Skip the metadata check group entirely          |
+| `disable-output-checks`    | bool            | `false` | Skip the output-hygiene check group entirely    |
 
 ```toml
 [doctor]
@@ -166,6 +187,47 @@ max-input-age-days = 14
 require-official-nixpkgs = true
 supported-branches = ["nixos-unstable", "master"]
 ```
+
+#### `[doctor.rules]` - per-check overrides
+
+Finer-grained than the three `disable-*-checks` group flags above: one entry
+per check, keyed by the check's stable code. A value of `false` or `"off"`
+drops that check's result entirely (it neither prints nor counts toward the
+pass/fail tally); `"warn"` or `"fail"` forces that severity whenever the
+check fires, regardless of what its own logic would otherwise produce.
+`true`/`"on"` is the default and never needs to be written down.
+
+```toml
+[doctor.rules]
+dirty-tree = "off"          # same effect as `false`
+package-version = "warn"    # never hard-fail on a stale package version
+duplicate-inputs = "fail"   # escalate what is normally only a warning
+```
+
+A check whose own result is `Ok` is never affected by a `"warn"`/`"fail"`
+override (there is nothing to escalate); `"off"` still drops it.
+
+Available codes:
+
+| Code                            | Check                                              |
+| -------------------------------- | --------------------------------------------------- |
+| `nixpkgs-branch`                 | nixpkgs input tracks an allowed branch             |
+| `input-freshness`                | no flake input older than `max-input-age-days`     |
+| `nixpkgs-owner`                  | nixpkgs input points at an official repo           |
+| `formatter`                      | `formatter.<system>` output is present             |
+| `floating-input-ref`             | inputs are pinned, not tracking a floating ref     |
+| `duplicate-inputs`               | no duplicate transitive inputs                     |
+| `flake-description`              | top-level flake `description` is set               |
+| `dirty-tree`                     | working tree has no uncommitted changes            |
+| `lock-tracked`                   | `flake.lock` is tracked by git, not gitignored     |
+| `nixconfig-substituter-pairing`  | every substituter has a matching trusted key       |
+| `package-meta-completeness`      | `packages.<system>.*` sets `meta.description`      |
+| `package-version`                | `packages.<system>.*` sets a non-stale `version`   |
+| `app-main-program`               | `apps.<system>.*` resolves to a real program       |
+| `package-insecure`               | `packages.<system>.*` is not marked insecure       |
+| `per-system-output-gap`          | an output present for one system exists for all    |
+| `checks-output-missing`          | `checks.<system>.*` output is present              |
+| `nonstandard-output-key`         | no unrecognised top-level flake output keys        |
 
 ### `[fmt]` — formatting
 
