@@ -31,7 +31,13 @@ use xi_core::{
   sources::switch::SwitchSourcesArgs,
 };
 
-use crate::push::args::{CopyVia, PushBackend, PushMode};
+use crate::push::args::{
+  BuildStrategy,
+  CopyVia,
+  PushBackend,
+  PushMode,
+  SourcesTransport,
+};
 
 /// Which half of the machine - or both - `xi deploy` governs.
 ///
@@ -157,6 +163,26 @@ pub struct DeployArgs {
   #[arg(long, help_heading = "How it builds")]
   pub remote_build: Option<bool>,
 
+  /// Order the target to pull its own sources, or have the operator copy them
+  ///
+  /// Left unset, the sources-transport ladder decides instead: a per-host
+  /// `.xi.toml [[push.hosts]]` override, then the table-level `.xi.toml
+  /// [push] sources-transport` default, then the compiled floor
+  /// `operator-copy`. `target-pull` is only correct when the target's own
+  /// `xi-sources-daemon` can reach the configured remote directly; an
+  /// explicit `--mode` still outranks whatever this resolves to.
+  #[arg(long, value_enum, help_heading = "How it builds")]
+  pub sources_transport: Option<SourcesTransport>,
+
+  /// Retry attempts for a transient SSH/rsync/`nix copy` failure
+  ///
+  /// Left unset, the retry-attempts ladder decides instead: `.xi.toml
+  /// [push] retry-attempts` (a per-host `[[push.hosts]]` override first,
+  /// then the table-level default), then the compiled floor of `3`.
+  /// `--retry 0` disables retrying entirely (one attempt).
+  #[arg(long, value_name = "N", help_heading = "How it builds")]
+  pub retry: Option<u32>,
+
   /// Number of targets to activate concurrently.
   #[arg(
     long,
@@ -173,6 +199,28 @@ pub struct DeployArgs {
   /// Allocate a PTY so a remote sudo password prompt reaches the terminal.
   #[arg(long, help_heading = "How it builds")]
   pub interactive_sudo: bool,
+
+  /// Build every target upfront, or interleave building with shipping
+  #[arg(long, value_enum, default_value_t = BuildStrategy::Interleaved, help_heading = "How it builds")]
+  pub build_strategy: BuildStrategy,
+
+  /// Build every selected target upfront, write its manifest, and stop
+  /// before shipping anything
+  ///
+  /// Only meaningful with `--build-strategy batched`: there is nothing to
+  /// build upfront under the default interleaved strategy. The manifest
+  /// is written into the push's state dir, where a later `--from-manifest`
+  /// invocation reads it back.
+  #[arg(long, help_heading = "How it builds")]
+  pub build_only: bool,
+
+  /// Ship a previously built manifest instead of building anything
+  ///
+  /// Skips `nix build` entirely: every target the manifest names is
+  /// copied and activated from its recorded store path. Written by an
+  /// earlier `--build-strategy batched --build-only` invocation.
+  #[arg(long, value_name = "PATH", help_heading = "How it builds")]
+  pub from_manifest: Option<PathBuf>,
 
   /// Only print the resolved plan, without building, copying, or
   /// activating anything.
@@ -195,6 +243,28 @@ pub struct DeployArgs {
   /// Stop at the first failing target instead of finishing the rest.
   #[arg(long, help_heading = "Safety")]
   pub fail_fast: bool,
+
+  /// Reattach to a remote-build push instead of starting a new one
+  ///
+  /// With no id, lists every local push receipt
+  /// (`<state dir>/push-receipts/*.json`), newest first, probing each
+  /// one's target for reachability. With an id, reattaches to that
+  /// receipt's unit - not implemented yet (`xi-enwe.2.2`).
+  #[arg(
+    long,
+    num_args = 0..=1,
+    default_missing_value = "",
+    value_name = "PUSH_ID",
+    help_heading = "Safety"
+  )]
+  pub reattach: Option<String>,
+
+  /// Run `command` exactly once, the first time a terminal outcome
+  /// (success or failure) for this push's remote unit is observed and
+  /// its local receipt is removed - by this process, or by a later
+  /// `xi push --reattach`
+  #[arg(long, value_name = "COMMAND", help_heading = "Safety")]
+  pub notify: Option<String>,
 }
 
 #[cfg(test)]
@@ -202,7 +272,13 @@ mod tests {
   use clap::Parser;
 
   use super::*;
-  use crate::push::args::{CopyVia, PushBackend, PushMode};
+  use crate::push::args::{
+    BuildStrategy,
+    CopyVia,
+    PushBackend,
+    PushMode,
+    SourcesTransport,
+  };
 
   #[derive(Debug, Parser)]
   struct TestCli {
@@ -239,11 +315,18 @@ mod tests {
     assert_eq!(args.phase, "activate");
     assert!(args.mode.is_none());
     assert_eq!(args.remote_build, None);
+    assert!(args.sources_transport.is_none());
+    assert_eq!(args.retry, None);
+    assert!(matches!(args.build_strategy, BuildStrategy::Interleaved));
+    assert!(!args.build_only);
+    assert_eq!(args.from_manifest, None);
     assert_eq!(args.magic_rollback, 0);
     assert_eq!(args.parallel, 1);
     assert!(!args.interactive_sudo);
     assert!(matches!(args.copy_via, CopyVia::Local));
     assert!(!args.fail_fast);
+    assert_eq!(args.reattach, None);
+    assert_eq!(args.notify, None);
   }
 
   // SwitchSourcesArgs flags, unchanged.
@@ -346,6 +429,80 @@ mod tests {
     assert!(args.interactive_sudo);
     assert!(matches!(args.copy_via, CopyVia::Target));
     assert!(args.fail_fast);
+  }
+
+  // Task xi-6mf6.1.1: PushArgs flags re-exposed on `xi deploy`.
+
+  #[test]
+  fn sources_transport_parses_given_and_omitted() {
+    assert!(parse(&[]).expect("parses").sources_transport.is_none());
+    assert!(matches!(
+      parse(&["--sources-transport", "target-pull"])
+        .expect("parses")
+        .sources_transport,
+      Some(SourcesTransport::TargetPull)
+    ));
+  }
+
+  #[test]
+  fn retry_parses_given_and_omitted() {
+    assert_eq!(parse(&[]).expect("parses").retry, None);
+    assert_eq!(parse(&["--retry", "5"]).expect("parses").retry, Some(5));
+  }
+
+  #[test]
+  fn build_strategy_parses_given_and_defaults_to_interleaved_when_omitted() {
+    assert!(matches!(
+      parse(&[]).expect("parses").build_strategy,
+      BuildStrategy::Interleaved
+    ));
+    assert!(matches!(
+      parse(&["--build-strategy", "batched"])
+        .expect("parses")
+        .build_strategy,
+      BuildStrategy::Batched
+    ));
+  }
+
+  #[test]
+  fn build_only_parses_given_and_omitted() {
+    assert!(!parse(&[]).expect("parses").build_only);
+    assert!(parse(&["--build-only"]).expect("parses").build_only);
+  }
+
+  #[test]
+  fn from_manifest_parses_given_and_omitted() {
+    assert_eq!(parse(&[]).expect("parses").from_manifest, None);
+    assert_eq!(
+      parse(&["--from-manifest", "/tmp/push-manifest.json"])
+        .expect("parses")
+        .from_manifest,
+      Some(PathBuf::from("/tmp/push-manifest.json"))
+    );
+  }
+
+  // Task xi-6mf6.1.2: PushArgs's --reattach/--notify re-exposed on `xi deploy`.
+
+  #[test]
+  fn reattach_parses_with_no_value_with_a_value_and_when_omitted() {
+    assert_eq!(parse(&[]).expect("parses").reattach, None);
+    assert_eq!(
+      parse(&["--reattach"]).expect("parses").reattach,
+      Some(String::new())
+    );
+    assert_eq!(
+      parse(&["--reattach", "push-123"]).expect("parses").reattach,
+      Some("push-123".to_owned())
+    );
+  }
+
+  #[test]
+  fn notify_parses_given_and_omitted() {
+    assert_eq!(parse(&[]).expect("parses").notify, None);
+    assert_eq!(
+      parse(&["--notify", "echo done"]).expect("parses").notify,
+      Some("echo done".to_owned())
+    );
   }
 
   // New flags this verb adds on top of the union.

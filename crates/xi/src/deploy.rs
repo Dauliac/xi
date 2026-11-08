@@ -88,14 +88,34 @@ fn is_adopted(scope: Scope) -> bool {
 /// resolve the plan, and either dispatch it or - under `--dry` - print
 /// it instead.
 ///
+/// With `--reattach` set, bypasses all of that and dispatches straight
+/// to [`push::reattach::run`], mirroring [`push::orchestrate::run`]'s
+/// own precedent exactly: a reattach is about a push already in
+/// flight, not a new activation decision, so neither fact-gathering
+/// nor the decision tree's local-vs-fleet resolution has any reason to
+/// run for it.
+///
 /// # Errors
 ///
-/// Propagates a fact-gathering or dispatch failure.
+/// With `--reattach` set, propagates [`push::reattach::run`]'s error
+/// instead of anything below. Otherwise propagates a fact-gathering or
+/// dispatch failure.
 fn run_for_scope(
   args: &DeployArgs,
   scope: Scope,
   elevation: &ElevationStrategy,
 ) -> Result<()> {
+  if let Some(id) = &args.reattach {
+    // A reattach's receipts live under the scope's state dir regardless
+    // of whether that scope currently has sources configured, so this
+    // reads `ScopePaths` directly rather than going through
+    // `gather_facts`/`resolve_plan`, which would run fact-gathering and
+    // decision-tree resolution a reattach has no reason to need.
+    let state_dir =
+      xi_core::sources::config::ScopePaths::resolve(scope).state_dir;
+    return push::reattach::run(id, &state_dir, &push::engine::SshTransport);
+  }
+
   let deploy_scope = match scope {
     Scope::System => DeployScope::System,
     Scope::User => DeployScope::User,
@@ -422,22 +442,68 @@ fn push_args(
     phase: args.phase.clone(),
     mode: args.mode,
     remote_build: args.remote_build,
-    sources_transport: None,
-    retry: None,
+    sources_transport: args.sources_transport,
+    retry: args.retry,
     magic_rollback: args.magic_rollback,
     parallel: args.parallel,
     interactive_sudo: args.interactive_sudo,
     copy_via: args.copy_via,
     fail_fast: args.fail_fast,
     force_dirty: args.sources.force_dirty,
-    build_strategy: push::args::BuildStrategy::Interleaved,
-    build_only: false,
-    from_manifest: None,
+    build_strategy: args.build_strategy,
+    build_only: args.build_only,
+    from_manifest: args.from_manifest.clone(),
     scope: match scope {
       Scope::System => push::args::PushScope::System,
       Scope::User => push::args::PushScope::User,
     },
-    reattach: None,
-    notify: None,
+    reattach: args.reattach.clone(),
+    notify: args.notify.clone(),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use clap::Parser;
+
+  use super::*;
+
+  #[derive(Debug, Parser)]
+  struct TestCli {
+    #[command(flatten)]
+    args: DeployArgs,
+  }
+
+  // Task xi-6mf6.2.1: push_args() passes the seven push-only flags
+  // through from DeployArgs instead of hardcoding placeholders.
+  #[test]
+  fn push_args_carries_the_seven_push_only_flags_unchanged() {
+    let cli = TestCli::try_parse_from([
+      "xi",
+      "--sources-transport",
+      "target-pull",
+      "--retry",
+      "5",
+      "--build-strategy",
+      "batched",
+      "--build-only",
+      "--from-manifest",
+      "/tmp/push-manifest.json",
+      "--reattach",
+      "push-123",
+      "--notify",
+      "echo done",
+    ])
+    .expect("parses");
+
+    let built = push_args(&cli.args, Scope::System, Vec::new());
+
+    assert_eq!(built.sources_transport, cli.args.sources_transport);
+    assert_eq!(built.retry, cli.args.retry);
+    assert_eq!(built.build_strategy, cli.args.build_strategy);
+    assert_eq!(built.build_only, cli.args.build_only);
+    assert_eq!(built.from_manifest, cli.args.from_manifest);
+    assert_eq!(built.reattach, cli.args.reattach);
+    assert_eq!(built.notify, cli.args.notify);
   }
 }
