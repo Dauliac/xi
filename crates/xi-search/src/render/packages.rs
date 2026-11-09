@@ -1,5 +1,5 @@
 use tracing::{debug, trace, warn};
-use yansi::{Color, Paint};
+use xi_core::nix_value;
 
 use super::common;
 use crate::types::PackageSearchResult;
@@ -16,11 +16,16 @@ pub fn print(
     println!();
     trace!("{elem:#?}");
 
-    print!("{}", Paint::new(&elem.package_attr_name).fg(Color::Blue));
     let version = &elem.package_pversion;
-    if !version.is_empty() {
-      print!(" ({})", Paint::new(version).fg(Color::Green));
-    }
+    let version = if version.is_empty() {
+      None
+    } else {
+      Some(version.as_str())
+    };
+    print!(
+      "{}",
+      nix_value::render_name_version(&elem.package_attr_name, version)
+    );
 
     println!();
 

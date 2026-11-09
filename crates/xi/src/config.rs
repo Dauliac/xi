@@ -28,6 +28,7 @@ pub struct Config {
   pub develop: DevelopConfig,
   pub build:   BuildConfig,
   pub locate:  LocateConfig,
+  pub repl:    ReplConfig,
 }
 
 /// Development shell settings from the `[develop]` section.
@@ -115,6 +116,18 @@ impl Default for LocateConfig {
   }
 }
 
+/// `xi repl` settings from the `[repl]` section.
+///
+/// ```toml
+/// [repl]
+/// theme = "dracula"
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ReplConfig {
+  /// Color theme name: one of `xi_repl::theme::ALL` (default: "default").
+  pub theme: xi_repl::theme::ThemeName,
+}
+
 /// Binary cache push settings from the `[cache]` section.
 ///
 /// ```toml
@@ -191,17 +204,19 @@ impl ConfigStore {
     let develop = self.read_develop_config();
     let build = self.read_build_config();
     let locate = self.read_locate_config();
+    let repl = self.read_repl_config()?;
     Ok(Config {
       cache,
       develop,
       build,
       locate,
+      repl,
     })
   }
 
   /// Reject unknown keys at every level of the configuration.
   fn validate_unknown_keys(&self) -> Result<()> {
-    const TOP_LEVEL: &[&str] = &["cache", "develop", "build", "locate"];
+    const TOP_LEVEL: &[&str] = &["cache", "develop", "build", "locate", "repl"];
     const CACHE_SCALAR: &[&str] = &[
       "async_push",
       "queue_max_size",
@@ -275,6 +290,15 @@ impl ConfigStore {
     {
       const LOCATE: &[&str] = &["cache_level"];
       reject_unknown("locate", table, LOCATE)?;
+    }
+
+    if let Some(table) = self
+      .document
+      .get("repl")
+      .and_then(toml_edit::Item::as_table)
+    {
+      const REPL: &[&str] = &["theme"];
+      reject_unknown("repl", table, REPL)?;
     }
 
     Ok(())
@@ -392,6 +416,23 @@ impl ConfigStore {
       .map_or(2, |v| v.clamp(0, 2) as u8);
 
     LocateConfig { cache_level }
+  }
+
+  fn read_repl_config(&self) -> Result<ReplConfig> {
+    let Some(table) = self.document.get("repl") else {
+      return Ok(ReplConfig::default());
+    };
+
+    let theme = match table.get("theme").and_then(toml_edit::Item::as_str) {
+      Some(name) => {
+        name
+          .parse::<xi_repl::theme::ThemeName>()
+          .map_err(|e| color_eyre::eyre::eyre!("[repl]: {e}"))?
+      },
+      None => xi_repl::theme::ThemeName::default(),
+    };
+
+    Ok(ReplConfig { theme })
   }
 
   fn read_cache_config(&self) -> CacheConfig {
@@ -840,6 +881,56 @@ mod tests {
     let err = store.config().unwrap_err();
     assert!(
       err.to_string().contains("unknown key(s) in [develop]"),
+      "unexpected: {err}"
+    );
+  }
+
+  #[test]
+  fn repl_theme_defaults_to_default_when_missing() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    assert_eq!(config.repl.theme, xi_repl::theme::ThemeName::Default);
+    Ok(())
+  }
+
+  #[test]
+  fn repl_theme_parses_a_known_name() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[repl]\ntheme = \"dracula\"\n")?;
+
+    let store = ConfigStore::load_from(&path)?;
+    let config = store.config()?;
+    assert_eq!(config.repl.theme, xi_repl::theme::ThemeName::Dracula);
+    Ok(())
+  }
+
+  #[test]
+  fn repl_theme_rejects_an_unknown_name() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[repl]\ntheme = \"not-a-theme\"\n").unwrap();
+
+    let store = ConfigStore::load_from(&path).unwrap();
+    let err = store.config().unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not-a-theme"), "unexpected: {msg}");
+    assert!(msg.contains("dracula"), "should list valid names: {msg}");
+  }
+
+  #[test]
+  fn rejects_unknown_repl_key() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[repl]\nfoo = 1\n").unwrap();
+
+    let store = ConfigStore::load_from(&path).unwrap();
+    let err = store.config().unwrap_err();
+    assert!(
+      err.to_string().contains("unknown key(s) in [repl]"),
       "unexpected: {err}"
     );
   }

@@ -22,6 +22,7 @@ xi-flake    = { path = "crates/xi-flake", version = "4.5.0" }
 xi-home     = { path = "crates/xi-home", version = "4.5.0" }
 xi-nixos    = { path = "crates/xi-nixos", version = "4.5.0" }
 xi-remote   = { path = "crates/xi-remote", version = "4.5.0" }
+xi-repl     = { path = "crates/xi-repl", version = "4.5.0" }
 xi-search   = { path = "crates/xi-search", version = "4.5.0" }
 
 anstyle = "1.0.13"
@@ -52,12 +53,18 @@ insta = { features = [ "yaml" ], version = "1.48.0" }
 
 nix = { default-features = false, features = [ "fs", "user", "hostname" ], version = "0.31.1" }
 proptest = "1.9.0"
+reedline = "0.52.1"
 regex = "1.12.2"
 reqwest = { default-features = false, features = [
   "blocking",
   "json",
   "rustls",
 ], version = "0.13.1" }
+# Published on crates.io as `rnix` (repo name is rnix-parser); aliased here so
+# the key matches the parser's upstream project name / the task that asked
+# for it. Not yet consumed - reserved for Phase 2 (xi-repl syntax
+# highlighting, openspec/changes/xi-repl tasks.md task 6.1).
+rnix-parser = { package = "rnix", version = "0.15.1" }
 roff = "1.0.0"
 secrecy = { features = [ "serde" ], version = "0.10.3" }
 semver = "1.0.27"

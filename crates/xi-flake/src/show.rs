@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use tracing::debug;
-use xi_core::flake_output::{self, FlakeOutput, FlakeOutputKind};
+use xi_core::{
+  flake_output::{self, FlakeOutput, FlakeOutputKind},
+  nix_value::{self, VersionInfo},
+};
 use yansi::{Color, Paint};
 
 /// A single flake output entry parsed from JSON.
@@ -11,50 +14,12 @@ struct OutputEntry {
   output_type: Option<String>,
 }
 
-/// Parsed version info from a nix derivation name.
-struct VersionInfo<'a> {
-  version: &'a str,
-  dirty:   bool,
-}
-
 impl OutputEntry {
   fn split_name_version(&self) -> (Option<&str>, Option<VersionInfo<'_>>) {
-    let Some(ref full_name) = self.name else {
-      return (None, None);
-    };
-
-    let mut split_pos = None;
-    for (i, ch) in full_name.char_indices() {
-      if ch == '-'
-        && let Some(next) = full_name[i + 1..].chars().next()
-        && next.is_ascii_digit()
-      {
-        split_pos = Some(i);
-      }
-    }
-
-    let Some(pos) = split_pos else {
-      return (Some(full_name.as_str()), None);
-    };
-
-    let pkg = &full_name[..pos];
-    let raw_version = &full_name[pos + 1..];
-
-    #[allow(clippy::option_if_let_else)]
-    let (version, dirty) =
-      if let Some(stripped) = raw_version.strip_suffix("-dirty") {
-        let clean = stripped
-          .rsplit_once('-')
-          .filter(|(_, hash)| {
-            hash.len() >= 6 && hash.chars().all(|c| c.is_ascii_hexdigit())
-          })
-          .map_or(stripped, |(before, _)| before);
-        (clean, true)
-      } else {
-        (raw_version, false)
-      };
-
-    (Some(pkg), Some(VersionInfo { version, dirty }))
+    self
+      .name
+      .as_deref()
+      .map_or((None, None), nix_value::parse_name_version)
   }
 }
 
@@ -552,22 +517,23 @@ fn render_flat_category(
 fn print_entry(attr_name: &str, entry: &OutputEntry, is_default: bool) {
   let (pkg_name, version_info) = entry.split_name_version();
 
-  print!("  {}", Paint::new(attr_name).fg(Color::Blue));
+  if version_info.is_some() {
+    print!(
+      "  {}",
+      nix_value::render_entry(attr_name, version_info.as_ref(), is_default)
+    );
+  } else {
+    print!("  {}", Paint::new(attr_name).fg(Color::Blue));
 
-  if let Some(vi) = &version_info {
-    print!(" ({})", Paint::new(vi.version).fg(Color::Green));
-  } else if let Some(n) = pkg_name
-    && n != attr_name
-  {
-    print!(" :: {}", Paint::new(n).fg(Color::Green));
-  }
+    if let Some(n) = pkg_name
+      && n != attr_name
+    {
+      print!(" :: {}", Paint::new(n).fg(Color::Green));
+    }
 
-  if is_default {
-    print!(" {}", Paint::new("[default]").fg(Color::Yellow));
-  }
-
-  if version_info.as_ref().is_some_and(|vi| vi.dirty) {
-    print!(" {}", Paint::new("[dirty]").fg(Color::Red));
+    if is_default {
+      print!(" {}", Paint::new("[default]").fg(Color::Yellow));
+    }
   }
 
   if let Some(ref d) = entry.description {
@@ -671,62 +637,8 @@ pub fn leaf_categories_to_discover(json: &serde_json::Value) -> Vec<String> {
 mod tests {
   use super::*;
 
-  fn entry(name: &str) -> OutputEntry {
-    OutputEntry {
-      name:        Some(name.to_string()),
-      description: None,
-      output_type: None,
-    }
-  }
-
-  #[test]
-  fn clean_version() {
-    let e = entry("xi-4.4.0");
-    let (pkg, vi) = e.split_name_version();
-    assert_eq!(pkg, Some("xi"));
-    let vi = vi.expect("should have version");
-    assert_eq!(vi.version, "4.4.0");
-    assert!(!vi.dirty);
-  }
-
-  #[test]
-  fn dirty_version_with_hash() {
-    let e = entry("xi-4.4.0-ab81553-dirty");
-    let (pkg, vi) = e.split_name_version();
-    assert_eq!(pkg, Some("xi"));
-    let vi = vi.expect("should have version");
-    assert_eq!(vi.version, "4.4.0");
-    assert!(vi.dirty);
-  }
-
-  #[test]
-  fn dirty_version_without_hash() {
-    let e = entry("foo-1.2.3-dirty");
-    let (pkg, vi) = e.split_name_version();
-    assert_eq!(pkg, Some("foo"));
-    let vi = vi.expect("should have version");
-    assert_eq!(vi.version, "1.2.3");
-    assert!(vi.dirty);
-  }
-
-  #[test]
-  fn no_version() {
-    let e = entry("nix-shell");
-    let (pkg, vi) = e.split_name_version();
-    assert_eq!(pkg, Some("nix-shell"));
-    assert!(vi.is_none());
-  }
-
-  #[test]
-  fn complex_name_with_version() {
-    let e = entry("nix3-fmt-wrapper-2.25.0");
-    let (pkg, vi) = e.split_name_version();
-    assert_eq!(pkg, Some("nix3-fmt-wrapper"));
-    let vi = vi.expect("should have version");
-    assert_eq!(vi.version, "2.25.0");
-    assert!(!vi.dirty);
-  }
-
+  // Name/version parsing itself is tested in `xi_core::nix_value`; these
+  // tests cover the `OutputEntry`-specific wiring (missing `name` field).
   #[test]
   fn no_name() {
     let e = empty_entry();

@@ -13,6 +13,7 @@
 
 use std::sync::{Arc, OnceLock};
 
+use nix_command::{CommandKind, NixCommand};
 use serde_json::json;
 
 use super::{
@@ -30,7 +31,10 @@ use super::{
     Availability,
     Command,
     CommandReply,
+    DocResult,
     Envelope,
+    ExprEvalResult,
+    FLAKE_SCOPE_EXPR,
     IdempotencyKey,
     Payload,
     Query,
@@ -98,6 +102,14 @@ fn handle_query(query: Query, state: &ServerState) -> QueryReply {
     Query::Snapshot { seq } => {
       QueryReply::Snapshot(Availability::Ready {
         value: json!({ "seq": seq }),
+      })
+    },
+    Query::ExprEval { expr, shallow } => {
+      QueryReply::ExprEval(handle_expr_eval(state, &expr, shallow))
+    },
+    Query::ExprDoc { expr } => {
+      QueryReply::ExprDoc(Availability::Ready {
+        value: run_expr_doc(&state.flake_root, &expr),
       })
     },
   }
@@ -211,6 +223,474 @@ fn env_snapshot_value(env: &crate::env_file::DevEnv) -> serde_json::Value {
   })
 }
 
+/// Sentinel expression meaning "the current devshell's top-level scope" -
+/// the empty input a REPL sends to list what's in scope without the caller
+/// having written any expression yet.
+const CURRENT_SCOPE_EXPR: &str = "";
+
+/// Answer a v3 [`Query::ExprEval`].
+///
+/// # Concurrency (design decision, not left implicit - see task 3.4)
+///
+/// `eval_in_progress` and `eval_input_hash` are owned exclusively by
+/// `spawn_eval`'s background hook-eval loop in `server.rs`; this handler
+/// never writes either field, from any branch below.
+///
+/// - The fast path below only *reads* `eval_input_hash` (a plain
+///   `RwLock::read`, which never blocks behind a writer for longer than a
+///   memcpy) to decide whether `ServerState::current_env` is fresh enough to
+///   answer [`CURRENT_SCOPE_EXPR`] from already-known package names without
+///   shelling out at all.
+/// - Every other expression - and every non-shallow query, which needs a real
+///   forced value the daemon has no cache for - launches its own `nix eval
+///   --json --expr` **subprocess**. That subprocess is a separate OS process
+///   with no shared Rust-level lock, so it runs unconditionally even while
+///   `eval_in_progress` is `true` (a scheduled hook-eval is mid-flight): it
+///   does not contend with the main loop's in-process state, and this handler
+///   runs on its own per-connection thread (spawned in `server.rs`'s accept
+///   loop), so it can't block that loop either. We deliberately do not check
+///   `eval_in_progress` here - there is nothing correct to do with that
+///   information.
+#[must_use]
+fn handle_expr_eval(
+  state: &ServerState,
+  expr: &str,
+  shallow: bool,
+) -> Availability<ExprEvalResult> {
+  if shallow && expr.trim() == CURRENT_SCOPE_EXPR {
+    let is_fresh = state
+      .eval_input_hash
+      .read()
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
+      .is_some();
+    if is_fresh {
+      let env = state
+        .current_env
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+      if let Some(ref dev) = *env {
+        let names = dev.packages.iter().map(|p| p.name.clone()).collect();
+        return Availability::Ready {
+          value: ExprEvalResult::Attrs(names),
+        };
+      }
+    }
+  }
+
+  Availability::Ready {
+    value: run_expr_eval(&state.flake_root, expr, shallow),
+  }
+}
+
+/// Run `nix eval --json --expr` against `flake_root`, classifying the
+/// result into an [`ExprEvalResult`].
+///
+/// Builds one wrapper expression that does the shallow/function/derivation
+/// classification inside nix itself (`builtins.isFunction`,
+/// `.type or null == "derivation"`, `builtins.attrNames`) rather than
+/// post-hoc sniffing the JSON or the raw `nix` error text - nix already has
+/// to force the value to WHNF to answer those checks, so this is no more
+/// expensive than the naive "just run --json" approach, and it never risks
+/// a JSON-serialization failure on a derivation's function-valued attrs
+/// (`override`, `overrideAttrs`, …) the way serializing the raw value
+/// would.
+///
+/// When `flake_root` has a `flake.nix`, the flake's own outputs are bound
+/// into scope via `with` (the same effect real `nix repl`'s `:lf .` has),
+/// so `expr` can reference `packages`, `nixosConfigurations`, etc. as bare
+/// names instead of every caller spelling out
+/// `(builtins.getFlake "...").packages` themselves (see [`flake_ref_for`]
+/// for the ref string itself). This needs `--impure` (an unlocked flake ref
+/// can't be read purely) and re-runs `builtins.getFlake` fresh on every
+/// call, with no cross-call cache; see proposal Open Question 3. When there
+/// is no `flake.nix` at `flake_root` (e.g. a throwaway test fixture), this
+/// falls back to the plain, unbound, pure-eval-safe wrapper - checked once
+/// in Rust rather than inside the nix expression, since `builtins.tryEval`
+/// does not reliably catch a
+/// missing-flake.nix error from `getFlake`.
+fn run_expr_eval(
+  flake_root: &std::path::Path,
+  expr: &str,
+  shallow: bool,
+) -> ExprEvalResult {
+  let has_flake = flake_root.join("flake.nix").is_file();
+  let wrapper = classify_wrapper(flake_root, has_flake, expr, shallow);
+
+  let mut builder = NixCommand::new(CommandKind::Eval)
+    .arg("--expr")
+    .arg(&wrapper)
+    .arg("--json");
+  if has_flake {
+    builder = builder.impure(true);
+  }
+  let mut cmd = builder.to_std_command();
+  cmd.current_dir(flake_root);
+
+  let output = match cmd.output() {
+    Ok(o) => o,
+    Err(e) => {
+      return ExprEvalResult::Error {
+        message: format!("failed to run nix eval: {e}"),
+      };
+    },
+  };
+
+  if !output.status.success() {
+    return ExprEvalResult::Error {
+      message: trim_nix_stderr(&String::from_utf8_lossy(&output.stderr)),
+    };
+  }
+
+  let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+    Ok(v) => v,
+    Err(e) => {
+      return ExprEvalResult::Error {
+        message: format!("could not parse nix eval output as JSON: {e}"),
+      };
+    },
+  };
+
+  decode_classified(&parsed)
+}
+
+/// Sentinel printed to the piped `nix repl`'s stdout right before `:doc`'s
+/// own output, so [`parse_doc_output`] can find exactly where the real
+/// response starts without guessing how many lines the banner or (when
+/// `has_flake`) `:lf .`'s "Added N variables" listing printed - that count
+/// varies with the flake, so counting lines would be fragile.
+const DOC_MARKER: &str = "__xi_repl_doc_marker__";
+
+/// Fetch documentation for `expr` by driving a real, non-interactive `nix
+/// repl` subprocess - see [`Query::ExprDoc`]'s doc comment for why `nix
+/// eval` cannot answer this at all (a primop's doc string lives in `nix`'s
+/// own C++ primop registry, nowhere reachable from Nix language code).
+///
+/// Piped stdio, not inherited: `nix-command`'s `CommandKind::Repl` spec
+/// marks the command `interactive: true`, which both of its own
+/// `run_with_logs`/`output` helpers honor by forcing `Stdio::inherit()` -
+/// appropriate for `xi_repl::raw`'s real interactive fallback, wrong here.
+/// This builds the same argv/env via [`NixCommand::to_std_command`] and
+/// then owns the child's stdio itself: write the whole command script,
+/// close stdin (signalling EOF, which makes `nix repl` process `:quit` and
+/// exit even though it was never told to via an explicit prompt), read
+/// everything back. No terminal is involved at all, so none of `raw.rs`'s
+/// "no pty to multiplex a shared terminal" limitation applies.
+///
+/// `nix repl` sends its banner, any `:lf .` status noise, and the real
+/// `:doc` error (if any) to **stderr**; only `:doc`'s successful output (and
+/// the `:p` marker ahead of it) goes to **stdout** - confirmed empirically
+/// against a real `nix repl`, not assumed. [`parse_doc_output`] relies on
+/// that split.
+fn run_expr_doc(flake_root: &std::path::Path, expr: &str) -> DocResult {
+  use std::{fmt::Write as _, io::Write as _};
+
+  let has_flake = flake_root.join("flake.nix").is_file();
+
+  let mut script = String::new();
+  if has_flake {
+    script.push_str(":lf .\n");
+  }
+  let _ = writeln!(script, ":p \"{DOC_MARKER}\"");
+  let _ = writeln!(script, ":doc {expr}");
+  script.push_str(":quit\n");
+
+  let mut builder = NixCommand::new(CommandKind::Repl)
+    .arg("--quiet")
+    .with_required_env();
+  if has_flake {
+    // `:lf .` on an unlocked `path:`/`git+file:` ref needs this, same as
+    // run_expr_eval's has_flake branch.
+    builder = builder.impure(true);
+  }
+  let mut cmd = builder.to_std_command();
+  cmd.current_dir(flake_root);
+  cmd.stdin(std::process::Stdio::piped());
+  cmd.stdout(std::process::Stdio::piped());
+  cmd.stderr(std::process::Stdio::piped());
+
+  let mut child = match cmd.spawn() {
+    Ok(c) => c,
+    Err(e) => {
+      return DocResult::Error {
+        message: format!("failed to run nix repl: {e}"),
+      };
+    },
+  };
+
+  let Some(mut stdin) = child.stdin.take() else {
+    return DocResult::Error {
+      message: "failed to open nix repl's stdin".to_owned(),
+    };
+  };
+  if let Err(e) = stdin.write_all(script.as_bytes()) {
+    return DocResult::Error {
+      message: format!("failed to write to nix repl's stdin: {e}"),
+    };
+  }
+  // Closes the pipe (EOF), which is what makes `nix repl` process the
+  // script and exit rather than waiting for more input.
+  drop(stdin);
+
+  let output = match child.wait_with_output() {
+    Ok(o) => o,
+    Err(e) => {
+      return DocResult::Error {
+        message: format!("failed to wait on nix repl: {e}"),
+      };
+    },
+  };
+
+  parse_doc_output(
+    &String::from_utf8_lossy(&output.stdout),
+    &String::from_utf8_lossy(&output.stderr),
+  )
+}
+
+/// Classify a piped `nix repl` session's captured stdout/stderr into a
+/// [`DocResult`]. See [`run_expr_doc`]'s doc comment for the stdout/stderr
+/// split this relies on.
+fn parse_doc_output(stdout: &str, stderr: &str) -> DocResult {
+  if stderr.lines().any(|l| l.trim().starts_with("error:")) {
+    let message = trim_nix_stderr(stderr);
+    return if message == "error: value does not have documentation" {
+      DocResult::NotFound
+    } else {
+      DocResult::Error { message }
+    };
+  }
+
+  let Some(marker_pos) = stdout.find(DOC_MARKER) else {
+    return DocResult::Error {
+      message: "nix repl produced no recognizable output".to_owned(),
+    };
+  };
+  let body = stdout[marker_pos + DOC_MARKER.len()..].trim();
+  if body.is_empty() {
+    return DocResult::Error {
+      message: "nix repl's :doc produced no output".to_owned(),
+    };
+  }
+
+  DocResult::Found {
+    doc: body.to_owned(),
+  }
+}
+
+/// Build the classifying wrapper expression fed to `nix eval --expr`.
+///
+/// `expr` is pasted verbatim as nix source (not a shell string - there is
+/// no shell involved, we invoke the `nix` binary directly), wrapped in an
+/// extra pair of parens so any syntactically valid top-level expression
+/// (including a bare `let … in …`) binds cleanly to `v`.
+///
+/// When `has_flake` is set, the whole thing is wrapped in
+/// `with (builtins.getFlake "<flake_ref_for(flake_root)>"); ...` first, so
+/// `expr` can reach the flake's own outputs (`packages`,
+/// `nixosConfigurations`, …) as bare names - this is what the user is
+/// asking for when they type e.g. `packages.x86_64-linux.hello` without
+/// first spelling out `builtins.getFlake` themselves. See
+/// [`flake_ref_for`]'s doc comment for why the ref scheme isn't always
+/// `path:`.
+fn classify_wrapper(
+  flake_root: &std::path::Path,
+  has_flake: bool,
+  expr: &str,
+  shallow: bool,
+) -> String {
+  // Both shapes share the lambda/derivation checks (cheap: WHNF-only).
+  // They diverge only on what happens to a plain (non-derivation) attrset
+  // and to every other value shape (scalars, lists, ints, …):
+  // - shallow lists attribute names without forcing any of them, and declines
+  //   (reports `thunk`) rather than serializing anything else.
+  // - non-shallow serializes the forced value as-is (`scalar`), covering plain
+  //   attrsets, lists, and primitives alike - after first walking it through
+  //   `sanitize` (defined below), which replaces every *nested* derivation with
+  //   a small JSON-safe stub and turns any other stray function (e.g. a
+  //   flake-parts/NixOS module's `imports = [ { ... }: {...} ... ]`) into a
+  //   catchable `throw`, reported as `unrepresentable`.
+  //
+  //   Two distinct problems made this necessary, both only visible once a
+  //   *nested* derivation is involved (a bare top-level one is already
+  //   handled by the `kind = "derivation"` branch below and never reaches
+  //   `sanitize` at all):
+  //
+  //   1. `builtins.toJSON`'s "cannot convert a function to JSON" is NOT a
+  //      catchable Nix evaluation error - confirmed empirically,
+  //      `builtins.tryEval (builtins.toJSON v)` still throws it straight
+  //      through. A real derivation's own attrset always carries several
+  //      function-valued attrs (`override`, `overrideAttrs`, …), so serializing
+  //      one verbatim via the CLI's own `--json` flag (which runs *after* this
+  //      expression already evaluated successfully) crashes the whole `nix
+  //      eval` process - `run_expr_eval` then reports a plain `Error`,
+  //      indistinguishable from a genuine eval failure.
+  //   2. A naive recursive function-finder (an earlier version of this
+  //      pre-scan, before nested derivations were stubbed out) walks every
+  //      attrset/list it finds with no notion of "this is a derivation, stop
+  //      here" - and a real derivation's attribute graph (buildInputs pulling
+  //      in stdenv, which pulls in more derivations, …) is deep and wide enough
+  //      that evaluating e.g. a flake's `packages.<system>` overflows Nix's own
+  //      call-stack limit before it ever finds (or fails to find) a function.
+  //      `sanitize` sidesteps this the same way it sidesteps problem 1: it
+  //      never recurses *into* a derivation, only replaces it wholesale.
+  let tail = if shallow {
+    r#"else if builtins.isAttrs v then { kind = "attrs"; names = builtins.attrNames v; }
+  else { kind = "thunk"; }"#
+  } else {
+    r#"else
+    let
+      sanitized = builtins.tryEval (
+        let s = sanitize v; in builtins.deepSeq s s
+      );
+    in
+    if sanitized.success then { kind = "scalar"; value = sanitized.value; }
+    else { kind = "unrepresentable"; }"#
+  };
+
+  // `FLAKE_SCOPE_EXPR` is not Nix source to parse - it asks for the
+  // flake's own top-level outputs directly, which only has an answer when
+  // `__xiReplFlake` is actually bound below (`has_flake`). `.outputs`
+  // specifically (not `__xiReplFlake` itself) because `getFlake`'s return
+  // value also carries its own metadata (`_type`, `inputs`, `lastModified`,
+  // `narHash`, `outPath`, `sourceInfo`, …) merged in at the top level
+  // alongside the real outputs - `.outputs` is the actual
+  // `outputs = inputs: {...}` result on its own, which is exactly what
+  // real `nix repl`'s `:lf` scopes to. Binding `v` to a syntax error
+  // string in the no-flake case still produces a sensible "no such
+  // variable" class of ExprEvalResult::Error rather than silently
+  // returning something wrong.
+  let v_binding = if expr == FLAKE_SCOPE_EXPR && has_flake {
+    "__xiReplFlake.outputs".to_owned()
+  } else {
+    format!("({expr})")
+  };
+
+  let body = format!(
+    r#"let
+  v = {v_binding};
+  # Replace a *nested* derivation with a small JSON-safe stub (the shape
+  # `xi_repl::render::derivation_leaf` looks for) instead of recursing into
+  # it - see the long comment above `tail` for why. Any other function
+  # found along the way throws, which `tail`'s `tryEval` turns into
+  # `unrepresentable` - but only because `tail` forces the result with
+  # `deepSeq` *inside* that `tryEval` first. `sanitize v` on its own is
+  # lazy (a `throw` inside e.g. `map sanitize x`'s first element does not
+  # fire just by returning the list), so without `deepSeq` the throw would
+  # only surface later, while `nix eval --json` is serializing the
+  # already-"successful" result - outside any `tryEval`, uncaught, the
+  # exact failure mode this whole pre-scan exists to avoid.
+  sanitize = x:
+    if builtins.isFunction x then throw "xi-repl: unrepresentable function"
+    else if builtins.isAttrs x && (x.type or null) == "derivation" then
+      {{ type = "derivation";
+         name = x.name or null;
+         version = x.version or null;
+         meta = {{ description = x.meta.description or null; }}; }}
+    else if builtins.isList x then map sanitize x
+    else if builtins.isAttrs x then builtins.mapAttrs (_: sanitize) x
+    else x;
+in
+  if builtins.isFunction v then {{ kind = "lambda"; }}
+  else if builtins.isAttrs v && (v.type or null) == "derivation" then
+    {{ kind = "derivation";
+       name = v.name or null;
+       version = v.version or null;
+       description = v.meta.description or null; }}
+  {tail}
+"#
+  );
+
+  if has_flake {
+    let flake_ref = flake_ref_for(flake_root);
+    format!(
+      "let __xiReplFlake = builtins.getFlake \"{flake_ref}\"; in\nwith \
+       __xiReplFlake;\n{body}"
+    )
+  } else {
+    body
+  }
+}
+
+/// Build the `getFlake` ref string for `flake_root`.
+///
+/// `git+file://<path>` when `flake_root` is itself a git working tree root
+/// (has a `.git` entry, directory or worktree-pointer file alike) - nix's
+/// git fetcher reads the tree through git's own index/object store, which
+/// for a dirty working tree is dramatically cheaper than the plain `path:`
+/// fetcher's naive recursive copy+hash of every file on *every* call (measured
+/// in the tens of seconds to minutes on a real multi-crate repo, vs ~2s via
+/// git - see the xi-repl latency follow-up). Falls back to `path:<path>`
+/// (the original, always-correct-but-slow behaviour) when `flake_root` isn't
+/// a git root itself, e.g. a bare test fixture directory with no `.git`.
+fn flake_ref_for(flake_root: &std::path::Path) -> String {
+  let escaped = nix_string_literal(&flake_root.to_string_lossy());
+  if flake_root.join(".git").exists() {
+    format!("git+file://{escaped}")
+  } else {
+    format!("path:{escaped}")
+  }
+}
+
+/// Escape a raw string for use inside a Nix double-quoted string literal.
+fn nix_string_literal(raw: &str) -> String {
+  raw
+    .replace('\\', "\\\\")
+    .replace('"', "\\\"")
+    .replace("${", "\\${")
+}
+
+/// Decode the `{ kind = …; … }` JSON object the [`classify_wrapper`]
+/// expression evaluates to.
+fn decode_classified(value: &serde_json::Value) -> ExprEvalResult {
+  let kind = value.get("kind").and_then(serde_json::Value::as_str);
+  match kind {
+    Some("lambda") => ExprEvalResult::Lambda,
+    Some("thunk") => ExprEvalResult::Thunk,
+    Some("derivation") => {
+      ExprEvalResult::Derivation {
+        name:        value
+          .get("name")
+          .and_then(|v| v.as_str().map(str::to_owned)),
+        version:     value
+          .get("version")
+          .and_then(|v| v.as_str().map(str::to_owned)),
+        description: value
+          .get("description")
+          .and_then(|v| v.as_str().map(str::to_owned)),
+      }
+    },
+    Some("attrs") => {
+      let names = value
+        .get("names")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+          arr
+            .iter()
+            .filter_map(|n| n.as_str().map(str::to_owned))
+            .collect()
+        })
+        .unwrap_or_default();
+      ExprEvalResult::Attrs(names)
+    },
+    Some("scalar") => {
+      ExprEvalResult::Scalar(value.get("value").cloned().unwrap_or_default())
+    },
+    Some("unrepresentable") => ExprEvalResult::Unrepresentable,
+    _ => {
+      ExprEvalResult::Error {
+        message: format!("daemon could not classify eval result: {value}"),
+      }
+    },
+  }
+}
+
+/// Trim `nix eval` stderr down to the `error:`-prefixed summary (noise like
+/// `warning:` / `evaluating ` lines above it is dropped).
+fn trim_nix_stderr(stderr: &str) -> String {
+  let lines: Vec<&str> = stderr.lines().collect();
+  let start = lines.iter().position(|l| l.trim().starts_with("error:"));
+  start.map_or_else(|| stderr.trim().to_owned(), |i| lines[i..].join("\n"))
+}
+
 fn job_availability(job_id: &str) -> Availability<serde_json::Value> {
   registry().get(&JobId(job_id.to_owned())).map_or(
     Availability::Missing,
@@ -268,6 +748,7 @@ fn catalog_value() -> serde_json::Value {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
   use super::*;
 
@@ -355,5 +836,290 @@ mod tests {
       },
       _ => unreachable!("test helper only handles pure queries"),
     }
+  }
+
+  #[test]
+  fn classify_wrapper_without_flake_is_unchanged() {
+    let no_flake = std::path::Path::new("/does/not/exist");
+    let wrapper = classify_wrapper(no_flake, false, "1 + 1", false);
+    assert!(
+      !wrapper.contains("getFlake"),
+      "no flake.nix present must not introduce a getFlake binding"
+    );
+    assert!(wrapper.contains("v = (1 + 1);"));
+  }
+
+  #[test]
+  fn classify_wrapper_with_flake_binds_outputs_via_with() {
+    let flake_root = std::path::Path::new("/tmp/some-flake");
+    let wrapper =
+      classify_wrapper(flake_root, true, "packages.x86_64-linux.hello", true);
+    assert!(wrapper.contains(r#"builtins.getFlake "path:/tmp/some-flake""#));
+    assert!(wrapper.contains("with __xiReplFlake;"));
+    assert!(wrapper.contains("v = (packages.x86_64-linux.hello);"));
+  }
+
+  #[test]
+  fn classify_wrapper_flake_scope_sentinel_binds_v_to_the_flake_outputs() {
+    let flake_root = std::path::Path::new("/tmp/some-flake");
+    let wrapper = classify_wrapper(flake_root, true, FLAKE_SCOPE_EXPR, true);
+    assert!(wrapper.contains("with __xiReplFlake;"));
+    assert!(wrapper.contains("v = __xiReplFlake.outputs;"));
+    assert!(
+      !wrapper.contains(&format!("({FLAKE_SCOPE_EXPR})")),
+      "the sentinel must never be pasted as if it were Nix source"
+    );
+  }
+
+  #[test]
+  fn classify_wrapper_flake_scope_sentinel_without_flake_is_an_undefined_variable()
+   {
+    let no_flake = std::path::Path::new("/does/not/exist");
+    let wrapper = classify_wrapper(no_flake, false, FLAKE_SCOPE_EXPR, true);
+    assert!(wrapper.contains(&format!("v = ({FLAKE_SCOPE_EXPR});")));
+  }
+
+  #[test]
+  fn flake_ref_for_prefers_git_file_when_dot_git_exists() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    std::fs::create_dir(tmp.path().join(".git")).expect("mkdir .git");
+    assert_eq!(
+      flake_ref_for(tmp.path()),
+      format!("git+file://{}", tmp.path().display())
+    );
+  }
+
+  #[test]
+  fn flake_ref_for_falls_back_to_path_without_dot_git() {
+    let tmp = tempfile::tempdir().expect("mktemp");
+    assert_eq!(
+      flake_ref_for(tmp.path()),
+      format!("path:{}", tmp.path().display())
+    );
+  }
+
+  #[test]
+  fn nix_string_literal_escapes_quotes_backslashes_and_interpolation() {
+    assert_eq!(nix_string_literal("plain"), "plain");
+    assert_eq!(nix_string_literal(r#"has"quote"#), r#"has\"quote"#);
+    assert_eq!(nix_string_literal(r"has\backslash"), r"has\\backslash");
+    assert_eq!(nix_string_literal("has${interp}"), r"has\${interp}");
+  }
+
+  #[test]
+  fn run_expr_eval_binds_flake_outputs_when_flake_nix_present() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      // xi-repl's fixture may not exist yet in an isolated checkout of
+      // just this crate; skip rather than fail spuriously.
+      return;
+    }
+    let result = run_expr_eval(fixture, "builtins.attrNames packages", false);
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(value, json!(["x86_64-linux"]));
+  }
+
+  #[test]
+  fn run_expr_eval_reports_unrepresentable_for_a_list_containing_a_function() {
+    // `nix eval --json` crashes the whole process on this (confirmed
+    // empirically - `builtins.tryEval (builtins.toJSON v)` does not catch
+    // it either) rather than raising a catchable evaluation error, which
+    // is exactly the scenario `hasFunction` in `classify_wrapper` guards
+    // against. A real flake's `imports = [ { ... }: {...} ]` hits this
+    // same shape.
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(fixture, "[ (x: x) 1 2 ]", false);
+    assert!(
+      matches!(result, ExprEvalResult::Unrepresentable),
+      "got {result:?}"
+    );
+  }
+
+  #[test]
+  fn run_expr_eval_stubs_a_nested_derivations_function_attrs_without_crashing()
+  {
+    // A real derivation's own attrset always carries function-valued attrs
+    // (`overrideAttrs` here) - `nix eval --json` crashes uncatchably on
+    // serializing one of those verbatim. `classify_wrapper`'s `sanitize`
+    // must replace the whole nested derivation with a JSON-safe stub
+    // instead, dropping `overrideAttrs` rather than trying to serialize it.
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(
+      fixture,
+      r#"{ pkg = { type = "derivation"; name = "hello-2.12";
+         version = "2.12"; meta.description = "a friendly program";
+         overrideAttrs = f: f; }; }"#,
+      false,
+    );
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(
+      value,
+      json!({
+        "pkg": {
+          "type": "derivation",
+          "name": "hello-2.12",
+          "version": "2.12",
+          "meta": { "description": "a friendly program" },
+        },
+      })
+    );
+  }
+
+  #[test]
+  fn run_expr_eval_never_recurses_into_a_nested_derivations_own_attrs() {
+    // A real derivation's attribute graph (buildInputs pulling in stdenv,
+    // which pulls in more derivations, …) is deep/wide enough to overflow
+    // Nix's own call-stack limit if walked - this is exactly what made
+    // evaluating a real flake's `packages.<system>` crash before `sanitize`
+    // learned to stop at derivation boundaries rather than recursing into
+    // them. A directly self-referential attr (`recur = self`) stands in
+    // for that: if `sanitize` ever looked past the `type = "derivation"`
+    // check, forcing it would hang/stack-overflow instead of returning.
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(
+      fixture,
+      r#"{ pkg = let self = { type = "derivation"; name = "x";
+         recur = self; }; in self; }"#,
+      false,
+    );
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(
+      value,
+      json!({ "pkg": { "type": "derivation", "name": "x", "version": null, "meta": { "description": null } } })
+    );
+  }
+
+  #[test]
+  fn run_expr_eval_still_handles_a_plain_list_as_a_normal_scalar() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(fixture, "[ 1 2 3 ]", false);
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(value, json!([1, 2, 3]));
+  }
+
+  #[test]
+  fn run_expr_doc_finds_a_real_primop_synopsis() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_doc(fixture, "builtins.add");
+    let DocResult::Found { doc } = result else {
+      panic!("expected Found, got {result:?}");
+    };
+    assert!(doc.contains("Synopsis: builtins.add"));
+    assert!(doc.contains("sum"));
+  }
+
+  #[test]
+  fn run_expr_doc_reports_not_found_for_a_doc_less_value() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_doc(fixture, "(1 + 1)");
+    assert!(matches!(result, DocResult::NotFound), "got {result:?}");
+  }
+
+  #[test]
+  fn run_expr_doc_reports_error_for_an_undefined_name() {
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_doc(fixture, "builtins.notARealFunction");
+    let DocResult::Error { message } = result else {
+      panic!("expected Error, got {result:?}");
+    };
+    assert!(message.contains("missing"));
+  }
+
+  #[test]
+  fn parse_doc_output_extracts_the_body_after_the_marker_on_success() {
+    let stdout = format!(
+      "\n{DOC_MARKER}\n\nSynopsis: builtins.add e1 e2\n\nReturn the sum.\n\n"
+    );
+    let stderr = "Nix 2.34.7\nType :? for help.\n";
+    let result = parse_doc_output(&stdout, stderr);
+    let DocResult::Found { doc } = result else {
+      panic!("expected Found, got {result:?}");
+    };
+    assert_eq!(doc, "Synopsis: builtins.add e1 e2\n\nReturn the sum.");
+  }
+
+  #[test]
+  fn parse_doc_output_reports_not_found_for_the_exact_nix_repl_message() {
+    let stdout = format!("\n{DOC_MARKER}\n\n\n");
+    let stderr =
+      "Nix 2.34.7\nType :? for help.\nerror: value does not have documentation";
+    assert!(matches!(
+      parse_doc_output(&stdout, stderr),
+      DocResult::NotFound
+    ));
+  }
+
+  #[test]
+  fn parse_doc_output_skips_arbitrary_lf_noise_before_the_real_error() {
+    // The ":lf ." variable-count listing varies with the flake, so the
+    // parser must not assume a fixed number of stderr lines before a real
+    // error - only that an "error:"-prefixed line exists somewhere.
+    let stdout = format!("\n{DOC_MARKER}\n\n\n");
+    let stderr = "Nix 2.34.7\nType :? for help.\nAdded 24 variables.\n_type, \
+                  apps, checks\n... and 4 more; view with :ll\nerror: \
+                  attribute 'notAFunction' missing\n       at «string»:1:1:";
+    let DocResult::Error { message } = parse_doc_output(&stdout, stderr) else {
+      panic!("expected Error");
+    };
+    assert!(message.starts_with("error: attribute 'notAFunction' missing"));
+  }
+
+  #[test]
+  fn parse_doc_output_errors_when_the_marker_never_appears() {
+    let result = parse_doc_output("", "Nix 2.34.7\nType :? for help.\n");
+    assert!(matches!(result, DocResult::Error { .. }));
   }
 }

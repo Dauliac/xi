@@ -1,0 +1,33 @@
+[package]
+name                   = "xi-repl"
+description            = "This is an internal component crate of xi"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish                = true
+
+[dependencies]
+clap.workspace       = true
+color-eyre.workspace = true
+nix-command.workspace = true
+# Not a workspace dependency: `reedline`'s `Highlighter` trait requires
+# `nu_ansi_term::Style`/`Color` for its `StyledText` buffer (a different
+# ANSI-coloring crate than the rest of the workspace's `yansi`), and no
+# other crate in the workspace needs it directly. Version pinned to what
+# `reedline 0.52.1` already resolves to in Cargo.lock.
+nu-ansi-term          = "0.50.3"
+reedline.workspace    = true
+rnix-parser.workspace = true
+serde_json.workspace  = true
+strsim.workspace      = true
+thiserror.workspace   = true
+xi-core.workspace     = true
+xi-develop.workspace  = true
+yansi.workspace       = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

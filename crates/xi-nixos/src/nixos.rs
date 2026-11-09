@@ -852,14 +852,14 @@ impl OsRollbackArgs {
 
     // Instead of direct symlink operations, use a command with proper elevation
     Command::new("ln")
-            .arg("-sfn") // force, symbolic link
-            .arg(&generation_link)
-            .arg(SYSTEM_PROFILE)
-            .elevate(elevate.then_some(elevation.clone()))
-            .message("Setting system profile")
-            .with_required_env()
-            .run()
-            .wrap_err("Failed to set system profile during rollback")?;
+      .arg("-sfn") // force, symbolic link
+      .arg(&generation_link)
+      .arg(SYSTEM_PROFILE)
+      .elevate(elevate.then_some(elevation.clone()))
+      .message("Setting system profile")
+      .with_required_env()
+      .run()
+      .wrap_err("Failed to set system profile during rollback")?;
 
     // Determine the correct profile to use with specialisations
     let final_profile = match &target_specialisation {
@@ -909,14 +909,17 @@ impl OsRollbackArgs {
             .join(format!("system-{}-link", current_generation.number));
 
           Command::new("ln")
-                        .arg("-sfn") // Force, symbolic link
-                        .arg(&current_gen_link)
-                        .arg(SYSTEM_PROFILE)
-                        .elevate(elevate.then_some(elevation))
-                        .message("Rolling back system profile")
-                        .with_required_env()
-                        .run()
-                        .wrap_err("NixOS: Failed to restore previous system profile after failed activation")?;
+            .arg("-sfn") // Force, symbolic link
+            .arg(&current_gen_link)
+            .arg(SYSTEM_PROFILE)
+            .elevate(elevate.then_some(elevation))
+            .message("Rolling back system profile")
+            .with_required_env()
+            .run()
+            .wrap_err(
+              "NixOS: Failed to restore previous system profile after failed \
+               activation",
+            )?;
         }
 
         return Err(eyre!("Activation (switch) failed: {}", e))
