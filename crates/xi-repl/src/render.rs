@@ -23,14 +23,17 @@ use std::fmt::Write as _;
 
 use xi_core::nix_value::{self, VersionInfo};
 use xi_develop::daemon::protocol_v3::ExprEvalResult;
-use yansi::{Color, Paint};
+use yansi::Paint;
+
+use crate::theme;
 
 /// Render one [`ExprEvalResult`] as a single colored line, ready to print.
 #[must_use]
 pub fn render(result: &ExprEvalResult) -> String {
+  let palette = theme::current();
   match result {
     ExprEvalResult::Attrs(names) => {
-      format!("{}", Paint::new(names.join(", ")).fg(Color::Cyan))
+      format!("{}", Paint::new(names.join(", ")).fg(palette.structural))
     },
     ExprEvalResult::Derivation {
       name,
@@ -45,19 +48,20 @@ pub fn render(result: &ExprEvalResult) -> String {
     },
     ExprEvalResult::Scalar(value) => render_scalar(value),
     ExprEvalResult::Lambda => {
-      format!("{}", Paint::new("<lambda>").fg(Color::Magenta))
+      format!("{}", Paint::new("<lambda>").fg(palette.keyword))
     },
     ExprEvalResult::Thunk => {
-      format!("{}", Paint::new("<thunk>").fg(Color::Yellow))
+      format!("{}", Paint::new("<thunk>").fg(palette.thunk))
     },
     ExprEvalResult::Unrepresentable => {
       format!(
         "{}",
-        Paint::new("<unrepresentable: contains a function>").fg(Color::Yellow)
+        Paint::new("<unrepresentable: contains a function>")
+          .fg(palette.warning)
       )
     },
     ExprEvalResult::Error { message } => {
-      format!("{}", Paint::new(message).fg(Color::Red))
+      format!("{}", Paint::new(message).fg(palette.error))
     },
   }
 }
@@ -76,7 +80,11 @@ fn render_derivation(
   });
   let mut line = nix_value::render_entry(name, version_info.as_ref(), false);
   if let Some(desc) = description {
-    let _ = write!(line, "  -  {}", Paint::new(desc).dim());
+    let _ = write!(
+      line,
+      "  -  {}",
+      Paint::new(desc).fg(theme::current().dim).dim()
+    );
   }
   line
 }
@@ -99,7 +107,12 @@ fn render_scalar(value: &serde_json::Value) -> String {
     serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
       render_tree(value, 0)
     },
-    _ => format!("{}", Paint::new(scalar_text(value)).fg(Color::Green)),
+    _ => {
+      format!(
+        "{}",
+        Paint::new(scalar_text(value)).fg(theme::current().string)
+      )
+    },
   }
 }
 
@@ -109,14 +122,15 @@ fn render_scalar(value: &serde_json::Value) -> String {
 /// children to `level + 1`  -  see the module doc comment for why this
 /// stays non-interactive).
 fn render_tree(value: &serde_json::Value, level: usize) -> String {
+  let palette = theme::current();
   match value {
     serde_json::Value::Object(map) => render_object(map, level),
     serde_json::Value::Array(items) => render_array(items, level),
     serde_json::Value::String(s) => {
-      format!("{}", Paint::new(format!("{s:?}")).fg(Color::Green))
+      format!("{}", Paint::new(format!("{s:?}")).fg(palette.string))
     },
     serde_json::Value::Number(n) => {
-      format!("{}", Paint::new(n.to_string()).fg(Color::Yellow))
+      format!("{}", Paint::new(n.to_string()).fg(palette.number))
     },
     // `true`/`false`/`null` are plain bound identifiers in Nix (not
     // keywords  -  see `crate::highlight`'s doc comment), but still get
@@ -125,13 +139,13 @@ fn render_tree(value: &serde_json::Value, level: usize) -> String {
     // (green/red, a common convention), `null` as the odd one out (an
     // absence, not a boolean) in a dim, muted tone of its own.
     serde_json::Value::Bool(true) => {
-      format!("{}", Paint::new("true").fg(Color::Green))
+      format!("{}", Paint::new("true").fg(palette.bool_true))
     },
     serde_json::Value::Bool(false) => {
-      format!("{}", Paint::new("false").fg(Color::Red))
+      format!("{}", Paint::new("false").fg(palette.bool_false))
     },
     serde_json::Value::Null => {
-      format!("{}", Paint::new("null").dim())
+      format!("{}", Paint::new("null").fg(palette.dim).dim())
     },
   }
 }
@@ -157,23 +171,28 @@ fn render_object(
   if let Some(leaf) = derivation_leaf(map) {
     return leaf;
   }
+  let palette = theme::current();
   if map.is_empty() {
-    return format!("{}", Paint::new("{ }").fg(Color::Cyan));
+    return format!("{}", Paint::new("{ }").fg(palette.structural));
   }
 
   let indent = "  ".repeat(level + 1);
   let close_indent = "  ".repeat(level);
-  let mut out = format!("{}\n", Paint::new("{").fg(Color::Cyan));
+  let mut out = format!("{}\n", Paint::new("{").fg(palette.structural));
   for (key, val) in map {
     let _ = writeln!(
       out,
       "{indent}{} {} {};",
-      Paint::new(key).fg(Color::Blue),
-      Paint::new("=").fg(Color::Cyan),
+      Paint::new(key).fg(palette.identifier),
+      Paint::new("=").fg(palette.structural),
       render_tree(val, level + 1)
     );
   }
-  let _ = write!(out, "{close_indent}{}", Paint::new("}").fg(Color::Cyan));
+  let _ = write!(
+    out,
+    "{close_indent}{}",
+    Paint::new("}").fg(palette.structural)
+  );
   out
 }
 
@@ -181,17 +200,22 @@ fn render_object(
 /// (no separators between elements, matching Nix list syntax rather than
 /// JSON's commas).
 fn render_array(items: &[serde_json::Value], level: usize) -> String {
+  let palette = theme::current();
   if items.is_empty() {
-    return format!("{}", Paint::new("[ ]").fg(Color::Cyan));
+    return format!("{}", Paint::new("[ ]").fg(palette.structural));
   }
 
   let indent = "  ".repeat(level + 1);
   let close_indent = "  ".repeat(level);
-  let mut out = format!("{}\n", Paint::new("[").fg(Color::Cyan));
+  let mut out = format!("{}\n", Paint::new("[").fg(palette.structural));
   for item in items {
     let _ = writeln!(out, "{indent}{}", render_tree(item, level + 1));
   }
-  let _ = write!(out, "{close_indent}{}", Paint::new("]").fg(Color::Cyan));
+  let _ = write!(
+    out,
+    "{close_indent}{}",
+    Paint::new("]").fg(palette.structural)
+  );
   out
 }
 

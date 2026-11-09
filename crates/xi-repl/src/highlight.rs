@@ -12,17 +12,19 @@
 //! `reedline`'s `Highlighter` trait returns `StyledText`, built from
 //! `nu_ansi_term::Style`/`Color`  -  a different ANSI-coloring crate than
 //! the rest of this workspace's `yansi`. The color *choices* in
-//! [`style_for`] still follow the same convention used elsewhere in `xi`
-//! (see `xi_core::nix_value` and [`crate::render`]): identifiers in blue,
-//! strings/paths in green, numbers in yellow, keywords in magenta,
-//! structural braces/brackets/parens in cyan (matching
-//! [`xi_develop::daemon::protocol_v3::ExprEvalResult::Attrs`]'s cyan in
-//! [`crate::render::render`]), comments dimmed, errors in red  -  just
-//! expressed in the type `reedline` itself requires.
+//! [`style_for`] read from [`crate::theme`]'s active palette (the same one
+//! [`crate::render`] reads), converted via [`theme::to_nu_ansi`]: for the
+//! default palette this reproduces the original hardcoded convention
+//! (identifiers in blue, strings/paths in green, numbers in yellow,
+//! keywords in magenta, structural braces/brackets/parens in cyan,
+//! comments dimmed, errors in red), just expressed in the type `reedline`
+//! itself requires.
 
-use nu_ansi_term::{Color, Style};
+use nu_ansi_term::Style;
 use reedline::{Highlighter, StyledText};
 use rnix_parser::{SyntaxKind, tokenize};
+
+use crate::theme;
 
 /// Syntax-highlights a Nix expression as the user types it.
 ///
@@ -85,6 +87,7 @@ fn style_for(kind: SyntaxKind) -> Style {
     TOKEN_WITH,
   };
 
+  let palette = theme::current();
   match kind {
     // Keywords. `true`/`false`/`null` are plain bound identifiers in Nix,
     // not keywords - rnix-parser tokenizes them as `TOKEN_IDENT`, so they
@@ -92,21 +95,23 @@ fn style_for(kind: SyntaxKind) -> Style {
     // special case here.
     TOKEN_ASSERT | TOKEN_ELSE | TOKEN_IF | TOKEN_IN | TOKEN_INHERIT
     | TOKEN_LET | TOKEN_OR | TOKEN_REC | TOKEN_THEN | TOKEN_WITH => {
-      Color::Magenta.normal()
+      theme::to_nu_ansi(palette.keyword).normal()
     },
-    TOKEN_IDENT => Color::Blue.normal(),
+    TOKEN_IDENT => theme::to_nu_ansi(palette.identifier).normal(),
     // Strings, interpolation delimiters, paths, and bare URIs all read as
     // one "literal text" color.
     TOKEN_STRING_START | TOKEN_STRING_CONTENT | TOKEN_STRING_END
     | TOKEN_INTERPOL_START | TOKEN_INTERPOL_END | TOKEN_URI
     | TOKEN_PATH_ABS | TOKEN_PATH_HOME | TOKEN_PATH_REL | TOKEN_PATH_SEARCH => {
-      Color::Green.normal()
+      theme::to_nu_ansi(palette.string).normal()
     },
-    TOKEN_INTEGER | TOKEN_FLOAT => Color::Yellow.normal(),
-    TOKEN_COMMENT => Style::new().dimmed(),
+    TOKEN_INTEGER | TOKEN_FLOAT => theme::to_nu_ansi(palette.number).normal(),
+    TOKEN_COMMENT => Style::new().fg(theme::to_nu_ansi(palette.dim)).dimmed(),
     TOKEN_L_BRACE | TOKEN_R_BRACE | TOKEN_L_BRACK | TOKEN_R_BRACK
-    | TOKEN_L_PAREN | TOKEN_R_PAREN => Color::Cyan.normal(),
-    TOKEN_ERROR => Color::Red.normal(),
+    | TOKEN_L_PAREN | TOKEN_R_PAREN => {
+      theme::to_nu_ansi(palette.structural).normal()
+    },
+    TOKEN_ERROR => theme::to_nu_ansi(palette.error).normal(),
     _ => Style::new(),
   }
 }
@@ -114,6 +119,8 @@ fn style_for(kind: SyntaxKind) -> Style {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
+  use nu_ansi_term::Color;
+
   use super::*;
 
   /// Flatten a [`StyledText`] back into a plain string, dropping styling,

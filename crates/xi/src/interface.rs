@@ -330,6 +330,19 @@ impl XiCommand {
     }
   }
 
+  /// Apply the repl theme default from config.toml to `xi repl`.
+  /// Config values are lowest priority (CLI > config).
+  pub const fn apply_repl_config(
+    &mut self,
+    repl_config: &crate::config::ReplConfig,
+  ) {
+    if let Self::Repl(args) = self
+      && args.theme.is_none()
+    {
+      args.theme = Some(repl_config.theme);
+    }
+  }
+
   /// Run the selected subcommand.
   ///
   /// # Errors

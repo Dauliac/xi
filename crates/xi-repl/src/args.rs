@@ -20,6 +20,14 @@ pub struct ReplArgs {
   /// instead of hanging.
   #[arg(long)]
   pub no_daemon: bool,
+
+  /// Color theme for rendered values and syntax highlighting.
+  ///
+  /// One of: default, dracula, catppuccin-mocha, nord, gruvbox-dark,
+  /// solarized-dark. Defaults to the `[repl]` section of `config.toml`
+  /// when set there, otherwise `default`.
+  #[arg(long)]
+  pub theme: Option<crate::theme::ThemeName>,
 }
 
 impl ReplArgs {
@@ -31,6 +39,8 @@ impl ReplArgs {
   /// `--no-daemon` is not set) a session-scoped daemon needs to be spawned
   /// and fails to start.
   pub fn run(self) -> Result<()> {
+    crate::theme::set(self.theme.unwrap_or_default());
+
     let flake_ref = self.flake_ref.as_deref().unwrap_or(".");
     let flake_root = std::fs::canonicalize(flake_ref)
       .map_err(|e| eyre!("cannot resolve flake path '{flake_ref}': {e}"))?;

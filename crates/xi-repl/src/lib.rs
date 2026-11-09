@@ -31,3 +31,4 @@ pub mod raw;
 pub mod render;
 pub mod session;
 mod suggest;
+pub mod theme;

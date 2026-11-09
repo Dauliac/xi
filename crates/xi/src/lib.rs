@@ -103,6 +103,7 @@ pub fn main() -> Result<()> {
           args.command.apply_cache_config(&config.cache);
           args.command.apply_build_config(&config.build);
           args.command.apply_locate_config(&config.locate);
+          args.command.apply_repl_config(&config.repl);
         },
         Err(e) => {
           tracing::warn!("Failed to parse config: {e}");
