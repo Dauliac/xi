@@ -95,15 +95,34 @@ in
       inherit (cfg) sources;
     };
 
-    # 0700 root:root, created at activation time. The state dir records
-    # what the host already deployed, and the sources dir is a clone xi
-    # trusts; neither should be world-readable, and both must exist
-    # before the first xi invocation rather than being created by it.
+    # root:xi-status, created at activation time, neither world-writable
+    # nor world-readable. The top dir and the sources dir (a clone xi
+    # trusts) are group-*read*-only, 0750: `xi system status`/`xi system
+    # sources status` only ever read them, and gating that read behind
+    # sudo made the read-only commands as privileged as `switch`/`build`.
+    #
+    # The state dir is group-*write*, 0770: `xi deploy`/`xi system switch`
+    # run unprivileged and elevate internally only for the activation
+    # itself (crates/xi/src/system/mod.rs refuses to even start as root),
+    # so `record_activation`'s write of the new generation - bookkeeping
+    # metadata, not the trusted source - happens back in the unprivileged
+    # caller, after the elevated step returns. It is deliberately
+    # best-effort (a failed write only warns, never fails the command -
+    # see `record_activation`'s own doc comment) but should still
+    # succeed on every normal run rather than silently degrade `xi
+    # system status` to `Pending` forever.
+    #
+    # Every embedded home-manager user on this host (`hmUsers`, below) is
+    # a member of `xi-status` by default; an operator can extend
+    # `users.groups.xi-status.members` for anyone else who should be able
+    # to run these without sudo.
     systemd.tmpfiles.rules = [
-      "d /var/lib/xi 0700 root root -"
-      "d /var/lib/xi/sources 0700 root root -"
-      "d /var/lib/xi/state 0700 root root -"
+      "d /var/lib/xi 0750 root xi-status -"
+      "d /var/lib/xi/sources 0750 root xi-status -"
+      "d /var/lib/xi/state 0770 root xi-status -"
     ];
+
+    users.groups.xi-status.members = lib.attrNames hmUsers;
 
     # The pull-GitOps loop (xi-sources-gitops). Unit name is fixed at
     # `xi-sources-daemon` - `xi_core::sources::log::SYSTEMD_UNIT` and

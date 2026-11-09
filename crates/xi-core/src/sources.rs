@@ -455,10 +455,37 @@ pub fn write_state_file(
   atomic::write_atomic(&state_dir.join(name), contents.as_bytes(), Some(0o600))
 }
 
+/// A `chmod` denied for lack of ownership, not a real failure.
+///
+/// `EACCES` is the libc errno `std` already maps to this `ErrorKind`;
+/// `EPERM` is chmod's own distinct errno for "the caller does not own
+/// this path and lacks `CAP_FOWNER`" and is checked by raw code since
+/// std's mapping of it to the same `ErrorKind` is version-dependent.
+#[cfg(unix)]
+fn is_ownership_denied(err: &io::Error) -> bool {
+  const EPERM: i32 = 1;
+  err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(EPERM)
+}
+
+/// Best-effort: tighten `dir` to owner-only when this process owns it.
+///
+/// A caller that does not own `dir` cannot `chmod` it at all - not a
+/// bug, the system scope's state dir is intentionally root-owned while
+/// `xi system`/`xi deploy` run unprivileged by design (they refuse to
+/// even start as root), so every one of their state-dir writes hits
+/// this. Hardening here was only ever a defense-in-depth tightening of
+/// a directory this code itself created loosely (umask) in the
+/// single-user case; failing the whole write over it would defeat the
+/// point of a scope whose directory mode a different owner manages on
+/// purpose.
 #[cfg(unix)]
 fn harden_dir(dir: &Path) -> io::Result<()> {
   use std::os::unix::fs::PermissionsExt as _;
-  fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+  match fs::set_permissions(dir, fs::Permissions::from_mode(0o700)) {
+    Ok(()) => Ok(()),
+    Err(err) if is_ownership_denied(&err) => Ok(()),
+    Err(err) => Err(err),
+  }
 }
 
 #[cfg(not(unix))]
@@ -478,7 +505,11 @@ fn harden_dir(_dir: &Path) -> io::Result<()> {
 #[cfg(unix)]
 fn harden_file(path: &Path) -> io::Result<()> {
   use std::os::unix::fs::PermissionsExt as _;
-  fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+  match fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+    Ok(()) => Ok(()),
+    Err(err) if is_ownership_denied(&err) => Ok(()),
+    Err(err) => Err(err),
+  }
 }
 
 #[cfg(not(unix))]
@@ -1051,6 +1082,19 @@ mod tests {
       & 0o777;
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn ownership_denied_covers_eperm_and_eacces_but_not_other_errors() {
+    let eperm = io::Error::from_raw_os_error(1);
+    assert!(is_ownership_denied(&eperm));
+
+    let eacces = io::Error::from(io::ErrorKind::PermissionDenied);
+    assert!(is_ownership_denied(&eacces));
+
+    let enospc = io::Error::from_raw_os_error(28);
+    assert!(!is_ownership_denied(&enospc));
   }
 
   #[test]
