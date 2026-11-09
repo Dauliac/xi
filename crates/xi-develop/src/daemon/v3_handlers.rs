@@ -503,29 +503,47 @@ fn classify_wrapper(
   // - shallow lists attribute names without forcing any of them, and declines
   //   (reports `thunk`) rather than serializing anything else.
   // - non-shallow serializes the forced value as-is (`scalar`), covering plain
-  //   attrsets, lists, and primitives alike - *except* a list/attrset that
-  //   contains a function anywhere inside it (e.g. a flake-parts/NixOS module's
-  //   `imports = [ { ... }: {...} ... ]`), which this checks for first and
-  //   reports as `unrepresentable` instead.
+  //   attrsets, lists, and primitives alike - after first walking it through
+  //   `sanitize` (defined below), which replaces every *nested* derivation with
+  //   a small JSON-safe stub and turns any other stray function (e.g. a
+  //   flake-parts/NixOS module's `imports = [ { ... }: {...} ... ]`) into a
+  //   catchable `throw`, reported as `unrepresentable`.
   //
-  //   `builtins.toJSON`'s "cannot convert a function to JSON" is NOT a
-  //   catchable Nix evaluation error - confirmed empirically,
-  //   `builtins.tryEval (builtins.toJSON v)` still throws it straight
-  //   through. Serializing a function anywhere inside `v` via the CLI's
-  //   own `--json` output flag (which runs *after* this expression
-  //   already evaluated successfully) crashes the whole `nix eval`
-  //   process, which `run_expr_eval` then reports as a plain `Error` -
-  //   indistinguishable from a genuine eval failure, and in `xi
-  //   repl`'s own `:raw` fallback that reads as "it just crashed" for
-  //   what is really an ordinary, nameable value shape. `hasFunction`'s
-  //   plain `isFunction`/`isList`/`isAttrs` checks never call `toJSON` on
-  //   the function itself, so the uncatchable case never fires.
+  //   Two distinct problems made this necessary, both only visible once a
+  //   *nested* derivation is involved (a bare top-level one is already
+  //   handled by the `kind = "derivation"` branch below and never reaches
+  //   `sanitize` at all):
+  //
+  //   1. `builtins.toJSON`'s "cannot convert a function to JSON" is NOT a
+  //      catchable Nix evaluation error - confirmed empirically,
+  //      `builtins.tryEval (builtins.toJSON v)` still throws it straight
+  //      through. A real derivation's own attrset always carries several
+  //      function-valued attrs (`override`, `overrideAttrs`, …), so serializing
+  //      one verbatim via the CLI's own `--json` flag (which runs *after* this
+  //      expression already evaluated successfully) crashes the whole `nix
+  //      eval` process - `run_expr_eval` then reports a plain `Error`,
+  //      indistinguishable from a genuine eval failure.
+  //   2. A naive recursive function-finder (an earlier version of this
+  //      pre-scan, before nested derivations were stubbed out) walks every
+  //      attrset/list it finds with no notion of "this is a derivation, stop
+  //      here" - and a real derivation's attribute graph (buildInputs pulling
+  //      in stdenv, which pulls in more derivations, …) is deep and wide enough
+  //      that evaluating e.g. a flake's `packages.<system>` overflows Nix's own
+  //      call-stack limit before it ever finds (or fails to find) a function.
+  //      `sanitize` sidesteps this the same way it sidesteps problem 1: it
+  //      never recurses *into* a derivation, only replaces it wholesale.
   let tail = if shallow {
     r#"else if builtins.isAttrs v then { kind = "attrs"; names = builtins.attrNames v; }
   else { kind = "thunk"; }"#
   } else {
-    r#"else if hasFunction v then { kind = "unrepresentable"; }
-  else { kind = "scalar"; value = v; }"#
+    r#"else
+    let
+      sanitized = builtins.tryEval (
+        let s = sanitize v; in builtins.deepSeq s s
+      );
+    in
+    if sanitized.success then { kind = "scalar"; value = sanitized.value; }
+    else { kind = "unrepresentable"; }"#
   };
 
   // `FLAKE_SCOPE_EXPR` is not Nix source to parse - it asks for the
@@ -549,11 +567,27 @@ fn classify_wrapper(
   let body = format!(
     r#"let
   v = {v_binding};
-  hasFunction = x:
-    if builtins.isFunction x then true
-    else if builtins.isList x then builtins.any hasFunction x
-    else if builtins.isAttrs x then builtins.any hasFunction (builtins.attrValues x)
-    else false;
+  # Replace a *nested* derivation with a small JSON-safe stub (the shape
+  # `xi_repl::render::derivation_leaf` looks for) instead of recursing into
+  # it - see the long comment above `tail` for why. Any other function
+  # found along the way throws, which `tail`'s `tryEval` turns into
+  # `unrepresentable` - but only because `tail` forces the result with
+  # `deepSeq` *inside* that `tryEval` first. `sanitize v` on its own is
+  # lazy (a `throw` inside e.g. `map sanitize x`'s first element does not
+  # fire just by returning the list), so without `deepSeq` the throw would
+  # only surface later, while `nix eval --json` is serializing the
+  # already-"successful" result - outside any `tryEval`, uncaught, the
+  # exact failure mode this whole pre-scan exists to avoid.
+  sanitize = x:
+    if builtins.isFunction x then throw "xi-repl: unrepresentable function"
+    else if builtins.isAttrs x && (x.type or null) == "derivation" then
+      {{ type = "derivation";
+         name = x.name or null;
+         version = x.version or null;
+         meta = {{ description = x.meta.description or null; }}; }}
+    else if builtins.isList x then map sanitize x
+    else if builtins.isAttrs x then builtins.mapAttrs (_: sanitize) x
+    else x;
 in
   if builtins.isFunction v then {{ kind = "lambda"; }}
   else if builtins.isAttrs v && (v.type or null) == "derivation" then
@@ -909,6 +943,76 @@ mod tests {
     assert!(
       matches!(result, ExprEvalResult::Unrepresentable),
       "got {result:?}"
+    );
+  }
+
+  #[test]
+  fn run_expr_eval_stubs_a_nested_derivations_function_attrs_without_crashing()
+  {
+    // A real derivation's own attrset always carries function-valued attrs
+    // (`overrideAttrs` here) - `nix eval --json` crashes uncatchably on
+    // serializing one of those verbatim. `classify_wrapper`'s `sanitize`
+    // must replace the whole nested derivation with a JSON-safe stub
+    // instead, dropping `overrideAttrs` rather than trying to serialize it.
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(
+      fixture,
+      r#"{ pkg = { type = "derivation"; name = "hello-2.12";
+         version = "2.12"; meta.description = "a friendly program";
+         overrideAttrs = f: f; }; }"#,
+      false,
+    );
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(
+      value,
+      json!({
+        "pkg": {
+          "type": "derivation",
+          "name": "hello-2.12",
+          "version": "2.12",
+          "meta": { "description": "a friendly program" },
+        },
+      })
+    );
+  }
+
+  #[test]
+  fn run_expr_eval_never_recurses_into_a_nested_derivations_own_attrs() {
+    // A real derivation's attribute graph (buildInputs pulling in stdenv,
+    // which pulls in more derivations, …) is deep/wide enough to overflow
+    // Nix's own call-stack limit if walked - this is exactly what made
+    // evaluating a real flake's `packages.<system>` crash before `sanitize`
+    // learned to stop at derivation boundaries rather than recursing into
+    // them. A directly self-referential attr (`recur = self`) stands in
+    // for that: if `sanitize` ever looked past the `type = "derivation"`
+    // check, forcing it would hang/stack-overflow instead of returning.
+    let fixture = std::path::Path::new(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../xi-repl/tests/fixtures/mini-flake"
+    ));
+    if !fixture.join("flake.nix").is_file() {
+      return;
+    }
+    let result = run_expr_eval(
+      fixture,
+      r#"{ pkg = let self = { type = "derivation"; name = "x";
+         recur = self; }; in self; }"#,
+      false,
+    );
+    let ExprEvalResult::Scalar(value) = result else {
+      panic!("expected Scalar, got {result:?}");
+    };
+    assert_eq!(
+      value,
+      json!({ "pkg": { "type": "derivation", "name": "x", "version": null, "meta": { "description": null } } })
     );
   }
 
