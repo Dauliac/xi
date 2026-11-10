@@ -14,6 +14,15 @@
     _module.args.xiFlake = self;
   };
 
+  # A standalone export of the `xi-vm-lifecycle` guest-provisioning
+  # module, for a consumer who wants it without the rest of xi's
+  # `nixosModules.default` (e.g. composing it onto a `nixosConfiguration`
+  # by hand rather than through `flake.flakeModule`'s `extendModules`
+  # wiring in `modules/flake-parts/vm.nix`).
+  flake.nixosModules.vmGuest = {
+    imports = [ ../modules/nixos/vm-guest.nix ];
+  };
+
   flake.homeManagerModules.default = {
     imports = [
       inputs.nix-lib.homeModules.default

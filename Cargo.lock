@@ -3432,6 +3432,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 name = "xi"
 version = "4.5.0"
 dependencies = [
+ "anstream",
  "anstyle",
  "clap",
  "clap-verbosity-flag",
@@ -3462,6 +3463,7 @@ dependencies = [
  "xi-nixos",
  "xi-repl",
  "xi-search",
+ "xi-vm",
  "yansi",
 ]
 
@@ -3718,6 +3720,22 @@ dependencies = [
  "tracing",
  "xi-core",
  "yansi",
+]
+
+[[package]]
+name = "xi-vm"
+version = "4.5.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "color-eyre",
+ "nix",
+ "nix-command",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "xi-core",
 ]
 
 [[package]]

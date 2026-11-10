@@ -22,6 +22,18 @@
         devshell.enable = true;
         nom.enable = true;
         nixFastBuild.enable = true;
+
+        vm.e2e-sandbox = {
+          kind = "nixos";
+          modules = [ ./vm-module.nix ];
+          checks = [ ./vm-check.py ];
+        };
+
+        vm.e2e-debian = {
+          kind = "distro";
+          distro = "debian";
+          version = "13";
+        };
       };
 
       # Test 1: the standalone "xi" devshell is created
@@ -38,8 +50,17 @@
         }
       );
 
+      # Test 4: xi-vm-lifecycle e2e fixture - `packages`/`checks` are wired
+      # explicitly here rather than inside modules/flake-parts/vm.nix
+      # itself; see that module's `xi.vm` option doc for why.
+      packages = config.lib.mkVmPackages {
+        inherit pkgs;
+        rendered = config._xi.vm.rendered;
+        manifest = config._xi.vm.manifest;
+      };
+
       # Test 3: basic checks that the module evaluates correctly
-      checks = {
+      checks = config.lib.mkVmChecks { rendered = config._xi.vm.rendered; } // {
         # Verify the finalPackage is a derivation
         xi-module-final-package = pkgs.runCommand "check-xi-final-package" { } ''
           # If we got here, config.xi.finalPackage evaluated successfully
