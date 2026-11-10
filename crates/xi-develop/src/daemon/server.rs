@@ -267,6 +267,10 @@ impl ServerState {
 /// # Errors
 /// Returns an error if socket binding fails.
 pub fn run(socket_path: &Path, state: &Arc<ServerState>) -> Result<()> {
+  // A too-long path makes `bind` fail with a bare "invalid argument", which
+  // is opaque when XI_RUNTIME_DIR points at a deep directory. Name it.
+  dirs::check_socket_path_len(socket_path)?;
+
   // Remove stale socket
   let _ = std::fs::remove_file(socket_path);
   if let Some(parent) = socket_path.parent() {
@@ -473,19 +477,36 @@ fn handle_cache_push(
   std::thread::spawn(move || {
     let store_path = std::path::Path::new(&req.store_path);
     let cache = xi_core::args::CacheArgs {
-      push_to:        if req.cache_url.is_empty() {
+      push_to:           if req.cache_url.is_empty() {
         None
       } else {
         Some(req.cache_url)
       },
-      push_command:   req.push_command,
-      sign_key:       req.sign_key,
-      no_push:        false,
-      async_push:     false,
-      config_targets: Vec::new(),
+      push_command:      req.push_command,
+      sign_key:          req.sign_key,
+      no_push:           false,
+      async_push:        false,
+      config_targets:    Vec::new(),
+      // No CLI invocation backs a daemon-driven push; defer to the
+      // candidate-selection / parallelism ladder in
+      // xi_core::cache::push_to_cache.
+      match_candidate:   None,
+      max_parallel_jobs: None,
     };
 
-    xi_core::cache::push_to_cache(&cache, store_path);
+    // This runs on a detached thread, so there is no caller to propagate a
+    // failure to and `enforce_required` would have nowhere to go. A daemon
+    // must not drop a devshell because a cache push failed, so the required
+    // signal is logged rather than enforced. Deliberately not `let _ =`:
+    // discarding it entirely would lose the one signal we can still surface.
+    let pushed = xi_core::cache::push_to_cache(&cache, store_path);
+    if pushed.required_failed() {
+      warn!(
+        "[cache] required target(s) failed to push for {}; the daemon cannot \
+         fail the operation from a background thread",
+        req.store_path
+      );
+    }
     info!("[cache] push complete for {}", req.store_path);
 
     // Remove from active list
@@ -926,7 +947,7 @@ fn spawn_eval(state: Arc<ServerState>) {
 /// - `Lock`: hash(flake.lock + flake.nix)
 /// - `Inputs`: hash(flake.lock + all *.nix files in git index)
 /// - `None`: returns None (never skip)
-fn compute_input_hash(
+pub(crate) fn compute_input_hash(
   flake_root: &Path,
   mode: EvalCacheMode,
 ) -> Option<String> {
@@ -1013,12 +1034,20 @@ fn run_full_eval(
       .read()
       .unwrap_or_else(std::sync::PoisonError::into_inner)
       .clone();
-    if cached.as_deref() == Some(current.as_str()) {
+    if cached.as_deref() == Some(current.as_str())
+      && dirs::env_hook_files_exist(&state.state_dir, target)
+    {
       debug!(
         "Eval cache hit (mode={:?}, hash={}), skipping nix call",
         state.eval_cache_mode,
         &current[..16.min(current.len())]
       );
+      // A warm-started daemon that never runs a real eval would otherwise
+      // leave the env/hook generation counters absent, which reads back
+      // as 0  -  indistinguishable from a brand-new consumer's own default
+      // last-seen generation, so should_source_env/hook would stay false
+      // for every consumer forever (xi-o6ga.8).
+      dirs::ensure_generation_files_exist(&state.state_dir);
       *state
         .eval_state
         .write()
@@ -1045,7 +1074,8 @@ fn run_full_eval(
     .as_ref()
     .map(|e| e.env_hash.clone());
   let env_unchanged = prev_hash.as_deref() == Some(&dev_env.env_hash)
-    && !dev_env.env_hash.is_empty();
+    && !dev_env.env_hash.is_empty()
+    && dirs::env_hook_files_exist(&state.state_dir, target);
 
   if env_unchanged {
     debug!(
@@ -1099,6 +1129,11 @@ fn run_full_eval(
       .last_error
       .write()
       .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+    // Same reasoning as the Step 0 fast-path above: this branch skips the
+    // generation bump on purpose (nothing changed), but a never-created
+    // counter must not read as "already current" for a brand-new consumer.
+    dirs::ensure_generation_files_exist(&state.state_dir);
 
     return Ok(vec![]);
   }

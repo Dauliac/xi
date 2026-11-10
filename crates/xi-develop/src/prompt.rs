@@ -20,6 +20,7 @@ use crate::{
   },
   dirs,
   flake_detect,
+  nesting::{NestingConfig, NestingMode},
   shell::ShellType,
   subshell,
   trust,
@@ -179,12 +180,10 @@ fn handle_subshell(args: &PromptArgs, shell: ShellType) -> Result<()> {
   // Find the nearest flake root from CWD
   let nearest_flake = flake_detect::find_flake_root(&cwd);
 
-  let sentinel = subshell::EXIT_CD_OUT;
-
   // Case 1: No flake at all — left all flake directories → exit (cd-out)
   let Some(ref nearest) = nearest_flake else {
     debug!("left all flake directories, signaling cd-out exit");
-    println!("exit {sentinel}");
+    print!("{}", subshell::generate_cd_out_exit(shell));
     return Ok(());
   };
 
@@ -193,7 +192,7 @@ fn handle_subshell(args: &PromptArgs, shell: ShellType) -> Result<()> {
     && !cwd.starts_with(our_root)
   {
     debug!(our_root = %our_root.display(), cwd = %cwd.display(), "left our flake directory, signaling cd-out exit");
-    println!("exit {sentinel}");
+    print!("{}", subshell::generate_cd_out_exit(shell));
     return Ok(());
   }
 
@@ -207,7 +206,9 @@ fn handle_subshell(args: &PromptArgs, shell: ShellType) -> Result<()> {
       let suppressed = std::env::var("__XI_SUPPRESS").ok().is_some_and(|s| {
         nearest.starts_with(s.as_str()) || s == nearest.display().to_string()
       });
-      if !suppressed && trust::is_trusted(nearest) {
+      let stacking_enabled =
+        NestingConfig::load(Some(our_root)).mode == NestingMode::Stack;
+      if !suppressed && stacking_enabled && trust::is_trusted(nearest) {
         debug!(child_flake = %nearest.display(), "nested flake detected, spawning subshell");
 
         // Ensure child daemon
@@ -255,7 +256,7 @@ fn handle_subshell(args: &PromptArgs, shell: ShellType) -> Result<()> {
       "{}",
       Notification::warn("devshell deactivated (untrusted)").render()
     );
-    println!("exit {sentinel}");
+    print!("{}", subshell::generate_cd_out_exit(shell));
     return Ok(());
   }
 
@@ -356,7 +357,7 @@ fn generate_subshell_output(
 
   // Exit takes priority over everything
   if resp.should_exit {
-    return format!("exit {}\n", subshell::EXIT_CD_OUT);
+    return subshell::generate_cd_out_exit(shell);
   }
 
   // Re-source env if needed
@@ -431,14 +432,76 @@ fn resolve_pid(args: &PromptArgs) -> u32 {
 /// Reads the flake.nix file and looks for keywords that indicate devShell
 /// outputs (`devShells`, `devShell`, `mkShell`). This avoids showing
 /// "trust" prompts for flakes that only have packages/modules/etc.
+///
+/// Flakes built with flake-parts/import-tree ("dendritic") commonly split
+/// `devShells` out into an imported module rather than writing it in the
+/// top-level `flake.nix` text, so a miss on `flake.nix` alone falls back to
+/// a bounded walk of the flake's other `.nix` files before giving up  -
+/// otherwise every such flake (including xi's own) silently never
+/// activates, with no trust prompt, no log, nothing.
 fn flake_likely_has_devshell(flake_root: &std::path::Path) -> bool {
+  // All items up front: they exist from the start of the scope regardless of
+  // where they are written, so declaring them mid-body only misleads the
+  // reader (clippy::items_after_statements).
+  const MAX_FILES: usize = 500;
+  const MAX_DEPTH: usize = 6;
+  const SKIP_DIRS: &[&str] =
+    &[".git", "target", "node_modules", "result", ".direnv", ".jj"];
+
+  fn has_keywords(contents: &str) -> bool {
+    contents.contains("devShells")
+      || contents.contains("devShell")
+      || contents.contains("mkShell")
+  }
+
+  fn walk(dir: &std::path::Path, depth: usize, budget: &mut usize) -> bool {
+    if depth > MAX_DEPTH || *budget == 0 {
+      return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+      return false;
+    };
+    for entry in entries.flatten() {
+      if *budget == 0 {
+        return false;
+      }
+      let Ok(file_type) = entry.file_type() else {
+        continue;
+      };
+      let path = entry.path();
+      if file_type.is_dir() {
+        if SKIP_DIRS.iter().any(|skip| entry.file_name() == *skip) {
+          continue;
+        }
+        if walk(&path, depth + 1, budget) {
+          return true;
+        }
+      } else if file_type.is_file()
+        && path.extension().is_some_and(|ext| ext == "nix")
+      {
+        *budget -= 1;
+        if std::fs::read_to_string(&path)
+          .is_ok_and(|contents| has_keywords(&contents))
+        {
+          return true;
+        }
+      }
+    }
+    false
+  }
+
+  // Fast path: the flake's own text mentions a devshell.
   let flake_nix = flake_root.join("flake.nix");
   let Ok(contents) = std::fs::read_to_string(&flake_nix) else {
     return false;
   };
-  contents.contains("devShells")
-    || contents.contains("devShell")
-    || contents.contains("mkShell")
+  if has_keywords(&contents) {
+    return true;
+  }
+
+  // Otherwise walk imported modules, budget-capped.
+  let mut budget = MAX_FILES;
+  walk(flake_root, 0, &mut budget)
 }
 
 /// Resolve the xi binary path (from persisted state or current exe).
@@ -448,4 +511,78 @@ fn resolve_xi_bin() -> String {
     std::env::current_exe()
       .map_or_else(|_| "xi".to_string(), |p| p.display().to_string())
   })
+}
+
+#[cfg(test)]
+mod flake_likely_has_devshell_tests {
+  use super::flake_likely_has_devshell;
+
+  // Regression (xi-awbe.6): a flake-parts "dendritic" flake.nix with no
+  // devShell keyword in its own text, but a devShell defined in an
+  // imported module, used to false-negative and silently never activate.
+  #[test]
+  fn finds_devshell_in_imported_module_not_in_flake_nix_itself() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+      tmp.path().join("flake.nix"),
+      "{ outputs = _: { imports = [ ./nix ]; }; }",
+    )
+    .unwrap();
+    let nix_dir = tmp.path().join("nix");
+    std::fs::create_dir_all(&nix_dir).unwrap();
+    std::fs::write(
+      nix_dir.join("devShells.nix"),
+      "{ perSystem = _: { devShells.default = {}; }; }",
+    )
+    .unwrap();
+
+    assert!(flake_likely_has_devshell(tmp.path()));
+  }
+
+  #[test]
+  fn finds_devshell_in_flake_nix_itself() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+      tmp.path().join("flake.nix"),
+      "{ outputs = _: { devShells.default = {}; }; }",
+    )
+    .unwrap();
+
+    assert!(flake_likely_has_devshell(tmp.path()));
+  }
+
+  #[test]
+  fn no_devshell_anywhere_returns_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+      tmp.path().join("flake.nix"),
+      "{ outputs = _: { packages.default = {}; }; }",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("other.nix"), "{ packages.default = {}; }")
+      .unwrap();
+
+    assert!(!flake_likely_has_devshell(tmp.path()));
+  }
+
+  #[test]
+  fn skips_git_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+      tmp.path().join("flake.nix"),
+      "{ outputs = _: { packages.default = {}; }; }",
+    )
+    .unwrap();
+    let git_dir = tmp.path().join(".git");
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::write(git_dir.join("decoy.nix"), "mkShell").unwrap();
+
+    assert!(!flake_likely_has_devshell(tmp.path()));
+  }
+
+  #[test]
+  fn missing_flake_nix_returns_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(!flake_likely_has_devshell(tmp.path()));
+  }
 }

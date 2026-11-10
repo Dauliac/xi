@@ -75,6 +75,11 @@ pub fn ensure(flake_root: &Path) -> Result<PathBuf> {
 fn start(flake_root: &Path, flake_id: &str) -> Result<()> {
   let xi_bin = resolve_xi_bin();
   let runtime_dir = dirs::daemon_runtime_dir(flake_id);
+
+  // Validate before spawning and before writing the pid file: a child that
+  // cannot bind would otherwise leave a pid file pointing at a dead process.
+  dirs::check_socket_path_len(&dirs::daemon_socket_path(flake_id))?;
+
   fs::create_dir_all(&runtime_dir)?;
 
   // Read develop config from xi config.toml
@@ -170,7 +175,7 @@ fn cleanup_stale(flake_id: &str) {
 }
 
 /// Read [develop] config from xi config.toml (best-effort).
-fn read_develop_config() -> (u64, Vec<String>, String) {
+pub(crate) fn read_develop_config() -> (u64, Vec<String>, String) {
   let config_path = std::env::var("XI_CONFIG").map_or_else(
     |_| {
       let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {

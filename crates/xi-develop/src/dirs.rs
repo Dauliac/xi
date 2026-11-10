@@ -78,10 +78,49 @@ pub fn trust_dir() -> PathBuf {
   base.join("xi/develop/trusted")
 }
 
+/// Environment variable that overrides the runtime directory.
+///
+/// Set this to relocate the daemon socket and pid file (for example into a
+/// test's temporary directory). An empty value is treated as unset.
+pub const RUNTIME_DIR_VAR: &str = "XI_RUNTIME_DIR";
+
+/// Maximum usable length of a `sockaddr_un` path, in bytes.
+///
+/// `sun_path` is 108 bytes on Linux and 104 on macOS/BSD; one byte is
+/// reserved for the NUL terminator. We use the smaller of the two so a path
+/// that passes this check on Linux is also bindable on macOS.
+const SUN_PATH_MAX: usize = 103;
+
 /// Runtime directory.
-/// `/tmp/xi-{uid}/`
+///
+/// Honours an explicit [`RUNTIME_DIR_VAR`] override before any platform
+/// default, so tests can place the daemon socket and pid file inside a
+/// temporary directory instead of the process-global `/tmp/xi-{uid}`.
+/// Falls back to `/tmp/xi-{uid}` on unix and `$XDG_RUNTIME_DIR/xi`
+/// elsewhere.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
+  runtime_dir_from(env::var(RUNTIME_DIR_VAR).ok().as_deref())
+}
+
+/// [`runtime_dir`] with the override supplied explicitly.
+///
+/// Split out so tests can exercise every branch without mutating the process
+/// environment, which is both `unsafe` in edition 2024 and racy under the
+/// multithreaded test harness. `Some("")` is treated as unset.
+#[must_use]
+pub fn runtime_dir_from(override_value: Option<&str>) -> PathBuf {
+  if let Some(explicit) = override_value
+    && !explicit.is_empty()
+  {
+    return PathBuf::from(explicit);
+  }
+  platform_runtime_dir()
+}
+
+/// The platform default runtime directory, ignoring any override.
+#[must_use]
+pub fn platform_runtime_dir() -> PathBuf {
   #[cfg(unix)]
   {
     let uid = nix_uid();
@@ -96,15 +135,38 @@ pub fn runtime_dir() -> PathBuf {
   }
 }
 
+/// Validate that a unix socket path fits in `sockaddr_un::sun_path`.
+///
+/// `UnixListener::bind` fails with an opaque `invalid argument` when the
+/// path is too long, which is especially confusing under a
+/// [`RUNTIME_DIR_VAR`] override pointing at a deep temporary directory.
+/// This names the actual length and the limit instead.
+///
+/// # Errors
+///
+/// Returns an error if the path exceeds the platform `sun_path` limit.
+pub fn check_socket_path_len(socket_path: &Path) -> color_eyre::Result<()> {
+  let len = socket_path.as_os_str().as_encoded_bytes().len();
+  if len > SUN_PATH_MAX {
+    color_eyre::eyre::bail!(
+      "daemon socket path is {len} bytes, which exceeds the {SUN_PATH_MAX} \
+       byte limit for a unix socket: {}\nSet a shorter {RUNTIME_DIR_VAR}.",
+      socket_path.display()
+    );
+  }
+  Ok(())
+}
+
 /// Per-flake daemon runtime directory.
-/// `/tmp/xi-{uid}/{flake_id}/`
+/// `{runtime_dir}/{flake_id}/`, i.e. `/tmp/xi-{uid}/{flake_id}/` unless
+/// overridden (see [`runtime_dir`]).
 #[must_use]
 pub fn daemon_runtime_dir(flake_id: &str) -> PathBuf {
   runtime_dir().join(flake_id)
 }
 
 /// Daemon socket path.
-/// `/tmp/xi-{uid}/{flake_id}/daemon.sock`
+/// `{runtime_dir}/{flake_id}/daemon.sock` (see [`runtime_dir`]).
 #[must_use]
 pub fn daemon_socket_path(flake_id: &str) -> PathBuf {
   daemon_runtime_dir(flake_id).join("daemon.sock")
@@ -152,6 +214,20 @@ pub fn slot_path(
 #[must_use]
 pub fn current_link(state_dir: &Path, prefix: &str, ext: &str) -> PathBuf {
   state_dir.join(format!("{prefix}.current.{ext}"))
+}
+
+/// Whether this target's env and hook output files actually exist on
+/// disk for this process's state dir.
+///
+/// A daemon's "nothing changed, skip the write" fast paths (eval-cache
+/// hit, content-hash dedup) are only safe to take if these already
+/// exist  -  otherwise a consumer gets told `should_source_env = true`
+/// pointing at a `.current.sh` symlink that was never created, and
+/// `source` fails on every single prompt tick.
+#[must_use]
+pub fn env_hook_files_exist(state_dir: &Path, target: &str) -> bool {
+  current_link(state_dir, &format!("env-{target}"), "sh").exists()
+    && current_link(state_dir, &format!("hook-{target}"), "sh").exists()
 }
 
 /// Read which slot a current symlink points to.
@@ -225,6 +301,29 @@ fn bump_generation_file(state_dir: &Path, filename: &str) {
     .and_then(|s| s.trim().parse().ok())
     .unwrap_or(0);
   let _ = std::fs::write(&gen_path, (current + 1).to_string());
+}
+
+/// Ensure the env/hook generation counters exist, creating them at
+/// generation 1 if missing.
+///
+/// A counter file that was never created reads back as generation 0  -
+/// indistinguishable from a brand-new consumer's own default last-seen
+/// generation  -  so a code path that skips the normal bump-on-change (e.g.
+/// a warm-started daemon that never runs a real eval) must call this
+/// first, or `should_source_env`/`should_source_hook` stay false for
+/// every consumer forever, even ones that have never actually sourced
+/// anything.
+pub fn ensure_generation_files_exist(state_dir: &Path) {
+  ensure_generation_file_exists(state_dir, "env-generation");
+  ensure_generation_file_exists(state_dir, "hook-generation");
+}
+
+fn ensure_generation_file_exists(state_dir: &Path, filename: &str) {
+  let gen_path = state_dir.join(filename);
+  if !gen_path.exists() {
+    let _ = std::fs::create_dir_all(state_dir);
+    let _ = std::fs::write(&gen_path, "1");
+  }
 }
 
 /// Ensure the cache version matches. Nukes state on mismatch.

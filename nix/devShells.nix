@@ -52,6 +52,13 @@
             pkgs.cargo-insta
             pkgs.just
             pkgs.deno
+            # The devshell real-shell test layer evaluates xi's own generated
+            # shell code in an actual zsh (crates/xi/tests/e2e_devshell_*).
+            # Without zsh on PATH those tests skip themselves, so the suite
+            # stays green while the cd-out NO_CLOBBER regression anchor never
+            # executes. CI runs `nix develop --command cargo test`, so this is
+            # the surface that decides whether that anchor actually runs.
+            pkgs.zsh
           ];
 
           env = {

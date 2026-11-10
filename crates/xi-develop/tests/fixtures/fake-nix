@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# A scriptable stand-in for `nix`, selected via XI_NIX_BIN.
+#
+# It answers `print-dev-env --json` from staged fixture data so the devshell
+# test suite runs in milliseconds, with no nix, no nix daemon, and no network,
+# and so failure modes real nix cannot be asked for on demand (eval error,
+# hang, a changed env hash on the second call) become ordinary test inputs.
+#
+# All state lives in the directory named by XI_FAKE_NIX_DIR, which the test
+# world owns. Nothing is stored in this script: it is a pure interpreter of
+# that directory, so parallel worlds never share state.
+#
+# Layout of $XI_FAKE_NIX_DIR:
+#   responses/NNN.json     stdout for call NNN (1-based, zero-padded to 3)
+#   responses/NNN.exit     optional exit code for call NNN  (default 0)
+#   responses/NNN.stderr   optional stderr payload for call NNN
+#   responses/NNN.delay    optional seconds to sleep before replying
+#   calls.log              append-only: one record per invocation
+#   call-count             number of invocations so far
+#   store/                 fake profile targets for --profile symlinks
+#
+# The highest-numbered response repeats once exhausted, so a one-response
+# fixture serves an unbounded number of evals.
+
+set -uo pipefail
+
+die() {
+  echo "fake-nix: $*" >&2
+  exit 127
+}
+
+[ -n "${XI_FAKE_NIX_DIR:-}" ] || die "XI_FAKE_NIX_DIR is unset"
+[ -d "$XI_FAKE_NIX_DIR" ] || die "XI_FAKE_NIX_DIR is not a directory: $XI_FAKE_NIX_DIR"
+
+state="$XI_FAKE_NIX_DIR"
+resp_dir="$state/responses"
+log="$state/calls.log"
+counter="$state/call-count"
+
+# ---- record the invocation -------------------------------------------------
+# Tests assert on this to pin the eval contract: the installable, --json, the
+# --option pairs, the --profile path, and the working directory. Recorded
+# before anything can fail, so even a staged error call shows up.
+{
+  printf 'cwd=%s\n' "$PWD"
+  for arg in "$@"; do printf 'arg=%s\n' "$arg"; done
+  printf 'end\n'
+} >>"$log"
+
+# ---- bump the call counter (the log is the audit trail, this is the index) --
+n=0
+[ -f "$counter" ] && n=$(cat "$counter" 2>/dev/null || echo 0)
+case "$n" in ''|*[!0-9]*) n=0 ;; esac
+n=$((n + 1))
+printf '%s' "$n" >"$counter"
+
+# ---- preflight calls xi makes before any devshell work --------------------
+# xi probes the nix binary before it does anything useful. These are not the
+# subject of any test, but they must answer plausibly or xi aborts long before
+# the devshell logic runs.
+#
+# The version must be >= the recommended minimum in xi-core/src/checks.rs, or
+# every test's stderr carries a version warning that swamps the real output.
+FAKE_NIX_VERSION="${XI_FAKE_NIX_VERSION:-2.31.2}"
+FAKE_NIX_FEATURES="${XI_FAKE_NIX_FEATURES:-nix-command flakes}"
+
+subcommand="${1:-}"
+case "$subcommand" in
+  print-dev-env) ;;
+  --version | -v | version)
+    echo "nix (Nix) $FAKE_NIX_VERSION"
+    exit 0
+    ;;
+  config)
+    # `nix config show experimental-features` -> whitespace-separated names.
+    if [ "${2:-}" = "show" ]; then
+      echo "$FAKE_NIX_FEATURES"
+      exit 0
+    fi
+    die "unsupported config invocation: $*"
+    ;;
+  # Anything else is a test bug rather than something to fake silently: a
+  # plausible-looking empty reply would hide a real new dependency on nix.
+  *) die "unsupported subcommand '$subcommand' (only print-dev-env, --version and config show are modelled)" ;;
+esac
+
+# ---- honour --profile ------------------------------------------------------
+# Real nix creates a profile symlink here and registers it as a GC root. If the
+# fake skips it, the GC-root path and the dix-backed profile diff silently read
+# a missing path, so those code paths would never actually run under test.
+profile=""
+want_profile=0
+for arg in "$@"; do
+  if [ "$want_profile" = 1 ]; then profile="$arg"; want_profile=0; continue; fi
+  [ "$arg" = "--profile" ] && want_profile=1
+done
+
+if [ -n "$profile" ]; then
+  target="$state/store/profile-target-$n"
+  mkdir -p "$target/bin"
+  printf '#!/bin/sh\necho fake\n' >"$target/bin/fake-tool"
+  chmod +x "$target/bin/fake-tool"
+  mkdir -p "$(dirname "$profile")"
+  ln -sfn "$target" "$profile"
+fi
+
+# ---- pick the response: call n, clamped to the highest staged -------------
+shopt -s nullglob
+staged=("$resp_dir"/*.json)
+shopt -u nullglob
+[ "${#staged[@]}" -gt 0 ] || die "no staged responses in $resp_dir"
+
+idx="$n"
+[ "$idx" -gt "${#staged[@]}" ] && idx="${#staged[@]}"
+body=$(printf '%s' "${staged[$((idx - 1))]}")
+base="${body%.json}"
+
+# ---- staged delay, so timeout and backoff paths are reachable -------------
+if [ -f "$base.delay" ]; then
+  sleep "$(cat "$base.delay")"
+fi
+
+# ---- staged stderr + exit code, for the eval-error path -------------------
+[ -f "$base.stderr" ] && cat "$base.stderr" >&2
+
+rc=0
+[ -f "$base.exit" ] && rc=$(cat "$base.exit")
+
+# A non-zero call still writes whatever stdout was staged (possibly empty),
+# matching nix, which can emit partial output before failing.
+cat "$body"
+exit "$rc"

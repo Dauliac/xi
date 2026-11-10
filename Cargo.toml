@@ -58,7 +58,10 @@ insta = { features = [ "yaml" ], version = "1.48.0" }
 nix = { default-features = false, features = [
   "fs",
   "hostname",
+  "ioctl",
+  "process",
   "signal",
+  "term",
   "user",
 ], version = "0.31.1" }
 proptest = "1.9.0"
