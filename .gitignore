@@ -44,3 +44,7 @@ xi-check.log
 
 # beads gate lock, a runtime artifact of the pre-commit gate
 .beads.gate.lock
+
+# Per-project machine-local xi overrides. Holds absolute paths that are
+# wrong on every other machine and in CI, so it must never be committed.
+.xi.local.toml

@@ -8,13 +8,13 @@
 //! - [`args`][]: the `xi vm` CLI surface.
 //! - [`manifest`][]: parses the `xi-vm-manifest.json`
 //!   `modules/flake-parts/vm.nix` renders.
-//! - [`attrs`][]: the flake attribute naming convention that module uses,
-//!   so the heavy build/check derivations can be built directly.
+//! - [`attrs`][]: the flake attribute naming convention that module uses, so
+//!   the heavy build/check derivations can be built directly.
 //! - [`build`][]: `build`/`check`.
 //! - [`port`][]: runtime host-port resolution.
-//! - [`registry`][]: the per-VM running-instance record (see its header
-//!   comment for how this differs from the control-socket design the
-//!   proposal describes).
+//! - [`registry`][]: the per-VM running-instance record (see its header comment
+//!   for how this differs from the control-socket design the proposal
+//!   describes).
 //! - [`ssh_key`][]: the xi-managed throwaway SSH keypair.
 //! - [`runtime`][]: `start`/`stop`/`connect`/`status`.
 //! - [`vm`][]: top-level dispatch, called from `crates/xi/src/interface.rs`.

@@ -15,6 +15,21 @@ use nix_command::{CommandKind, NixCommand};
 /// Strict `.xi.toml [sources]` loader, used by the `xi sources`
 /// commands. The rest of `project_config` stays crate-private.
 pub use project_config::load_sources_config;
+
+/// The `[build] override_input` entries from this project's `.xi.toml` and
+/// `.xi.local.toml`, each tagged with the file it was written in so a
+/// relative value resolves against that file's own directory.
+///
+/// Exposed narrowly so the top-level config cascade can read project
+/// overrides without `project_config` becoming public.
+#[must_use]
+pub fn project_override_input(
+  flake_dir: Option<&Path>,
+) -> Vec<xi_core::override_input::Entry> {
+  project_config::load_project_config(flake_dir)
+    .build
+    .override_input
+}
 use subprocess::{Exec, Redirection};
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;

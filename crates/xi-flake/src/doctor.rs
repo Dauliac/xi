@@ -377,7 +377,86 @@ pub fn run_health_checks(
   // Formatter check (requires nix eval, may be slow on first run)
   results.push(check_formatter(flake_ref));
 
+  if let Some(r) = check_local_toml_untracked(flake_dir) {
+    results.push(r);
+  }
+
+  results.extend(check_active_overrides(flake_dir));
+
   Ok(results)
+}
+
+/// Warn when `.xi.local.toml` is tracked by git.
+///
+/// That file holds machine state, typically absolute paths to local clones.
+/// Committing it breaks every other machine and CI, so it is worth catching
+/// here rather than in review.
+fn check_local_toml_untracked(flake_dir: &Path) -> Option<CheckResult> {
+  let path = flake_dir.join(".xi.local.toml");
+  if !path.exists() {
+    return None;
+  }
+
+  let tracked = std::process::Command::new("git")
+    .arg("-C")
+    .arg(flake_dir)
+    .args(["ls-files", "--error-unmatch", ".xi.local.toml"])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success());
+
+  Some(if tracked {
+    CheckResult {
+      name:   ".xi.local.toml",
+      status: CheckStatus::Warn(
+        "tracked by git; it holds machine-local paths that are wrong on every \
+         other machine and in CI. Run `git rm --cached .xi.local.toml`"
+          .to_string(),
+      ),
+    }
+  } else {
+    CheckResult {
+      name:   ".xi.local.toml",
+      status: CheckStatus::Ok("present and untracked".to_string()),
+    }
+  })
+}
+
+/// Surface the flake input overrides currently in effect.
+///
+/// A config file that silently redirects a build input is a real hazard, so
+/// `xi doctor` reports them next to the inputs they replace.
+fn check_active_overrides(flake_dir: &Path) -> Vec<CheckResult> {
+  let overrides = crate::project_override_input(Some(flake_dir));
+
+  overrides
+    .iter()
+    .map(|entry| {
+      match xi_core::override_input::normalize(entry) {
+        Ok(resolved) => {
+          let target = resolved.path.as_ref().map_or_else(
+            || resolved.flakeref.clone(),
+            |p| p.display().to_string(),
+          );
+          CheckResult {
+            name:   "Input override",
+            status: CheckStatus::Ok(format!(
+              "{} -> {target} (from {})",
+              entry.name,
+              entry.source.label()
+            )),
+          }
+        },
+        Err(e) => {
+          CheckResult {
+            name:   "Input override",
+            status: CheckStatus::Fail(e.to_string()),
+          }
+        },
+      }
+    })
+    .collect()
 }
 
 // ---------------------------------------------------------------------------

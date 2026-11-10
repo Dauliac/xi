@@ -39,9 +39,9 @@ pub fn ensure_keypair(state_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     return Ok((private_key, public_key));
   }
 
-  let dir = private_key
-    .parent()
-    .ok_or_else(|| color_eyre::eyre::eyre!("key path has no parent directory"))?;
+  let dir = private_key.parent().ok_or_else(|| {
+    color_eyre::eyre::eyre!("key path has no parent directory")
+  })?;
   std::fs::create_dir_all(dir).map_err(|e| {
     color_eyre::eyre::eyre!("failed to create {}: {e}", dir.display())
   })?;

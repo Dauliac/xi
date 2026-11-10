@@ -43,7 +43,9 @@ pub fn run(args: VmArgs) -> Result<()> {
     VmSubcommand::List => list(&manifest, &state_dir),
     VmSubcommand::Build(sub) => run_build(&args.flake, &manifest, &sub),
     VmSubcommand::Check(sub) => run_check(&args.flake, &manifest, sub),
-    VmSubcommand::Start(sub) => run_start(&args.flake, &manifest, &state_dir, sub),
+    VmSubcommand::Start(sub) => {
+      run_start(&args.flake, &manifest, &state_dir, sub)
+    },
     VmSubcommand::Stop(sub) => run_stop(&manifest, &state_dir, &sub),
     VmSubcommand::Connect(sub) => run_connect(&manifest, &state_dir, &sub),
     VmSubcommand::Status(sub) => run_status(&manifest, &state_dir, &sub),
@@ -129,7 +131,11 @@ fn require_name<'a>(
   Ok(vec![name])
 }
 
-fn run_build(flakeref: &str, manifest: &Manifest, args: &VmBuildArgs) -> Result<()> {
+fn run_build(
+  flakeref: &str,
+  manifest: &Manifest,
+  args: &VmBuildArgs,
+) -> Result<()> {
   let names = require_name(manifest, args.name.as_deref(), args.all)?;
   let variant = if args.test {
     BuildVariant::Test
@@ -139,22 +145,41 @@ fn run_build(flakeref: &str, manifest: &Manifest, args: &VmBuildArgs) -> Result<
   for name in names {
     let entry = manifest.get(name);
     let path = match entry.map(|e| e.kind) {
-      Some(manifest::VmKind::Distro) => build::build_distro(flakeref, manifest, name)?,
-      _ => build::build_one(flakeref, manifest, name, variant, args.with_bootloader)?,
+      Some(manifest::VmKind::Distro) => {
+        build::build_distro(flakeref, manifest, name)?
+      },
+      _ => {
+        build::build_one(
+          flakeref,
+          manifest,
+          name,
+          variant,
+          args.with_bootloader,
+        )?
+      },
     };
     println!("{}", path.display());
   }
   Ok(())
 }
 
-fn run_check(flakeref: &str, manifest: &Manifest, args: VmCheckArgs) -> Result<()> {
+fn run_check(
+  flakeref: &str,
+  manifest: &Manifest,
+  args: VmCheckArgs,
+) -> Result<()> {
   let outcomes = if args.all {
     build::check_all(flakeref, manifest, args.build_only)?
   } else {
-    let name = args.name.ok_or_else(|| {
-      color_eyre::eyre::eyre!("pass a VM name, or --all")
-    })?;
-    vec![build::check_one(flakeref, manifest, &name, args.build_only)?]
+    let name = args
+      .name
+      .ok_or_else(|| color_eyre::eyre::eyre!("pass a VM name, or --all"))?;
+    vec![build::check_one(
+      flakeref,
+      manifest,
+      &name,
+      args.build_only,
+    )?]
   };
 
   if args.json {
@@ -170,16 +195,18 @@ fn run_check(flakeref: &str, manifest: &Manifest, args: VmCheckArgs) -> Result<(
         None => {
           println!("{} {}: ok", Icon::Success.render(), outcome.name);
         },
-        Some(reason) => println!(
-          "{} {}: failed ({reason}){}",
-          Icon::Error.render(),
-          outcome.name,
-          outcome
-            .detail
-            .as_deref()
-            .map(|d| format!("\n  {}", style::dim(d)))
-            .unwrap_or_default()
-        ),
+        Some(reason) => {
+          println!(
+            "{} {}: failed ({reason}){}",
+            Icon::Error.render(),
+            outcome.name,
+            outcome
+              .detail
+              .as_deref()
+              .map(|d| format!("\n  {}", style::dim(d)))
+              .unwrap_or_default()
+          )
+        },
       }
     }
   }
@@ -200,7 +227,10 @@ fn run_start(
     let headless_default_for_all = !args.graphical;
     for (name, entry) in manifest {
       if entry.kind != manifest::VmKind::Nixos {
-        println!("{name}: skipped (kind = \"distro\" has no --background instance to start under --all)");
+        println!(
+          "{name}: skipped (kind = \"distro\" has no --background instance to \
+           start under --all)"
+        );
         continue;
       }
       runtime::start(
@@ -218,9 +248,9 @@ fn run_start(
     return Ok(());
   }
 
-  let name = args.name.ok_or_else(|| {
-    color_eyre::eyre::eyre!("pass a VM name, or --all")
-  })?;
+  let name = args
+    .name
+    .ok_or_else(|| color_eyre::eyre::eyre!("pass a VM name, or --all"))?;
   runtime::start(
     flakeref,
     manifest,
@@ -234,7 +264,11 @@ fn run_start(
   )
 }
 
-fn run_stop(manifest: &Manifest, state_dir: &std::path::Path, args: &VmStopArgs) -> Result<()> {
+fn run_stop(
+  manifest: &Manifest,
+  state_dir: &std::path::Path,
+  args: &VmStopArgs,
+) -> Result<()> {
   let names = require_name(manifest, args.name.as_deref(), args.all)?;
   for name in names {
     runtime::stop(manifest, state_dir, name)?;

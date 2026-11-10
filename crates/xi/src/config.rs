@@ -1,4 +1,5 @@
 use std::{
+  collections::BTreeMap,
   env,
   fs,
   io::{self, Write},
@@ -80,6 +81,17 @@ pub struct BuildConfig {
   /// `connect-timeout` option). Prevents long hangs when substituters are
   /// unreachable. Default: 5. Set to 0 to use nix's default (no timeout).
   pub connect_timeout:     Option<u64>,
+  /// Flake input overrides, input name to flakeref (same as
+  /// `--override-input` / `XI_OVERRIDE_INPUT`).
+  ///
+  /// Written as a TOML inline table, deliberately: TOML forbids adding
+  /// scalar keys to `[build]` after a sub-table of `[build]` has been
+  /// opened, so a `[build.override_input]` section form would make any key
+  /// written below it silently land in the wrong table.
+  ///
+  /// A map rather than a list of pairs, because TOML forbids duplicate keys,
+  /// which makes the CLI's silent last-wins ambiguity impossible here.
+  pub override_input:      BTreeMap<String, String>,
 }
 
 impl Default for BuildConfig {
@@ -94,6 +106,7 @@ impl Default for BuildConfig {
       offline:             false,
       max_jobs:            None,
       connect_timeout:     Some(5),
+      override_input:      BTreeMap::new(),
     }
   }
 }
@@ -235,6 +248,7 @@ impl ConfigStore {
       "offline",
       "max_jobs",
       "connect_timeout",
+      "override_input",
     ];
 
     if let Some(root) = self.document.as_table().into() {
@@ -391,6 +405,36 @@ impl ConfigStore {
       })
       .map_or(Some(5), |v| if v == 0 { None } else { Some(v) });
 
+    // Accept both the documented inline-table form and the
+    // `[build.override_input]` section form: toml_edit models them as
+    // different types, but they mean the same thing to a user.
+    let override_input = table
+      .get("override_input")
+      .and_then(|item| {
+        match item {
+          toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
+            Some(
+              t.iter()
+                .filter_map(|(k, v)| {
+                  v.as_str().map(|s| (k.to_string(), s.to_string()))
+                })
+                .collect(),
+            )
+          },
+          toml_edit::Item::Table(t) => {
+            Some(
+              t.iter()
+                .filter_map(|(k, v)| {
+                  v.as_str().map(|s| (k.to_string(), s.to_string()))
+                })
+                .collect(),
+            )
+          },
+          _ => None,
+        }
+      })
+      .unwrap_or_default();
+
     BuildConfig {
       nom,
       ci_backend,
@@ -401,6 +445,7 @@ impl ConfigStore {
       offline,
       max_jobs,
       connect_timeout,
+      override_input,
     }
   }
 

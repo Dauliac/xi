@@ -66,11 +66,13 @@ fn missing_subcommand_help(err: &clap::Error) -> Option<String> {
     error::{ContextKind, ContextValue},
   };
 
-  let path = err.context().find_map(|(kind, value)| match (kind, value) {
-    (ContextKind::InvalidSubcommand, ContextValue::String(path)) => {
-      Some(path.as_str())
-    },
-    _ => None,
+  let path = err.context().find_map(|(kind, value)| {
+    match (kind, value) {
+      (ContextKind::InvalidSubcommand, ContextValue::String(path)) => {
+        Some(path.as_str())
+      },
+      _ => None,
+    }
   })?;
 
   let mut segments = path.split_whitespace().skip(1).peekable();
@@ -207,6 +209,7 @@ pub fn main() -> Result<()> {
           tracing::debug!("Loaded config from {}", store.path().display());
           args.command.apply_cache_config(&config.cache);
           args.command.apply_build_config(&config.build);
+          args.command.apply_override_input_config(&config.build);
           args.command.apply_locate_config(&config.locate);
           args.command.apply_repl_config(&config.repl);
         },

@@ -126,8 +126,8 @@ impl OsBuildVmArgs {
     // produce today, and `[[xi-vm-lifecycle]]` tasks.md 4.4 tracks that
     // rewiring as its own step.
     tracing::warn!(
-      "`xi os build-vm` is deprecated; use `xi vm build --dev <name>` \
-       instead (see xi-vm-lifecycle)"
+      "`xi os build-vm` is deprecated; use `xi vm build --dev <name>` instead \
+       (see xi-vm-lifecycle)"
     );
 
     let attr = if self.with_bootloader {

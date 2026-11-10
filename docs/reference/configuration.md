@@ -42,6 +42,56 @@ For any setting, the effective value follows this priority:
 | `offline`             | bool        | `false`          | No network access                                    |
 | `max_jobs`            | int or null | `null`           | Max parallel build jobs                              |
 | `connect_timeout`     | int         | `5`              | Nix connect timeout in seconds (0 = no timeout)      |
+| `override_input`      | table       | `{}`             | Flake input overrides, input name to flakeref        |
+
+#### `build.override_input`
+
+A table mapping flake input name to flakeref. Must be written as a TOML inline
+table.
+
+```toml
+[build]
+override_input = { nix-lib = "~/ghq/github.com/Dauliac/nix-lib" }
+```
+
+Read from three files, in increasing order of priority:
+
+| File                       | Base for a relative value | Committed?     |
+| -------------------------- | ------------------------- | -------------- |
+| `~/.config/xi/config.toml` | not permitted             | n/a            |
+| `.xi.toml`                 | the file's directory      | yes            |
+| `.xi.local.toml`           | the file's directory      | no, gitignored |
+
+The full cascade, lowest priority first:
+
+```
+~/.config/xi/config.toml  <  .xi.toml  <  .xi.local.toml  <  XI_OVERRIDE_INPUT  <  --override-input
+```
+
+Resolution is per input name. One flag is emitted per surviving name.
+
+A key containing `/` addresses a transitive input and must be quoted:
+
+```toml
+override_input = { "nix-lib/flake-parts" = "path:/some/checkout" }
+```
+
+**Value handling.** A value starting with `path:`, `/`, `./`, `../` or `~` is
+treated as a filesystem path: tilde-expanded, made absolute, cleaned lexically,
+percent-encoded, and emitted as `path:<abs>`. Every other value, including a
+scheme-prefixed URL and a bare indirect flakeref, is forwarded verbatim. A path
+value must resolve to a directory containing `flake.nix`.
+
+**Emission.** Overrides are dropped when the named input is absent from the
+target flake, and are never emitted for `nix flake update`, `nix flake lock`, or
+store-level commands. Each applied override is reported once per invocation with
+its resolved absolute path. `flake.lock` is never written as a side effect.
+
+See
+[Why flake input overrides work this way](../explanation/flake-input-overrides.md)
+for the reasoning, and
+[How to build against a local clone](../guides/multi-flake-development.md) for
+the task.
 
 ### `[cache]` — top-level cache settings
 
@@ -138,6 +188,25 @@ Located at the root of your flake directory. Controls per-project behaviour for
 CI, doctor, formatting, testing, and materialization.
 
 If `.xi.toml` is missing or fails to parse, xi uses defaults silently.
+
+A sibling `.xi.local.toml` is read after `.xi.toml` and takes priority over it,
+per key. It is gitignored: it holds machine-local values, and `xi doctor` warns
+if it has been committed.
+
+### `[build]` - build behaviour
+
+| Key              | Type  | Default | Description                                   |
+| ---------------- | ----- | ------- | --------------------------------------------- |
+| `override_input` | table | `{}`    | Flake input overrides, input name to flakeref |
+
+```toml
+[build]
+override_input = { nix-lib = "../nix-lib" }
+```
+
+A relative value resolves against the directory holding the file it was written
+in. Same semantics as [`build.override_input`](#buildoverride_input) in
+`config.toml`, except that relative values are permitted here.
 
 ### `[ci]` — CI pipeline
 

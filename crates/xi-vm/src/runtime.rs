@@ -149,15 +149,15 @@ pub fn start(
   allow_port_fallback: bool,
   with_bootloader: bool,
 ) -> Result<()> {
-  let entry = manifest.get(name).ok_or_else(|| {
-    color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm")
-  })?;
+  let entry = manifest
+    .get(name)
+    .ok_or_else(|| color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm"))?;
 
   if entry.kind != VmKind::Nixos {
     color_eyre::eyre::bail!(
-      "'{name}' is kind = \"distro\": `start` runs its interactive driver \
-       in the foreground and does not support --background; omit \
-       --background to run it"
+      "'{name}' is kind = \"distro\": `start` runs its interactive driver in \
+       the foreground and does not support --background; omit --background to \
+       run it"
     );
   }
 
@@ -189,9 +189,12 @@ pub fn start(
     .env("QEMU_OPTS", &qemu_opts);
 
   if background {
-    let control_path = registry::instance_dir(state_dir, name).join("control.sock");
+    let control_path =
+      registry::instance_dir(state_dir, name).join("control.sock");
     std::fs::create_dir_all(control_path.parent().unwrap_or(state_dir))
-      .map_err(|e| color_eyre::eyre::eyre!("failed to create state dir: {e}"))?;
+      .map_err(|e| {
+        color_eyre::eyre::eyre!("failed to create state dir: {e}")
+      })?;
 
     command
       .stdin(Stdio::null())
@@ -208,21 +211,17 @@ pub fn start(
       });
     }
 
-    let child = command
-      .spawn()
-      .map_err(|e| color_eyre::eyre::eyre!("failed to spawn {}: {e}", runner.display()))?;
+    let child = command.spawn().map_err(|e| {
+      color_eyre::eyre::eyre!("failed to spawn {}: {e}", runner.display())
+    })?;
 
-    registry::write(
-      state_dir,
-      name,
-      &Instance {
-        pid: child.id(),
-        display: display.as_str().to_owned(),
-        ssh_port,
-        app_ports,
-        control_path,
-      },
-    )?;
+    registry::write(state_dir, name, &Instance {
+      pid: child.id(),
+      display: display.as_str().to_owned(),
+      ssh_port,
+      app_ports,
+      control_path,
+    })?;
     info!("'{name}' started in the background (pid {})", child.id());
     Ok(())
   } else {
@@ -242,16 +241,19 @@ pub fn start(
 /// Returns an error if no instance is registered, if the VM was not
 /// started with `--background`, or if it is `kind = "distro"`.
 pub fn stop(manifest: &Manifest, state_dir: &Path, name: &str) -> Result<()> {
-  let entry = manifest.get(name).ok_or_else(|| {
-    color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm")
-  })?;
+  let entry = manifest
+    .get(name)
+    .ok_or_else(|| color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm"))?;
   if entry.kind != VmKind::Nixos {
-    color_eyre::eyre::bail!("'{name}' is kind = \"distro\": stop is unsupported for this kind");
+    color_eyre::eyre::bail!(
+      "'{name}' is kind = \"distro\": stop is unsupported for this kind"
+    );
   }
 
   let Some(instance) = registry::read(state_dir, name)? else {
     color_eyre::eyre::bail!(
-      "'{name}' has no registered instance (not started with --background, or already stopped)"
+      "'{name}' has no registered instance (not started with --background, or \
+       already stopped)"
     );
   };
 
@@ -264,9 +266,9 @@ pub fn stop(manifest: &Manifest, state_dir: &Path, name: &str) -> Result<()> {
 /// One VM's `xi vm status` entry.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Status {
-  pub name:    String,
-  pub running: bool,
-  pub ssh_port: Option<u16>,
+  pub name:      String,
+  pub running:   bool,
+  pub ssh_port:  Option<u16>,
   pub app_ports: Vec<ResolvedAppPort>,
 }
 
@@ -275,7 +277,11 @@ pub struct Status {
 /// # Errors
 ///
 /// Returns an error if `name` is given and unknown.
-pub fn status(manifest: &Manifest, state_dir: &Path, name: &str) -> Result<Status> {
+pub fn status(
+  manifest: &Manifest,
+  state_dir: &Path,
+  name: &str,
+) -> Result<Status> {
   if !manifest.contains_key(name) {
     color_eyre::eyre::bail!("no VM named '{name}' in xi.vm");
   }
@@ -309,24 +315,33 @@ pub fn connect(
   name: &str,
   console: bool,
 ) -> Result<()> {
-  let entry = manifest.get(name).ok_or_else(|| {
-    color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm")
-  })?;
+  let entry = manifest
+    .get(name)
+    .ok_or_else(|| color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm"))?;
   if entry.kind != VmKind::Nixos {
-    color_eyre::eyre::bail!("'{name}' is kind = \"distro\": connect is unsupported - `start` already opens an interactive console");
+    color_eyre::eyre::bail!(
+      "'{name}' is kind = \"distro\": connect is unsupported - `start` \
+       already opens an interactive console"
+    );
   }
   if console {
     color_eyre::eyre::bail!(
-      "--console is not implemented: it needs a control-socket \
-       supervisor this build's PID-file registry does not provide"
+      "--console is not implemented: it needs a control-socket supervisor \
+       this build's PID-file registry does not provide"
     );
   }
 
   let Some(instance) = registry::read(state_dir, name)? else {
-    color_eyre::eyre::bail!("'{name}' has no running instance; run `xi vm start {name} --background` first");
+    color_eyre::eyre::bail!(
+      "'{name}' has no running instance; run `xi vm start {name} \
+       --background` first"
+    );
   };
   if !registry::is_alive(&instance) {
-    color_eyre::eyre::bail!("'{name}' is registered but its process is gone; run `xi vm stop {name}` to clear it");
+    color_eyre::eyre::bail!(
+      "'{name}' is registered but its process is gone; run `xi vm stop \
+       {name}` to clear it"
+    );
   }
 
   let (private_key, _public_key) = ssh_key::ensure_keypair(state_dir)?;
@@ -350,7 +365,10 @@ pub fn connect(
 mod tests {
   use super::*;
 
-  fn entry(display: crate::manifest::Display, ports: Vec<crate::manifest::PortForward>) -> VmManifestEntry {
+  fn entry(
+    display: crate::manifest::Display,
+    ports: Vec<crate::manifest::PortForward>,
+  ) -> VmManifestEntry {
     VmManifestEntry {
       kind: VmKind::Nixos,
       display,
@@ -413,7 +431,10 @@ mod tests {
   #[test]
   fn status_of_a_never_started_vm_is_not_running() {
     let mut manifest = Manifest::new();
-    manifest.insert("gary".to_owned(), entry(crate::manifest::Display::Headless, vec![]));
+    manifest.insert(
+      "gary".to_owned(),
+      entry(crate::manifest::Display::Headless, vec![]),
+    );
     let dir = tempfile::tempdir().expect("tempdir");
     let result = status(&manifest, dir.path(), "gary").expect("status");
     assert!(!result.running);
@@ -423,7 +444,10 @@ mod tests {
   #[test]
   fn stop_of_a_never_started_vm_is_an_error() {
     let mut manifest = Manifest::new();
-    manifest.insert("gary".to_owned(), entry(crate::manifest::Display::Headless, vec![]));
+    manifest.insert(
+      "gary".to_owned(),
+      entry(crate::manifest::Display::Headless, vec![]),
+    );
     let dir = tempfile::tempdir().expect("tempdir");
     let err = stop(&manifest, dir.path(), "gary").expect_err("must fail");
     assert!(err.to_string().contains("no registered instance"));

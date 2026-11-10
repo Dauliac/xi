@@ -43,9 +43,9 @@ pub fn build_one(
 
   if entry.kind != VmKind::Nixos {
     color_eyre::eyre::bail!(
-      "'{name}' is kind = \"distro\"; use `xi vm build {name} --test` is \
-       not meaningful here - distro VMs have no --dev/--test split, see \
-       `xi vm check {name}`/`xi vm start {name}`"
+      "'{name}' is kind = \"distro\"; use `xi vm build {name} --test` is not \
+       meaningful here - distro VMs have no --dev/--test split, see `xi vm \
+       check {name}`/`xi vm start {name}`"
     );
   }
 
@@ -69,10 +69,14 @@ pub fn build_one(
 /// # Errors
 ///
 /// Returns an error if the VM is unknown or is `kind = "nixos"`.
-pub fn build_distro(flakeref: &str, manifest: &Manifest, name: &str) -> Result<PathBuf> {
-  let entry = manifest.get(name).ok_or_else(|| {
-    color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm")
-  })?;
+pub fn build_distro(
+  flakeref: &str,
+  manifest: &Manifest,
+  name: &str,
+) -> Result<PathBuf> {
+  let entry = manifest
+    .get(name)
+    .ok_or_else(|| color_eyre::eyre::eyre!("no VM named '{name}' in xi.vm"))?;
   if entry.kind != VmKind::Distro {
     color_eyre::eyre::bail!("'{name}' is not kind = \"distro\"");
   }
@@ -87,7 +91,11 @@ pub fn build_distro(flakeref: &str, manifest: &Manifest, name: &str) -> Result<P
 /// # Errors
 ///
 /// Returns an error if the VM is unknown or the build fails.
-pub fn build_only(flakeref: &str, manifest: &Manifest, name: &str) -> Result<PathBuf> {
+pub fn build_only(
+  flakeref: &str,
+  manifest: &Manifest,
+  name: &str,
+) -> Result<PathBuf> {
   if !manifest.contains_key(name) {
     color_eyre::eyre::bail!("no VM named '{name}' in xi.vm");
   }
@@ -144,7 +152,11 @@ pub fn check_all(
       Ok(outcome) => outcomes.push(outcome),
       Err(e) => {
         error!("xi vm check {name}: {e}");
-        outcomes.push(CheckOutcome::failed(name, "internal-error", &e.to_string()));
+        outcomes.push(CheckOutcome::failed(
+          name,
+          "internal-error",
+          &e.to_string(),
+        ));
       },
     }
   }
@@ -188,18 +200,15 @@ mod tests {
 
   fn manifest_with(name: &str, kind: VmKind) -> Manifest {
     let mut manifest = Manifest::new();
-    manifest.insert(
-      name.to_owned(),
-      crate::manifest::VmManifestEntry {
-        kind,
-        display: crate::manifest::Display::Headless,
-        with_bootloader: false,
-        ssh_user: "xi".to_owned(),
-        ports: vec![],
-        distro: None,
-        version: None,
-      },
-    );
+    manifest.insert(name.to_owned(), crate::manifest::VmManifestEntry {
+      kind,
+      display: crate::manifest::Display::Headless,
+      with_bootloader: false,
+      ssh_user: "xi".to_owned(),
+      ports: vec![],
+      distro: None,
+      version: None,
+    });
     manifest
   }
 
@@ -222,8 +231,7 @@ mod tests {
   #[test]
   fn check_one_rejects_an_unknown_vm_name() {
     let manifest = manifest_with("gary", VmKind::Nixos);
-    let err =
-      check_one(".", &manifest, "nope", false).expect_err("must fail");
+    let err = check_one(".", &manifest, "nope", false).expect_err("must fail");
     assert!(err.to_string().contains("nope"));
   }
 }

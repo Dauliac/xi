@@ -89,15 +89,16 @@ pub fn write(state_dir: &Path, name: &str, instance: &Instance) -> Result<()> {
 
   let target = instance_path(state_dir, name);
   let tmp = dir.join("instance.json.tmp");
-  let json = serde_json::to_vec_pretty(instance)
-    .map_err(|e| color_eyre::eyre::eyre!("failed to serialize instance: {e}"))?;
+  let json = serde_json::to_vec_pretty(instance).map_err(|e| {
+    color_eyre::eyre::eyre!("failed to serialize instance: {e}")
+  })?;
 
   let mut file = std::fs::File::create(&tmp).map_err(|e| {
     color_eyre::eyre::eyre!("failed to create {}: {e}", tmp.display())
   })?;
-  file
-    .write_all(&json)
-    .map_err(|e| color_eyre::eyre::eyre!("failed to write {}: {e}", tmp.display()))?;
+  file.write_all(&json).map_err(|e| {
+    color_eyre::eyre::eyre!("failed to write {}: {e}", tmp.display())
+  })?;
   std::fs::rename(&tmp, &target).map_err(|e| {
     color_eyre::eyre::eyre!(
       "failed to move {} into place: {e}",
@@ -123,7 +124,10 @@ pub fn read(state_dir: &Path, name: &str) -> Result<Option<Instance>> {
     },
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
     Err(e) => {
-      Err(color_eyre::eyre::eyre!("failed to read {}: {e}", path.display()))
+      Err(color_eyre::eyre::eyre!(
+        "failed to read {}: {e}",
+        path.display()
+      ))
     },
   }
 }
@@ -140,7 +144,10 @@ pub fn clear(state_dir: &Path, name: &str) -> Result<()> {
     Ok(()) => Ok(()),
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
     Err(e) => {
-      Err(color_eyre::eyre::eyre!("failed to remove {}: {e}", path.display()))
+      Err(color_eyre::eyre::eyre!(
+        "failed to remove {}: {e}",
+        path.display()
+      ))
     },
   }
 }
@@ -162,7 +169,9 @@ pub fn is_alive(instance: &Instance) -> bool {
 /// process is already gone, or this process lacks permission).
 pub fn terminate(instance: &Instance) -> Result<()> {
   signal::kill(Pid::from_raw(instance.pid.cast_signed()), Signal::SIGTERM)
-    .map_err(|e| color_eyre::eyre::eyre!("failed to signal pid {}: {e}", instance.pid))
+    .map_err(|e| {
+      color_eyre::eyre::eyre!("failed to signal pid {}: {e}", instance.pid)
+    })
 }
 
 #[cfg(test)]
