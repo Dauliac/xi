@@ -732,7 +732,17 @@ in
           name = "xi-sources-nixos-sources-module";
 
           nodes.machine = {
-            imports = [ self.nixosModules.sources ];
+            # `nixosModules.sources` deliberately doesn't import nix-lib's
+            # own module itself (see the comment on `flake.nixosModules.sources`
+            # in nix/modules.nix) - it just sets `nix-lib.enable`, on the
+            # precondition that the consumer already declared that option
+            # via some nix-lib module class. This fixture is that consumer,
+            # so it has to provide it, same as `xi-sources-nixos` above does
+            # through `nixosModules.default`.
+            imports = [
+              inputs.nix-lib.nixosModules.default
+              self.nixosModules.sources
+            ];
 
             programs.xi = {
               enable = true;

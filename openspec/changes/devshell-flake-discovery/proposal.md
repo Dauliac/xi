@@ -23,6 +23,37 @@ Without a spec, each caller re-invents the rules and the prompt-hook budget
 becomes unpredictable when the walk crosses network mounts or symlinked home
 dirs.
 
+## Verified Against Current Code (2026-11-07)
+
+Re-read `crates/xi-develop/src/flake_detect.rs` in full (both functions, 27
+lines total). Correction to the framing below: canonicalisation and the
+exclusion filter are proposed NEW behaviour, not a formalisation of existing
+intent. The actual code today is a bare walk-up:
+
+```rust
+pub fn find_flake_stack(start: &Path) -> Vec<PathBuf> {
+  let mut flakes = Vec::new();
+  let mut dir = start.to_path_buf();
+  loop {
+    if dir.join("flake.nix").exists() { flakes.push(dir.clone()); }
+    if !dir.pop() { break; }
+  }
+  flakes.reverse();
+  flakes
+}
+```
+
+There is no `fs::canonicalize` call anywhere in this file, and no exclusion
+check for `.git/`, `node_modules/`, or `target/` at all; a `flake.nix` inside
+any of those is picked up exactly like any other. This means two concrete,
+currently-live behaviour changes fall out of this proposal, not narrow edge
+cases: (1) a symlinked CWD today produces a flake id derived from the
+un-resolved path, so a user who already relies on `~/repo` and the canonical
+`/mnt/nvme/repo` sharing trust/activation state will see that stop working once
+canonicalisation lands, until they re-trust under the new id; (2) a `flake.nix`
+accidentally committed under `node_modules/` or `target/` is discovered today
+and will stop being discovered.
+
 ## What Changes
 
 - Introduce capability `xi-devshell-flake-discovery` that owns:
@@ -62,23 +93,29 @@ dirs.
 
 ## Impact
 
-- **Affected specs**: `xi-devshell-flake-discovery` (new capability — first
-  delta introduces its requirements).
-- **Affected code**: `crates/xi-develop/src/flake_detect.rs` (canonicalise the
-  start path, add excluded-directory filter, add tests) — the behavioural change
-  is small; most of this delta specifies existing intent.
+- **Affected specs**: `xi-devshell-flake-discovery` (new capability; first delta
+  introduces its requirements).
+- **Affected code**: `crates/xi-develop/src/flake_detect.rs`. Both
+  canonicalisation and the excluded-directory filter are net-new logic added to
+  a function that currently has neither (see Verified Against Current Code
+  above), not a tightening of existing behaviour.
 - **Coordination with `devshell-trust-model`**: the trust marker key is derived
   from the canonical flake root. This spec ensures that the discovery layer
-  produces canonical paths so `dirs::flake_id` receives a stable input.
+  produces canonical paths so `dirs::flake_id` receives a stable input. Note
+  this means a flake id computed before this change lands differs from the id
+  computed after, for any flake reached via a symlinked path.
 - **Coordination with `async-daemon-cqrs`**: one daemon per flake id; discovery
   determines which daemon a given CWD binds to.
-- **Breaking?**: No. Canonicalisation, the excluded-directory list, and the
-  boundary rules match the current implementation's _intent_; edge cases that
-  today produce inconsistent behaviour (symlinked CWD, stray `flake.nix` in
-  `node_modules`) will be corrected — a very narrow behaviour change.
-- **Migration**: None required for the common case. Users who currently rely on
-  a `node_modules/some-pkg/flake.nix` being detected as their project's flake
-  root will need to move it — an unlikely case.
+- **Breaking?**: Narrow but real. Canonicalisation changes the flake id for any
+  flake currently reached through a symlinked alias (its trust marker and
+  running daemon are keyed by the old, un-canonicalised id and will not be found
+  under the new one; the user re-trusts once). The exclusion filter stops
+  discovering `flake.nix` files that happen to live under `.git/`,
+  `node_modules/`, or `target/`, which were previously discovered.
+- **Migration**: Users who currently rely on a `node_modules/some-pkg/flake.nix`
+  being detected as their project's flake root will need to move it (unlikely
+  case). Users who access a flake exclusively through a symlinked path will need
+  to re-run `xi develop trust` once after upgrading, since the flake id changes.
 
 ## Success Criteria
 

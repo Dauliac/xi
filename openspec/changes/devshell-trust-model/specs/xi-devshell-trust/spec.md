@@ -2,6 +2,29 @@
 
 ## ADDED Requirements
 
+### Requirement: Non-devshell flakes are silent
+
+Before any trust decision is made, the prompt hook MUST check whether the
+discovered flake's `flake.nix` plausibly declares a devshell (contains
+`devShells`, `devShell`, or `mkShell`). If none of those are present, the hook
+MUST return without checking trust, without printing any prompt, and without
+touching the daemon. This gate applies regardless of whether the flake is
+trusted or untrusted.
+
+#### Scenario: Flake with no devshell keywords, untrusted
+
+- **WHEN** the prompt fires inside a flake whose `flake.nix` contains none of
+  `devShells`, `devShell`, or `mkShell`, and no trust marker exists for it
+- **THEN** the hook returns silently: no stderr prompt, no daemon connection, no
+  trust check performed
+
+#### Scenario: Flake with no devshell keywords, trusted
+
+- **WHEN** the prompt fires inside a flake whose `flake.nix` contains none of
+  the devshell keywords, and a trust marker exists for it
+- **THEN** the hook still returns silently; the devshell-likelihood gate is
+  checked before trust, not after
+
 ### Requirement: Refuse-by-default at the prompt hook
 
 The prompt hook MUST NOT spawn the daemon, connect to an existing daemon, or
@@ -41,6 +64,14 @@ prompt ticks (or repeated `cd` in and out) do not re-emit it.
   untrusted flake
 - **THEN** no additional interactive-stderr writes occur for that flake id
 
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `prompt.rs::handle_parent` as of 2026-11-07 has no throttle key
+- **WHEN** the same shell runs N prompt ticks inside the same untrusted flake
+- **THEN** today's build writes N stderr lines, one per tick, not one; this
+  scenario documents the gap tracked by the throttling task in `tasks.md` and
+  must flip to the "Subsequent ticks" scenario above once that task lands
+
 ### Requirement: Explicit trust grant is the only path to trusted state
 
 A flake MUST become trusted only via an explicit user action
@@ -76,6 +107,17 @@ or usable by another UNIX user on the same host.
 - **WHEN** a second UNIX user attempts to read the first user's trust directory
 - **THEN** the operation fails with a permission error and no marker content
   leaks
+
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `trust_flake`/`untrust_flake` as of 2026-11-07 call plain
+  `fs::write`/`fs::create_dir_all` with no `set_permissions` call
+- **WHEN** `xi develop trust <path>` runs under a permissive umask (e.g. `0022`)
+- **THEN** today's build leaves the directory and marker at whatever mode the
+  umask produces (typically `0755`/`0644`), not the forced `0700`/`0600`; this
+  scenario documents the gap tracked in `tasks.md` and must flip to the
+  "Directory and marker permissions after grant" scenario above once that task
+  lands
 
 ### Requirement: Trust survives flake source edits
 
@@ -140,3 +182,31 @@ be resolved MUST be reported explicitly rather than silently omitted.
   trust --list` runs
 - **THEN** its entry is printed with a `(path missing)` marker in the path
   column
+
+### Requirement: Nested child-flake trust is independent
+
+When a shell's CWD moves from a trusted parent flake's active subshell into a
+directory owned by a different, nested `flake.nix`, the hook MUST trust-check
+the child independently of the parent's trust state. The hook MUST NOT inherit
+the parent's trust for the child, and MUST NOT escalate with an additional
+prompt when the child is untrusted.
+
+#### Scenario: Nested trusted child spawns its own subshell
+
+- **WHEN** a shell inside a trusted parent flake's subshell `cd`s into a nested
+  directory owned by a different `flake.nix` that is also trusted
+- **THEN** the hook spawns a nested subshell scoped to the child flake,
+  incrementing `__XI_DEPTH`
+
+#### Scenario: Nested untrusted child stays silent in the parent
+
+- **WHEN** a shell inside a trusted parent flake's subshell `cd`s into a nested
+  directory owned by a different, untrusted `flake.nix`
+- **THEN** the hook does not spawn a nested subshell, does not print a trust
+  prompt for the child, and the shell remains in the parent's subshell
+
+#### Scenario: Suppress clears when returning to the parent
+
+- **WHEN** a nested untrusted child's suppress state is set and the user `cd`s
+  back out of the child directory into the parent flake root
+- **THEN** the suppress state for that child is cleared on the next prompt tick

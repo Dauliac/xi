@@ -31,8 +31,11 @@ pub fn trust_flake(flake_ref: &str, _target: &str) -> Result<()> {
   ui::success(format!("trusted {}", canonical.display()));
 
   // Only show shell setup instructions if the hook is not loaded.
-  // The activation script sets __XI_ORIG_PATH on first load.
-  if std::env::var_os("__XI_ORIG_PATH").is_none() {
+  // Every activation script (bash/zsh/fish) exports __XI_BIN as one of
+  // its first lines, so its presence means the hook is already sourced
+  // in this shell. (The previous check was __XI_ORIG_PATH, which no
+  // activation script has ever written  -  it always showed this message.)
+  if std::env::var_os("__XI_BIN").is_none() {
     ui::info("to activate automatically, add to your shell config:");
     eprintln!("    bash (~/.bashrc):  eval \"$(xi develop activate bash)\"");
     eprintln!("    zsh (~/.zshrc):    eval \"$(xi develop activate zsh)\"");

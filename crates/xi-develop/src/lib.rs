@@ -11,6 +11,7 @@ mod exec;
 pub mod flake_detect;
 pub mod hook;
 mod meta;
+pub mod nesting;
 pub mod prompt;
 pub mod shell;
 mod store_path;
@@ -40,12 +41,12 @@ impl DevelopArgs {
   pub fn run(self) -> Result<()> {
     match self.action {
       Some(DevelopAction::Trust(ref a)) => {
-        let flake = self.resolve_flake();
+        let flake = a.flake.clone().unwrap_or_else(|| self.resolve_flake());
         let target = a.target.as_deref().unwrap_or("default");
         trust::trust_flake(&flake, target)
       },
       Some(DevelopAction::Untrust(ref a)) => {
-        let flake = self.resolve_flake();
+        let flake = a.flake.clone().unwrap_or_else(|| self.resolve_flake());
         let target = a.target.as_deref().unwrap_or("default");
         trust::untrust_flake(&flake, target)
       },
@@ -263,6 +264,22 @@ fn status() -> Result<()> {
     println!("{}", style::bold(&root.display().to_string()));
     println!("  flake id: {}", style::dim(&fid));
 
+    // Nested: is there an ancestor directory with its own flake.nix that
+    // this one sits inside of? (outermost-first; the current flake is
+    // always the last entry, so the one before it is the immediate
+    // parent.)
+    let stack = flake_detect::find_flake_stack(&cwd);
+    if stack.len() > 1 {
+      let parent = &stack[stack.len() - 2];
+      let parent_fid = dirs::flake_id(parent);
+      println!(
+        "  {} nested under {} ({})",
+        Icon::Info.render(),
+        style::bold(&parent.display().to_string()),
+        style::dim(&parent_fid)
+      );
+    }
+
     // Trust
     if trusted {
       println!("  {} trusted", Icon::Success.render());
@@ -274,18 +291,31 @@ fn status() -> Result<()> {
       );
     }
 
-    // Session: detect if we're inside a sync devshell
-    let in_devshell =
+    // Session: are we actually sitting inside an active devshell for
+    // *this* flake right now (as opposed to merely having one trusted
+    // and a daemon running for it)?
+    let in_sync_devshell =
       std::env::var("IN_NIX_SHELL").ok().as_deref() == Some("impure");
-    if in_devshell {
-      println!(
-        "  session:  {}",
-        style::colored(
-          &format!("{} active (sync)", Icon::Success.glyph()),
-          color::GREEN,
-        )
-      );
-    }
+    let in_async_devshell = std::env::var_os("__XI_IN_DEVSHELL").is_some()
+      && std::env::var("__XI_FLAKE_ROOT")
+        .is_ok_and(|f| std::path::Path::new(&f) == root.as_path());
+
+    let session_line = if in_sync_devshell {
+      format!("{} active (sync)", Icon::Success.glyph())
+    } else if in_async_devshell {
+      format!("{} active (async)", Icon::Success.glyph())
+    } else {
+      format!("{} not active", Icon::Warn.glyph())
+    };
+    let session_color = if in_sync_devshell || in_async_devshell {
+      color::GREEN
+    } else {
+      color::YELLOW
+    };
+    println!(
+      "  session:  {}",
+      style::colored(&session_line, session_color)
+    );
 
     // Daemon
     if let Ok(s) = daemon::client::status(&socket_path) {

@@ -17,6 +17,19 @@ default.
 - **THEN** the watcher's effective watch set contains exactly those five files
   plus `.git/index`
 
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `watcher.rs::DEFAULT_PATTERNS` as of 2026-11-07 is
+  `["flake.nix", "flake.lock"]` only (confirmed by the file's own
+  `default_patterns()` test, which asserts `shell.nix` and `modules/foo.nix` do
+  NOT match by default)
+- **WHEN** a daemon starts on the same flake root described above
+- **THEN** today's build's effective watch set contains only `flake.nix`,
+  `flake.lock`, and `.git/index`; the three tracked `*.nix` files in the
+  subdirectory are not watched. This scenario documents the gap tracked in
+  `tasks.md` and must flip to the "Default set on a fresh flake" scenario above
+  once the default-set decision lands
+
 ### Requirement: User-extended watch patterns
 
 A user configuration key `[develop.watch] extra = [<pattern>, ...]` in
@@ -69,6 +82,14 @@ re-eval trigger to the state machine.
 - **THEN** the watcher forwards six re-eval triggers, one per modification (each
   in its own coalescing window)
 
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `watcher.rs`'s notify callback as of 2026-11-07 sends every matching
+  event straight to the channel with no buffer, timer, or window
+- **WHEN** a formatter rewrites 50 watched files inside a 100 ms window
+- **THEN** today's build forwards up to 50 separate change events rather than
+  one coalesced trigger; this scenario documents the gap tracked in `tasks.md`
+
 ### Requirement: Degradation on watch failure
 
 The watcher MUST transition the daemon to `WatcherDegraded` (a state owned by
@@ -91,6 +112,18 @@ unreadable, or the `notify` crate returns a fatal error.
   startup
 - **THEN** the watcher transitions to `WatcherDegraded` on the next read attempt
   for that directory
+
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `watcher.rs` as of 2026-11-07 only calls
+  `debug!("Cannot watch
+  {}: {e}", ...)` on a registration failure and never
+  constructs a `TransitionEvent`
+- **WHEN** any of the degradation conditions above occurs
+- **THEN** today's build logs the failure at debug level and the daemon state is
+  unaffected; `TransitionEvent::WatcherDegraded` exists at the state-machine
+  level (`state_machine.rs`) but nothing in `watcher.rs` ever constructs or
+  sends it. This scenario documents the gap tracked in `tasks.md`
 
 ### Requirement: Recovery on explicit invalidation
 
@@ -130,6 +163,19 @@ unwatched.
 - **WHEN** a user runs `git rm --cached bar.nix` and then modifies `bar.nix`
 - **THEN** the modification does NOT trigger a re-eval (unless the file also
   matches an entry in `[develop.watch] extra`)
+
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `GitWatcher::new` as of 2026-11-07 calls `git_tracked_nix_dirs`
+  exactly once, at construction, and registers a watch on `.git/index` whose
+  change events are not connected to any re-derivation call
+- **WHEN** a user runs `git add foo.nix` and then modifies `foo.nix` without
+  restarting the daemon
+- **THEN** today's build does NOT trigger a re-eval for `foo.nix`, because the
+  watcher's directory-watch set was computed before `foo.nix` was staged and is
+  never recomputed; this scenario documents the gap tracked in `tasks.md` and
+  must flip to the "Newly staged file becomes watched" scenario above once that
+  task lands
 
 ### Requirement: External imported paths are out of scope
 

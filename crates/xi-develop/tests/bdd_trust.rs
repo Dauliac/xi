@@ -3,15 +3,30 @@
 //! Tests for the trust/untrust lifecycle.
 //! These are unit-level tests that don't require nix or a daemon.
 
-use std::{fs, path::Path};
+use std::{
+  fs,
+  path::Path,
+  sync::{Mutex, MutexGuard},
+};
+
+use clap::Parser;
+use xi_develop::args::DevelopArgs;
+
+/// `XDG_CONFIG_HOME`/`XDG_STATE_HOME` are process-global; cargo runs tests in
+/// this binary on multiple threads, so every test that calls
+/// `setup_trust_env` must hold this lock for its whole body or a sibling
+/// test's env mutation can be observed mid-test.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Helper: set XDG dirs to a temp directory so trust operations are isolated.
+/// Caller must hold `ENV_LOCK` (via [`lock_env`]) for the lifetime of the env
+/// vars' use.
 fn setup_trust_env(tmp: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
   let config_dir = tmp.join("config");
   let state_dir = tmp.join("state");
   fs::create_dir_all(&config_dir).unwrap();
   fs::create_dir_all(&state_dir).unwrap();
-  // SAFETY: tests run sequentially (or in separate processes)
+  // SAFETY: guarded by ENV_LOCK, held by the caller for the test's duration.
   unsafe {
     std::env::set_var("XDG_CONFIG_HOME", &config_dir);
     std::env::set_var("XDG_STATE_HOME", &state_dir);
@@ -19,9 +34,14 @@ fn setup_trust_env(tmp: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
   (config_dir, state_dir)
 }
 
+fn lock_env() -> MutexGuard<'static, ()> {
+  ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// BDD: 09_trust_untrust.feature#Trust a flake
 #[test]
 fn trust_creates_marker_file() {
+  let _guard = lock_env();
   let tmp = tempfile::tempdir().unwrap();
   let flake_dir = tmp.path().join("project");
   fs::create_dir_all(&flake_dir).unwrap();
@@ -49,6 +69,7 @@ fn trust_creates_marker_file() {
 /// BDD: 09_trust_untrust.feature#Untrust an already untrusted flake
 #[test]
 fn untrust_nonexistent_is_noop() {
+  let _guard = lock_env();
   let tmp = tempfile::tempdir().unwrap();
   let flake_dir = tmp.path().join("project");
   fs::create_dir_all(&flake_dir).unwrap();
@@ -98,4 +119,46 @@ fn trust_is_idempotent() {
   fs::write(&marker, "").unwrap();
   fs::write(&marker, "").unwrap();
   assert!(marker.exists());
+}
+
+// Regression: DevelopArgs::run's Trust/Untrust arms used to resolve the
+// flake from the top-level --flake only, silently ignoring the
+// subcommand-local `trust --flake <path>` / `untrust --flake <path>`.
+#[test]
+fn trust_subcommand_flake_flag_is_honored() {
+  let _guard = lock_env();
+  let tmp = tempfile::tempdir().unwrap();
+  let flake_dir = tmp.path().join("project");
+  fs::create_dir_all(&flake_dir).unwrap();
+  fs::write(flake_dir.join("flake.nix"), "{}").unwrap();
+
+  let (config_dir, _) = setup_trust_env(tmp.path());
+
+  let args = DevelopArgs::parse_from([
+    "xi-develop",
+    "trust",
+    "--flake",
+    flake_dir.to_str().unwrap(),
+  ]);
+  args.run().unwrap();
+
+  let canonical = fs::canonicalize(&flake_dir).unwrap();
+  let fid = xi_develop::compute_flake_id(&canonical);
+  let trust_path = config_dir.join("xi/develop/trusted").join(&fid);
+  assert!(
+    trust_path.exists(),
+    "expected the --flake path to be trusted, not cwd"
+  );
+
+  let args = DevelopArgs::parse_from([
+    "xi-develop",
+    "untrust",
+    "--flake",
+    flake_dir.to_str().unwrap(),
+  ]);
+  args.run().unwrap();
+  assert!(
+    !trust_path.exists(),
+    "expected the --flake path to be untrusted, not cwd"
+  );
 }

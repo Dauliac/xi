@@ -226,7 +226,9 @@ pub enum CompletionShell {
 /// Named here so the five deprecated verbs' wording never drifts; see
 /// `xi-deploy-unified-verb`'s deprecation window (xi-fxgx.5.2).
 fn deprecated_verb_notice(old: &str) {
-  eprintln!("xi: `{old}` is deprecated and will be removed; use `xi deploy` instead");
+  eprintln!(
+    "xi: `{old}` is deprecated and will be removed; use `xi deploy` instead"
+  );
 }
 
 impl XiCommand {
@@ -303,8 +305,11 @@ impl XiCommand {
     };
 
     if let Some(cache) = cache {
-      cache
-        .apply_config_defaults(&cache_config.targets, cache_config.async_push);
+      cache.apply_config_defaults(
+        &cache_config.targets,
+        cache_config.async_push,
+        cache_config.max_parallel_jobs,
+      );
     }
   }
 
@@ -454,8 +459,7 @@ impl XiCommand {
         args.run(elevation)
       },
       Self::Home(args) => {
-        if matches!(args.subcommand, xi_home::args::HomeSubcommand::Switch(_))
-        {
+        if matches!(args.subcommand, xi_home::args::HomeSubcommand::Switch(_)) {
           deprecated_verb_notice("home switch");
         }
         args.run()

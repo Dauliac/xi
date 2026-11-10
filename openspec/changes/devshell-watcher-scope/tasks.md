@@ -9,6 +9,22 @@ lives in beads.
 - [ ] 1.2 Cross-link with `xi-devshell-daemon` — the `WatcherDegraded` state and
       the `InvalidateCache` command are defined there.
 
+## 1a. Default watch set decision (P1, newly discovered)
+
+- [ ] 1a.1 Decide: widen `DEFAULT_PATTERNS` in `watcher.rs` from
+      `["flake.nix", "flake.lock"]` to every git-tracked `*.nix` file (the
+      long-documented but never-implemented intent), or formally narrow the spec
+      to match today's two-pattern default. Confirmed via `default_patterns()`'s
+      own test that the wider set is not currently implemented.
+- [ ] 1a.2 If widening: extend `matches_patterns`/`git_tracked_nix_dirs` to
+      include all git-tracked `*.nix` files, not just the two literal filenames,
+      and update the module doc comment at the top of `watcher.rs` (currently
+      already describes the wider intent, so no change needed there, only to
+      `DEFAULT_PATTERNS` itself).
+- [ ] 1a.3 BDD `bdd_watcher_default_set_widened` (or, if narrowing is chosen,
+      `bdd_watcher_default_set_narrow_confirmed`): lock in whichever decision is
+      made so the gap cannot silently reappear.
+
 ## 2. Coalescing + minimal-directory registration (P1)
 
 - [ ] 2.1 Add a 200 ms coalescing buffer between the `notify` callback and the
@@ -39,7 +55,8 @@ lives in beads.
 
 ## 4. Git-index awareness (P2)
 
-- [ ] 4.1 Register `.git/index` in the watched-directory set.
+- [x] 4.1 Register `.git/index` in the watched-directory set. Already done:
+      `GitWatcher::new` registers this watch today.
 - [ ] 4.2 On `.git/index` change, re-derive the git-tracked `*.nix` set and
       update the watch registration diff (add/remove per file set delta).
 - [ ] 4.3 BDD `bdd_watcher_new_tracked_file`: `git add foo.nix`, then modify

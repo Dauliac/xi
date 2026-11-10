@@ -49,8 +49,35 @@ lives in beads.
 - [ ] 4.2 Document the extension procedure in a top-of-file doc comment on
       `shell.rs`.
 
-## 5. Follow-ups (P4 — deferred to future changes)
+## 5. Daemon-mediated re-source protocol (P1, newly discovered)
 
-- [ ] 5.1 Nushell adapter (design + delta on the extension points).
-- [ ] 5.2 `direnv` integration — needs its own proposal covering the handshake
+- [ ] 5.1 Land the "Daemon-mediated re-source protocol" requirement in
+      `specs/xi-devshell-activation/spec.md` (already drafted in this delta) and
+      cross-link it from `daemon/server.rs`'s response-builder region and
+      `daemon/shell_registry.rs` with a top-of-file doc comment.
+- [ ] 5.2 BDD `bdd_activation_resource_generations`: a consumer behind on env
+      generation is told to re-source; a consumer on the current generation is
+      not; env and hook generations advance independently.
+- [ ] 5.3 BDD `bdd_activation_symlink_atomicity`: two evaluations completing in
+      quick succession before a consumer re-sources resolve to the latest env
+      file via the current-symlink, never an intermediate one.
+
+## 6. Lock-hash and original-PATH gaps (P1, newly discovered)
+
+- [ ] 6.1 Decide and implement: either export `__XI_LOCK_HASH` (hash of
+      `flake.lock`) into the child shell at activation time so
+      `hook::shortcut::should_shortcut`'s fast path can actually fire, or remove
+      the dead read in `hook/shortcut.rs` if the shortcut path is no longer
+      wanted. Confirmed today: no writer exists outside `shortcut.rs`'s own unit
+      tests.
+- [ ] 6.2 Decide and implement: either export `__XI_ORIG_PATH` at first
+      activation and use it for an explicit PATH-restoration path, or delete the
+      dead read of it in `trust.rs:35`. Confirmed today: read but never written.
+- [ ] 6.3 BDD lock-in test for whichever decision is made in 6.1/6.2, so the
+      chosen behaviour cannot silently regress again.
+
+## 7. Follow-ups (P4, deferred to future changes)
+
+- [ ] 7.1 Nushell adapter (design + delta on the extension points).
+- [ ] 7.2 `direnv` integration, needs its own proposal covering the handshake
       between direnv's env dump and xi's activation contract.

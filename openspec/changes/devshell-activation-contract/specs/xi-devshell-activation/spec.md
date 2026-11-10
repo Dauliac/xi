@@ -7,20 +7,18 @@
 The activation surface MUST publish exactly the following environment variables
 into the devshell child process, with the documented semantics:
 
-- `__XI_IN_DEVSHELL=1` — presence indicates the current process is running
-  inside an xi-managed devshell subshell.
-- `__XI_FLAKE_ROOT=<canonical path>` — canonical directory containing the flake
+- `__XI_IN_DEVSHELL=1`: presence indicates the current process is running inside
+  an xi-managed devshell subshell.
+- `__XI_FLAKE_ROOT=<canonical path>`: canonical directory containing the flake
   root that produced this subshell.
-- `__XI_BIN=<path>` — the resolved absolute path to the xi binary that spawned
+- `__XI_BIN=<path>`: the resolved absolute path to the xi binary that spawned
   this subshell.
-- `__XI_DEPTH=<n>` — the current nesting depth (1 for the first devshell,
+- `__XI_DEPTH=<n>`: the current nesting depth (1 for the first devshell,
   incremented per nested spawn).
-- `__XI_INJECTED_VARS_<depth>=<comma-list>` — the set of env-var names this
+- `__XI_INJECTED_VARS_<depth>=<comma-list>`: the set of env-var names this
   depth-level has added to the environment (used for cleanup on exit).
-- `__XI_LOCK_HASH=<hex>` — the hash of `flake.lock` at spawn time, used by the
-  prompt-hook shortcut path.
-- `__XI_ORIG_PATH=<value>` — the parent shell's `$PATH` at first activation in
-  this shell lifetime; captured once and never mutated.
+- `__XI_SUPPRESS=<flake_root>`: set by the parent after a non-200 subshell exit;
+  see the exit-code requirement below.
 
 No other `__XI_*` variables MAY be published by the activation surface without a
 spec update.
@@ -28,39 +26,57 @@ spec update.
 #### Scenario: Enter a devshell from a clean shell
 
 - **WHEN** a devshell subshell is spawned by the prompt hook
-- **THEN** every listed variable is set with a non-empty value, and no other
-  `__XI_*` variable is set
+- **THEN** every variable listed above is set with a non-empty value, and no
+  other `__XI_*` variable is set
 
 #### Scenario: Enter a nested devshell
 
 - **WHEN** a devshell subshell is spawned from inside an existing depth-1
   devshell
 - **THEN** `__XI_DEPTH=2`, `__XI_INJECTED_VARS_2` is created for the child
-  level, `__XI_INJECTED_VARS_1` is preserved unchanged, and `__XI_ORIG_PATH`
-  remains the outermost captured value
+  level, and `__XI_INJECTED_VARS_1` is preserved unchanged
 
-### Requirement: PATH prepend-not-replace with original capture
+### Requirement: Lock-hash and original-PATH variables are gaps, not contract
+
+`__XI_LOCK_HASH` and `__XI_ORIG_PATH` are named in code
+(`hook/shortcut.rs::ENV_LOCK_HASH`, `trust.rs`'s read of `__XI_ORIG_PATH`) but
+as of 2026-11-07 neither has a writer anywhere in the production code path.
+Until a task closes this gap, these two variables MUST NOT be treated as part of
+the published contract, and any code that reads them (the prompt-hook shortcut
+check; the trust setup-instructions gate) MUST tolerate them being permanently
+absent.
+
+#### Scenario: Shortcut check never short-circuits today
+
+- **GIVEN** no code path exports `__XI_LOCK_HASH` into a real child shell
+- **WHEN** `hook::shortcut::should_shortcut` runs inside a live devshell
+- **THEN** it always falls through to the full daemon-call path, because
+  `std::env::var(ENV_LOCK_HASH)` is `Err` in every real invocation
+
+### Requirement: PATH prepend-not-replace, restored by process isolation
 
 The devshell env file MUST prepend nix store paths to `$PATH` and MUST NOT
-remove, reorder, or replace any pre-existing PATH entries. On first activation
-in a shell lifetime, the parent's `$PATH` MUST be captured verbatim into
-`__XI_ORIG_PATH` so that de-activation can subtract rather than reconstruct.
+remove, reorder, or replace any pre-existing PATH entries. De-activation MUST
+NOT depend on a captured-and-subtracted `__XI_ORIG_PATH`; instead, the devshell
+subshell is a child process that is never handed a mutated copy of the parent's
+own environment back, so exiting it (any exit path) restores the parent's
+original `$PATH` simply because the parent process was never mutated.
 
 #### Scenario: PATH prepend preserves user PATH
 
 - **WHEN** a shell whose PATH contains `/home/u/bin:/usr/local/bin:/usr/bin`
   enters a devshell whose nix paths are `/nix/store/A/bin` and
   `/nix/store/B/bin`
-- **THEN** the resulting `$PATH` starts with
-  `/nix/store/A/bin:/nix/store/
-  B/bin:` and every original entry appears after
+- **THEN** the resulting `$PATH` inside the subshell starts with
+  `/nix/store/A/bin:/nix/store/B/bin:` and every original entry appears after,
   in its original order
 
-#### Scenario: `__XI_ORIG_PATH` is captured exactly once
+#### Scenario: Parent PATH is unaffected by the child's activation
 
-- **WHEN** a shell enters, exits, and re-enters a devshell without dying
-- **THEN** `__XI_ORIG_PATH` retains the value captured on the first activation
-  and is not mutated on the second
+- **WHEN** a shell enters a devshell, observes the prepended `$PATH`, then exits
+  back to the parent shell
+- **THEN** the parent shell's `$PATH` is exactly what it was before entry,
+  because the parent process's own environment was never written to
 
 ### Requirement: Depth-scoped injected-var registry
 
@@ -181,3 +197,45 @@ adding a new shell.
   modules
 - **THEN** the codebase compiles and every existing test continues to pass
   without further modification
+
+### Requirement: Daemon-mediated re-source protocol
+
+The daemon MUST track, per registered consumer (shell process), independent
+generation counters for the env file and the hook file. On a prompt-tick query,
+the daemon MUST tell the consumer to re-source exactly when that consumer's
+last-acknowledged generation for that file is behind the current one, and MUST
+mark the consumer's generation as acknowledged once it reports
+`should_source_env` / `should_source_hook` as true for that tick. Env and hook
+files MUST be exposed to consumers through a stable, daemon-owned
+current-symlink path per target (`env-<target>.sh`, `hook-<target>.sh`) that the
+daemon atomically repoints whenever a new evaluation succeeds, so a consumer
+always sources the same path regardless of how many evaluations have happened
+since it last sourced.
+
+#### Scenario: Stale consumer is told to re-source
+
+- **WHEN** a consumer's last-acknowledged env generation is older than the
+  daemon's current env generation
+- **THEN** the daemon's response sets `should_source_env = true` and
+  `env_file_path` to the current `env-<target>.sh` symlink path
+
+#### Scenario: Up-to-date consumer is not told to re-source
+
+- **WHEN** a consumer's last-acknowledged env generation equals the daemon's
+  current env generation
+- **THEN** the daemon's response sets `should_source_env = false` and
+  `env_file_path = None`
+
+#### Scenario: Env and hook generations advance independently
+
+- **WHEN** a new evaluation updates only the env file, not the hook file
+- **THEN** a consumer behind on env is told to re-source env, and the same
+  consumer's hook generation is unaffected by that evaluation
+
+#### Scenario: Symlink indirection survives concurrent evaluations
+
+- **WHEN** two evaluations complete in quick succession while a consumer has not
+  yet re-sourced
+- **THEN** the consumer's next prompt tick resolves the current symlink to the
+  latest env file, never an intermediate one, because the daemon atomically
+  repoints the symlink rather than appending versions the client must track

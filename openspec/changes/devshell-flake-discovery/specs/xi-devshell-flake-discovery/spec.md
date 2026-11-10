@@ -23,6 +23,20 @@ collecting every ancestor that contains a `flake.nix`.
 - **THEN** discovery starts from `/mnt/nvme/repo/pkg/src` and returns paths
   rooted at `/mnt/nvme/repo`, not at `~/repo`
 
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `flake_detect.rs::find_flake_stack` as of 2026-11-07 has no
+  `fs::canonicalize` call anywhere in the file and walks `start` verbatim
+- **WHEN** discovery runs from a symlinked CWD alias (`~/repo` →
+  `/mnt/nvme/repo`)
+- **THEN** today's build returns a flake root rooted at the alias path
+  (`~/repo/...`), not the canonical target; the flake id derived from it differs
+  from the id derived via the canonical path. This scenario documents the gap
+  tracked in `tasks.md` and must flip to the "Discovery from a symlinked CWD
+  alias" scenario above once canonicalisation lands. Landing it is a one-time
+  breaking change for any flake currently trusted or daemon-bound via a
+  symlinked alias - see the proposal's Impact/Migration sections.
+
 ### Requirement: Innermost flake wins for single-root callers
 
 `find_flake_root` MUST return the innermost (deepest) discovered flake
@@ -73,6 +87,20 @@ flake roots.
 - **WHEN** `/proj/.git/hooks/flake.nix` exists (accidentally) and discovery runs
   from `/proj/src`
 - **THEN** it is not recorded
+
+#### Scenario: Known gap, current behaviour
+
+- **GIVEN** `flake_detect.rs::find_flake_stack` as of 2026-11-07 has no
+  exclusion check of any kind; the walk is
+  `if dir.join("flake.nix").exists()
+  { flakes.push(dir.clone()) }` with no
+  basename filtering
+- **WHEN** a `flake.nix` exists under `.git/`, `node_modules/`, or `target/`
+  along the walk path
+- **THEN** today's build records it as a flake root exactly like any other
+  ancestor; this scenario documents the gap tracked in `tasks.md` and must flip
+  to the "Flake inside node_modules" / "Flake inside .git" scenarios above once
+  the exclusion filter lands
 
 ### Requirement: Filesystem-root termination without fallback
 
