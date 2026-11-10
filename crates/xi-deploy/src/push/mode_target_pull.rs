@@ -104,6 +104,7 @@ mod tests {
       _target: &TargetAddr,
       _store_path: &str,
       _via: super::super::args::CopyVia,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by target-pull tests")
     }
@@ -114,6 +115,7 @@ mod tests {
       _local: &std::path::Path,
       _spec: &xi_core::sources::secrets::SecretSpec,
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by target-pull tests")
     }
@@ -125,6 +127,7 @@ mod tests {
       _remote: &str,
       _excludes: &[&str],
       _interactive_sudo: bool,
+      _retry_attempts: u32,
     ) -> Result<()> {
       unreachable!("not exercised by target-pull tests")
     }

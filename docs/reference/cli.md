@@ -11,7 +11,7 @@ not instruct. For task-oriented instructions, see the
 | Configuration    | `os`, `home`, `darwin`, `system`                                                        |
 | Flake operations | `build`, `check`, `run`, `fmt`, `show`, `init`, `update`, `ci`, `lib`, `test`, `doctor` |
 | Deployment       | `deploy`                                                                                |
-| Development      | `develop`, `search`, `vm`                                                              |
+| Development      | `develop`, `search`, `repl`, `vm`                                                       |
 | Maintenance      | `cache`, `clean`, `nix`, `completions`                                                  |
 
 ## Global options
@@ -538,7 +538,7 @@ Applied to every command that ends up invoking `nix build` (`os`, `home`,
 | `--offline`                      | `XI_OFFLINE`             | No network access                     |
 | `--accept-flake-config`          | `XI_ACCEPT_FLAKE_CONFIG` | Trust flake `nixConfig`               |
 | `--refresh`                      | —                        | Force refresh of flake inputs         |
-| `--override-input <INPUT> <REF>` | —                        | Override a flake input (repeatable)   |
+| `--override-input <INPUT> <REF>` | `XI_OVERRIDE_INPUT`      | Override a flake input (repeatable)   |
 | `--option <NAME> <VALUE>`        | —                        | Nix configuration option (repeatable) |
 | `--no-nom`                       | `XI_NO_NOM`              | Disable nix-output-monitor            |
 

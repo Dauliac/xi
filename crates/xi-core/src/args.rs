@@ -533,6 +533,16 @@ pub struct NixBuildPassthroughArgs {
   #[arg(skip)]
   pub connect_timeout: Option<u64>,
 
+  /// Overrides resolved from the config cascade (global `config.toml`,
+  /// `.xi.toml`, `.xi.local.toml`, `XI_OVERRIDE_INPUT`), keyed by input
+  /// name and already normalized to flakerefs.
+  ///
+  /// Not a CLI flag  -  injected via `apply_override_input_defaults`. Kept
+  /// separate from `override_input` so a `--override-input` flag can
+  /// replace a configured entry by name at emission time.
+  #[arg(skip)]
+  pub config_override_input: std::collections::BTreeMap<String, String>,
+
   /// Resolved substituter URLs for every matched cache target.
   /// Injected as additive `--option extra-substituters`. Not a CLI
   /// flag; applied via `apply_cache_pull_flags`.
@@ -635,13 +645,44 @@ impl NixBuildPassthroughArgs {
       args.push("extra-trusted-public-keys".into());
       args.push(self.extra_trusted_public_keys.join(" "));
     }
-    for pair in self.override_input.chunks(2) {
+    for (name, flakeref) in self.effective_override_input() {
       args.push("--override-input".into());
-      args.push(pair[0].clone());
-      args.push(pair[1].clone());
+      args.push(name);
+      args.push(flakeref);
     }
 
     args
+  }
+
+  /// Resolve `--override-input` flags against config-derived overrides,
+  /// merging by input name so a flag replaces only the entry it names and
+  /// leaves the rest of the configured set applied.
+  ///
+  /// Sorted, so the emitted argv and the report are deterministic.
+  #[must_use]
+  pub fn effective_override_input(&self) -> Vec<(String, String)> {
+    let mut merged: std::collections::BTreeMap<String, String> =
+      self.config_override_input.clone();
+
+    for pair in self.override_input.chunks(2) {
+      if pair.len() == 2 {
+        merged.insert(pair[0].clone(), pair[1].clone());
+      }
+    }
+
+    merged.into_iter().collect()
+  }
+
+  /// Install overrides resolved from the config cascade.
+  ///
+  /// A separate method rather than a parameter on `apply_build_defaults`:
+  /// that one is `pub const fn` and merges scalars by field, and a map
+  /// merge cannot happen in a const fn.
+  pub fn apply_override_input_defaults(
+    &mut self,
+    overrides: &std::collections::BTreeMap<String, String>,
+  ) {
+    self.config_override_input = overrides.clone();
   }
 
   /// Apply defaults from config file. Config values only take effect
@@ -981,6 +1022,97 @@ mod tests {
       "--override-input",
       "nixpkgs",
       "github:NixOS/nixpkgs/nixos-unstable"
+    ]);
+  }
+
+  /// SC-012: with nothing configured anywhere, the generated argv must be
+  /// identical to what it was before this capability existed. That is what
+  /// makes the change inert by default.
+  #[test]
+  fn nothing_configured_changes_nothing() {
+    let args = NixBuildPassthroughArgs {
+      connect_timeout: None,
+      ..Default::default()
+    };
+    assert!(args.config_override_input.is_empty());
+    assert!(args.generate_passthrough_args().is_empty());
+  }
+
+  #[test]
+  fn config_derived_override_is_emitted() {
+    let mut args = NixBuildPassthroughArgs::default();
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("nix-lib".to_string(), "path:/abs/nix-lib".to_string());
+    args.apply_override_input_defaults(&map);
+
+    assert_eq!(args.generate_passthrough_args(), [
+      "--override-input",
+      "nix-lib",
+      "path:/abs/nix-lib"
+    ]);
+  }
+
+  /// SC-007: precedence holds per input name.
+  #[test]
+  fn a_flag_replaces_only_the_input_it_names() {
+    let mut args = NixBuildPassthroughArgs {
+      override_input: vec!["nix-lib".into(), "path:/from/flag".into()],
+      ..Default::default()
+    };
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("nix-lib".to_string(), "path:/from/config".to_string());
+    map.insert("nix-vm-test".to_string(), "path:/vm".to_string());
+    args.apply_override_input_defaults(&map);
+
+    // nix-lib takes the flag's value, nix-vm-test keeps the configured one.
+    assert_eq!(args.generate_passthrough_args(), [
+      "--override-input",
+      "nix-lib",
+      "path:/from/flag",
+      "--override-input",
+      "nix-vm-test",
+      "path:/vm"
+    ]);
+  }
+
+  /// A shadowed entry must not be emitted twice, so the report cannot
+  /// advertise a value that nix's silent last-wins would discard.
+  #[test]
+  fn a_shadowed_entry_is_emitted_once() {
+    let mut args = NixBuildPassthroughArgs {
+      override_input: vec!["nix-lib".into(), "path:/winner".into()],
+      ..Default::default()
+    };
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("nix-lib".to_string(), "path:/loser".to_string());
+    args.apply_override_input_defaults(&map);
+
+    let generated = args.generate_passthrough_args();
+    assert_eq!(
+      generated
+        .iter()
+        .filter(|a| *a == "--override-input")
+        .count(),
+      1
+    );
+    assert!(!generated.iter().any(|a| a == "path:/loser"));
+  }
+
+  #[test]
+  fn emitted_override_order_is_deterministic() {
+    let mut args = NixBuildPassthroughArgs::default();
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("z".to_string(), "path:/z".to_string());
+    map.insert("a".to_string(), "path:/a".to_string());
+    args.apply_override_input_defaults(&map);
+
+    assert_eq!(args.generate_passthrough_args(), [
+      "--override-input",
+      "a",
+      "path:/a",
+      "--override-input",
+      "z",
+      "path:/z"
     ]);
   }
 }

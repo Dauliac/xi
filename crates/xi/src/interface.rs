@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, path::PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::InfoLevel;
@@ -420,6 +420,139 @@ impl XiCommand {
       Self::Test(args) => {
         apply_nom(&mut args.no_nom);
         apply_flake(&mut args.passthrough);
+      },
+      _ => {},
+    }
+  }
+
+  /// The nix command kind this xi command ends up invoking, plus the
+  /// `nix flake <sub>` subcommand when there is one.
+  ///
+  /// The subcommand matters because `CommandKind::Flake` is too coarse to
+  /// gate on: its single variant covers `update`, `lock`, `check`, `show`
+  /// and `metadata` alike.
+  const fn nix_command_shape(
+    &self,
+  ) -> Option<(nix_command::CommandKind, Option<&'static str>)> {
+    use nix_command::CommandKind as K;
+
+    match self {
+      Self::Build(_) | Self::Ci(_) | Self::Test(_) => Some((K::Build, None)),
+      Self::Check(_) => Some((K::Flake, Some("check"))),
+      Self::Run(_) => Some((K::Run, None)),
+      Self::Fmt(_) => Some((K::Fmt, None)),
+      Self::Develop(_) => Some((K::Develop, None)),
+      Self::FlakeShow(_) => Some((K::Flake, Some("show"))),
+      // Lock-writing: must never receive the flag.
+      Self::Update(_) => Some((K::Flake, Some("update"))),
+      _ => None,
+    }
+  }
+
+  /// Resolve `build.override_input` through the whole cascade and install
+  /// the result on whichever passthrough args this command carries.
+  ///
+  /// Config is the lowest priority: a `--override-input` flag still wins
+  /// per input name, resolved at emission time.
+  pub fn apply_override_input_config(
+    &mut self,
+    build_config: &crate::config::BuildConfig,
+  ) {
+    use xi_core::override_input as oi;
+
+    let Some((kind, flake_sub)) = self.nix_command_shape() else {
+      return;
+    };
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let flake_dir = oi::discover_flake_dir(&cwd);
+
+    // `.xi.toml` and `.xi.local.toml` live next to `flake.nix`.
+    let project = flake_dir
+      .as_deref()
+      .map_or_else(Vec::new, |dir| xi_flake::project_override_input(Some(dir)));
+
+    let env_raw = std::env::var("XI_OVERRIDE_INPUT").ok();
+
+    // The CLI pairs already on the struct, so a flag can replace a
+    // configured entry by name rather than being concatenated after it.
+    let cli_pairs = self.override_input_pairs().unwrap_or_default();
+
+    let ctx = oi::ResolveContext {
+      global: &build_config.override_input,
+      project: &project,
+      env_raw: env_raw.as_deref(),
+      cli_pairs: &cli_pairs,
+      flake_dir: flake_dir.as_deref(),
+      cwd: &cwd,
+      kind,
+      flake_subcommand: flake_sub,
+    };
+
+    let outcome = match oi::resolve_for_command(&ctx) {
+      Ok(outcome) => outcome,
+      Err(e) => {
+        // Loud, not silently skipped: a misconfigured override changes
+        // what gets built.
+        tracing::error!("{e}");
+        return;
+      },
+    };
+
+    oi::report(&outcome);
+
+    let resolved: std::collections::BTreeMap<String, String> = outcome
+      .resolved
+      .iter()
+      .map(|r| (r.name.clone(), r.flakeref.clone()))
+      .collect();
+
+    if resolved.is_empty() {
+      return;
+    }
+
+    self.install_override_input(&resolved);
+  }
+
+  /// The `--override-input` pairs already parsed from the command line.
+  fn override_input_pairs(&self) -> Option<Vec<String>> {
+    match self {
+      Self::Build(args) => Some(args.passthrough.override_input.clone()),
+      Self::Check(args) => Some(args.passthrough.override_input.clone()),
+      Self::Run(args) => Some(args.passthrough.override_input.clone()),
+      Self::Fmt(args) => Some(args.passthrough.override_input.clone()),
+      Self::Ci(args) => Some(args.passthrough.override_input.clone()),
+      Self::Test(args) => Some(args.passthrough.override_input.clone()),
+      Self::Develop(args) => Some(args.passthrough.override_input.clone()),
+      _ => None,
+    }
+  }
+
+  fn install_override_input(
+    &mut self,
+    resolved: &std::collections::BTreeMap<String, String>,
+  ) {
+    match self {
+      Self::Build(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
+      },
+      Self::Check(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
+      },
+      Self::Run(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
+      },
+      Self::Fmt(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
+      },
+      Self::Ci(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
+      },
+      Self::Test(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
+      },
+      Self::Develop(args) => {
+        args.passthrough.apply_override_input_defaults(resolved);
       },
       _ => {},
     }

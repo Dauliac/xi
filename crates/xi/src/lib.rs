@@ -96,6 +96,8 @@ fn missing_subcommand_help(err: &clap::Error) -> Option<String> {
   // the usage line would show just "cache" instead of "xi cache". Use
   // the path clap's own error already resolved.
   cmd.set_bin_name(path);
+  // `.ansi()`, not the plain `Display`/`to_string()`: see
+  // `interface::grouped_help`'s doc comment for why.
   Some(cmd.render_long_help().ansi().to_string())
 }
 
@@ -215,8 +217,10 @@ pub fn main() -> Result<()> {
           tracing::debug!("Loaded config from {}", store.path().display());
           args.command.apply_cache_config(&config.cache);
           args.command.apply_build_config(&config.build);
+          args.command.apply_override_input_config(&config.build);
           args.command.apply_cache_pull_config(&config.cache);
           args.command.apply_locate_config(&config.locate);
+          args.command.apply_repl_config(&config.repl);
         },
         Err(e) => {
           tracing::warn!("Failed to parse config: {e}");

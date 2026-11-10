@@ -1602,7 +1602,7 @@ mod tests {
     // Case 1: no `XI_APPLIED_ORIGIN` and no SSH session var -> "local",
     // reusing today's `applied-via` inference.
     let guard = OriginEnvGuard::clear();
-    record_activation_at(&paths, &profile).expect("record local");
+    record_activation_at(&paths, &profile, false).expect("record local");
     assert_eq!(
       read_state_file(&paths.state_dir, "applied-origin")
         .expect("read")
@@ -1612,7 +1612,7 @@ mod tests {
 
     // Case 2: the gitops daemon tags its own activation explicitly.
     guard.set("XI_APPLIED_ORIGIN", "daemon");
-    record_activation_at(&paths, &profile).expect("record daemon");
+    record_activation_at(&paths, &profile, false).expect("record daemon");
     assert_eq!(
       read_state_file(&paths.state_dir, "applied-origin")
         .expect("read")
@@ -1623,7 +1623,7 @@ mod tests {
     // Case 3: an inbound push tags its target-side activation with the
     // operator's hostname.
     guard.set("XI_APPLIED_ORIGIN", "push:operator-host");
-    record_activation_at(&paths, &profile).expect("record push");
+    record_activation_at(&paths, &profile, false).expect("record push");
     assert_eq!(
       read_state_file(&paths.state_dir, "applied-origin")
         .expect("read")
@@ -1646,7 +1646,7 @@ mod tests {
 
     // Case 1: no `XI_INVENTORY_ROLE` -> no marker is written.
     let guard = OriginEnvGuard::clear();
-    record_activation_at(&paths, &profile).expect("record without role");
+    record_activation_at(&paths, &profile, false).expect("record without role");
     assert_eq!(
       read_state_file(&paths.state_dir, "inventory-role").expect("read"),
       None
@@ -1655,7 +1655,7 @@ mod tests {
     // Case 2: an inbound push matched a `[[push.hosts]]` entry for
     // this host and tagged its activation with that name.
     guard.set("XI_INVENTORY_ROLE", "web1");
-    record_activation_at(&paths, &profile).expect("record with role");
+    record_activation_at(&paths, &profile, false).expect("record with role");
     assert_eq!(
       read_state_file(&paths.state_dir, "inventory-role")
         .expect("read")
@@ -1668,7 +1668,7 @@ mod tests {
     unsafe {
       std::env::remove_var("XI_INVENTORY_ROLE");
     }
-    record_activation_at(&paths, &profile).expect("record clears role");
+    record_activation_at(&paths, &profile, false).expect("record clears role");
     assert_eq!(
       read_state_file(&paths.state_dir, "inventory-role").expect("read"),
       None
