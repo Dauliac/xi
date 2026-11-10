@@ -123,23 +123,23 @@ current system profile over SSH before building.
 (remote-build) or gets built locally and copied (closure) when nothing else
 resolves the question: no `--remote-build` flag, no `.xi.toml [push]` entry
 (table-level or per-host), and no Nix-module default. That floor has always
-defaulted to closure: every build runs on the operator's own machine, even
-for a large, genuinely remote fleet where each target building itself would
-spread the load instead.
+defaulted to closure: every build runs on the operator's own machine, even for a
+large, genuinely remote fleet where each target building itself would spread the
+load instead.
 
-Set `XI_BUILD_FLOOR_REMOTE=1` to opt into the new floor: an unconfigured
-target that is not the machine `xi push` is running on resolves to
-remote-build by default. A target that *is* the local machine never consults
-the floor at all; nothing changes there.
+Set `XI_BUILD_FLOOR_REMOTE=1` to opt into the new floor: an unconfigured target
+that is not the machine `xi push` is running on resolves to remote-build by
+default. A target that _is_ the local machine never consults the floor at all;
+nothing changes there.
 
 Every existing override still outranks the floor, highest first:
 `--remote-build` on the command line, a per-host `[[push.hosts]]` entry, the
 table-level `.xi.toml [push] remote-build`, then the Nix-module default. Only
 the answer when none of those apply changes.
 
-This is a one-release opt-in before the floor flips by default. To keep
-today's closure-built-by-operator behavior once that happens, set
-`remote-build = false` at the table level in `.xi.toml [push]` (or the
-equivalent Nix-module option) once, before the opt-in window ends. `xi push`
-prints this same fix as a one-time warning whenever a push resolves at least
-one target through the new floor.
+This is a one-release opt-in before the floor flips by default. To keep today's
+closure-built-by-operator behavior once that happens, set `remote-build = false`
+at the table level in `.xi.toml [push]` (or the equivalent Nix-module option)
+once, before the opt-in window ends. `xi push` prints this same fix as a
+one-time warning whenever a push resolves at least one target through the new
+floor.

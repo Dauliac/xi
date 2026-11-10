@@ -15,12 +15,27 @@ lives in beads.
 
 - [ ] 2.1 Add an untrusted-flake guard at the top of `hook::tick` that returns
       early (no daemon connect, no eval) when `trust::is_trusted` is false.
+      Verified already present as `prompt.rs::handle_parent`'s trust check,
+      gated behind the devshell-likelihood heuristic (task 2.4).
 - [ ] 2.2 Emit exactly one throttled interactive-stderr prompt per shell
       lifetime per flake id when untrusted; throttle key persisted in the shell
-      environment (`__XI_TRUST_PROMPT_SHOWN_<flake_id>=1`).
+      environment (`__XI_TRUST_PROMPT_SHOWN_<flake_id>=1`). Confirmed NOT
+      implemented: `prompt.rs::handle_parent` (line ~113-120) currently
+      `eprintln!`s on every tick with no throttle key anywhere in the codebase.
 - [ ] 2.3 BDD `bdd_trust_hook_refusal`: walking into an untrusted flake with the
       hook installed produces zero daemon connections and one stderr prompt
       across N ticks.
+- [ ] 2.4 Document and test `flake_likely_has_devshell` (`prompt.rs:434-441`): a
+      flake whose `flake.nix` has none of `devShells`/`devShell`/`mkShell` must
+      never reach the trust check, in either trusted or untrusted state. Already
+      implemented; needs a BDD lock-in test (`bdd_trust_devshell_gate`).
+- [ ] 2.5 BDD `bdd_trust_nested_child`: walking from a trusted parent's subshell
+      into a nested, differently-rooted `flake.nix` independently trust-checks
+      the child (trusted child spawns a nested subshell; untrusted child stays
+      silently in the parent, no escalation prompt); the per-child suppress
+      clears on `cd` back to the parent. Covers `prompt.rs::handle_subshell`
+      "Case 3" (lines 200-246), currently undocumented and untested as a spec
+      scenario.
 
 ## 3. Marker filesystem contract (P1)
 

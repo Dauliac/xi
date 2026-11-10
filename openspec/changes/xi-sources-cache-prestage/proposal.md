@@ -76,7 +76,11 @@ This change is scoped as a standalone capability because:
 - **Coordination**: [[xi-sources-bootstrap]] calls into this capability as Phase
   2 (before the first build). [[xi-sources-gitops]] re-runs the prestage when a
   generation changes the substituter list. [[xi-sources-push]] optionally runs
-  the prestage on the target with `--prestage-cache`.
+  the prestage on the target with `--prestage-cache`. [[xi-binary-cache]] is the
+  related-but-unmodified neighbour: it covers the steady-state,
+  operator-declared `[cache.<name>]` surface (native credentials, pull-as-flags,
+  post-build-hook) while this capability keeps its narrower scope - the
+  chicken-and-egg bootstrap moment before xi itself can run.
 - **Breaking?**: No. The `!include xi.conf` approach preserves the user's
   `nix.conf`; the receipt enables full reversal.
 - **Migration**: None.

@@ -97,13 +97,10 @@ flake's `nixosConfiguration`. There is no required migration: adopt
 
 ## Implementation notes
 
-This is a from-scratch implementation reviewed against real builds in
-this repo's own test fixture (`tests/flake-module`): the manifest, the
-boot-free `--build-only` check, a full `runNixOSTest` boot (under QEMU
-TCG, no KVM) for the `e2e-sandbox` (`kind = "nixos"`) entry, and a full
-`nix-vm-test` image build (real Debian 13 cloud image, `libguestfs`-based
-customization, backdoor service) for the `e2e-debian` (`kind = "distro"`)
-entry all built and passed. One thing fell short of
+This is a from-scratch implementation reviewed against a real build in
+this repo's own test fixture (`tests/flake-module`) - the manifest, the
+boot-free `--build-only` check, and a full `runNixOSTest` boot (under QEMU
+TCG, no KVM) all built and passed. Two things fell short of
 `openspec/changes/xi-vm-lifecycle/`'s original design, by necessity rather
 than oversight:
 
@@ -113,13 +110,12 @@ than oversight:
   VM (`crates/xi-vm/src/registry.rs`); `status` is a `kill(pid, 0)` probe
   and `stop` sends `SIGTERM`. `--console` (`xi vm connect --console`) is
   not implemented, since it needs that supervisor's RPC.
-
-`kind = "distro"` needs a `nix-vm-test` input and an `xiVmTestInput`
-perSystem arg to work (see `modules/flake-parts/vm.nix`'s doc for why
-it's not threaded automatically). `tests/flake-module/flake.nix` adds
-and wires it for its own `e2e-debian` entry; xi's own shipped `flake.nix`
-deliberately does not (pinning a new third-party dependency into the
-tool everyone installs is a separate call from exercising it in a
-disposable test fixture). A consumer who wants `kind = "distro"` in
-their own project follows the same pattern `tests/flake-module/flake.nix`
-does.
+- **`kind = "distro"` is unverified and not wired up by default.**
+  `modules/flake-parts/vm.nix` accepts an `xiVmTestInput` perSystem arg
+  and uses it as the `nix-vm-test` backend when present, but xi's own
+  `flake.nix` does not add that input or thread the arg - doing so means
+  pinning and testing a new third-party dependency, which this change's
+  authoring environment had no `qemu-system-*` binary to actually build
+  against. A consumer who wants `kind = "distro"` today must add the
+  `nix-vm-test` input themselves and supply `_module.args.xiVmTestInput`
+  in their own `perSystem`.

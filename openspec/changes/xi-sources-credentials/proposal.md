@@ -64,7 +64,10 @@ fallthrough chain, and a documented failure mode when credentials are missing.
 - **Coordination**: [[xi-sources-gitops]] (daemon fetches honour this),
   [[xi-sources-bootstrap]] (phase 3 clone honours this, with the TOFU
   exception), [[xi-sources-push]] (`--mode sources` rsync honours this when the
-  target repo is remote), [[xi-sources-nix-modules]] (option tree extension).
+  target repo is remote), [[xi-sources-nix-modules]] (option tree extension),
+  [[xi-binary-cache]] (reuses the `Secret`/`Secret::from_file` type defined
+  here, unmodified, for `[cache.<name>.credentials]`'s S3 access-key/secret
+  files).
 - **Breaking?**: No. Users with public repos see no change. Users with private
   repos were silently failing before; they now configure the surface explicitly.
 - **Migration**: None.

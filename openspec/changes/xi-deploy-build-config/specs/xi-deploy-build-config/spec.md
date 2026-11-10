@@ -7,9 +7,9 @@
 Backend selection MUST be resolved by a ladder, highest precedence first: an
 explicit CLI flag, a per-host `[[push.hosts]]` override, the table-level
 `.xi.toml [push] backend` key, a Nix-module-written `xi.sources.push.backend`
-default, and finally `detect_backend`'s auto-detect floor. The ladder MUST
-share its resolution shape with the existing `remote-build` ladder (one
-generalized helper), not duplicate it.
+default, and finally `detect_backend`'s auto-detect floor. The ladder MUST share
+its resolution shape with the existing `remote-build` ladder (one generalized
+helper), not duplicate it.
 
 #### Scenario: Flake-parts default picks the backend with no flag
 
@@ -28,20 +28,20 @@ generalized helper), not duplicate it.
 
 ### Requirement: A batched build strategy decouples building from shipping
 
-With `--build-strategy batched`, every selected `PushMode::Closure` target
-MUST be built in an upfront phase, before any target is copied to or
-activated, producing a manifest mapping each target's name to its built store
-path. A subsequent invocation given that manifest MUST ship every target it
-names without rebuilding. With no `--build-strategy` flag, behavior MUST be
-unchanged from today: build, copy, and activate each target in sequence (or
-per `--parallel`), with no manifest produced.
+With `--build-strategy batched`, every selected `PushMode::Closure` target MUST
+be built in an upfront phase, before any target is copied to or activated,
+producing a manifest mapping each target's name to its built store path. A
+subsequent invocation given that manifest MUST ship every target it names
+without rebuilding. With no `--build-strategy` flag, behavior MUST be unchanged
+from today: build, copy, and activate each target in sequence (or per
+`--parallel`), with no manifest produced.
 
 #### Scenario: Batched build produces a manifest before shipping anything
 
 - **GIVEN** five `PushMode::Closure` targets selected for a push
 - **WHEN** `xi push --build-strategy batched --build-only` runs
-- **THEN** all five targets are built before any is copied or activated, and
-  a manifest naming all five store paths is written
+- **THEN** all five targets are built before any is copied or activated, and a
+  manifest naming all five store paths is written
 
 #### Scenario: A manifest ships without rebuilding
 
@@ -63,7 +63,7 @@ Behind a one-release opt-in, the build-location ladder's compiled floor (used
 when no CLI flag, `.xi.toml` entry, or flake-parts default resolves it) MUST
 default to remote-build (`true`) for a target that is not the machine the
 command is running on, and MUST NOT consult the ladder at all when the
-activation target *is* the local machine. Every existing override rung keeps
+activation target _is_ the local machine. Every existing override rung keeps
 applying unchanged on top of the new floor.
 
 #### Scenario: An unconfigured remote target defaults to building itself, after the opt-in
@@ -87,5 +87,5 @@ applying unchanged on top of the new floor.
 - **GIVEN** an `xi deploy` invocation that resolves to activating the local
   machine itself
 - **WHEN** build-location resolution would otherwise run
-- **THEN** the ladder is not consulted at all; the build happens locally
-  because the source and the target are the same machine
+- **THEN** the ladder is not consulted at all; the build happens locally because
+  the source and the target are the same machine
