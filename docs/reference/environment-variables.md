@@ -56,6 +56,7 @@ Fallback order for a missing installable: `XI_OS_FLAKE` → `XI_HOME_FLAKE` →
 | `XI_ACCEPT_FLAKE_CONFIG`  | Enable `--accept-flake-config`                                                           |
 | `XI_OFFLINE`              | Enable `--offline`                                                                       |
 | `XI_MAX_JOBS`             | Set `--max-jobs`                                                                         |
+| `XI_OVERRIDE_INPUT`       | Flake input overrides, whitespace-separated `NAME=FLAKEREF` pairs                        |
 | `XI_CONNECT_TIMEOUT`      | Substituter connection timeout in seconds (0 = off)                                      |
 | `XI_CI_BACKEND`           | Default backend for `xi ci` / `xi build --all`: `auto`, `devour-flake`, `nix-fast-build` |
 | `XI_NO_CHECKS`            | Skip startup checks (Nix version, experimental features)                                 |

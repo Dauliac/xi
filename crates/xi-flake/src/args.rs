@@ -62,6 +62,16 @@ pub struct NixPassthroughArgs {
   /// Not a CLI flag — applied via `apply_build_defaults`.
   #[arg(skip)]
   pub connect_timeout: Option<u64>,
+
+  /// Overrides resolved from the config cascade (global `config.toml`,
+  /// `.xi.toml`, `.xi.local.toml`, `XI_OVERRIDE_INPUT`), keyed by input
+  /// name and already normalized to flakerefs.
+  ///
+  /// Not a CLI flag  -  injected via `apply_override_input_defaults`. Kept
+  /// separate from `override_input` so a `--override-input` flag can
+  /// replace a configured entry by name at emission time.
+  #[arg(skip)]
+  pub config_override_input: std::collections::BTreeMap<String, String>,
 }
 
 impl NixPassthroughArgs {
@@ -91,12 +101,10 @@ impl NixPassthroughArgs {
     if self.refresh {
       args.push("--refresh".into());
     }
-    for pair in self.override_input.chunks(2) {
+    for (name, flakeref) in self.effective_override_input() {
       args.push("--override-input".into());
-      args.push(pair[0].clone());
-      if pair.len() > 1 {
-        args.push(pair[1].clone());
-      }
+      args.push(name);
+      args.push(flakeref);
     }
     // Inject connect-timeout before user --option pairs so explicit
     // `--option connect-timeout N` from the CLI takes precedence.
@@ -156,6 +164,37 @@ impl NixPassthroughArgs {
     if self.connect_timeout.is_none() {
       self.connect_timeout = connect_timeout;
     }
+  }
+
+  /// Resolve `--override-input` flags against config-derived overrides,
+  /// merging by input name so a flag replaces only the entry it names and
+  /// leaves the rest of the configured set applied.
+  ///
+  /// Sorted, so the emitted argv and the report are deterministic.
+  #[must_use]
+  pub fn effective_override_input(&self) -> Vec<(String, String)> {
+    let mut merged: std::collections::BTreeMap<String, String> =
+      self.config_override_input.clone();
+
+    for pair in self.override_input.chunks(2) {
+      if pair.len() == 2 {
+        merged.insert(pair[0].clone(), pair[1].clone());
+      }
+    }
+
+    merged.into_iter().collect()
+  }
+
+  /// Install overrides resolved from the config cascade.
+  ///
+  /// A separate method rather than a parameter on `apply_build_defaults`:
+  /// that one is `pub const fn` and merges scalars by field, and a map
+  /// merge cannot happen in a const fn.
+  pub fn apply_override_input_defaults(
+    &mut self,
+    overrides: &std::collections::BTreeMap<String, String>,
+  ) {
+    self.config_override_input = overrides.clone();
   }
 }
 

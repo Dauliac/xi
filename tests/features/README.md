@@ -1,7 +1,9 @@
 # BDD Feature Specifications
 
 This directory contains Gherkin-format BDD scenarios that serve as the **source
-of truth** for `xi develop` async devshell behavior.
+of truth** for selected xi behaviors. Files `01` through `20` cover `xi develop`
+async devshell behavior; later files cover other capabilities, one feature per
+file.
 
 ## File Index
 
@@ -27,6 +29,7 @@ of truth** for `xi develop` async devshell behavior.
 | `18_file_watcher.feature`             | File watcher patterns             | Unit (pattern matching)                   |
 | `19_shell_uniformity.feature`         | bash/zsh/fish parity              | Integration (activation scripts)          |
 | `20_daemon_protocol.feature`          | Socket protocol                   | Unit (serialization roundtrip)            |
+| `21_override_input_config.feature`    | Configurable `--override-input`   | Unit (cascade, normalizer, gates)         |
 
 ## Principles
 

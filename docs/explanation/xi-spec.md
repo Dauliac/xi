@@ -60,14 +60,15 @@ CLI flag  >  Environment variable  >  config.toml  >  Built-in default
 
 No exceptions. The mapping is predictable:
 
-| CLI flag       | Env var         | Config key         |
-| -------------- | --------------- | ------------------ |
-| `--show-trace` | `XI_SHOW_TRACE` | `build.show_trace` |
-| `--no-nom`     | `XI_NO_NOM`     | `build.nom`        |
-| `--keep-going` | `XI_KEEP_GOING` | `build.keep_going` |
-| `--impure`     | `XI_IMPURE`     | `build.impure`     |
-| `--offline`    | `XI_OFFLINE`    | `build.offline`    |
-| `--max-jobs N` | `XI_MAX_JOBS`   | `build.max_jobs`   |
+| CLI flag                     | Env var             | Config key             |
+| ---------------------------- | ------------------- | ---------------------- |
+| `--show-trace`               | `XI_SHOW_TRACE`     | `build.show_trace`     |
+| `--no-nom`                   | `XI_NO_NOM`         | `build.nom`            |
+| `--keep-going`               | `XI_KEEP_GOING`     | `build.keep_going`     |
+| `--impure`                   | `XI_IMPURE`         | `build.impure`         |
+| `--offline`                  | `XI_OFFLINE`        | `build.offline`        |
+| `--max-jobs N`               | `XI_MAX_JOBS`       | `build.max_jobs`       |
+| `--override-input INPUT REF` | `XI_OVERRIDE_INPUT` | `build.override_input` |
 
 ## 3. Privilege elevation
 

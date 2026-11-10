@@ -127,6 +127,17 @@ impl CommandKind {
     self.spec().name
   }
 
+  /// Whether this kind takes flake arguments at all, and so may receive
+  /// `--override-input`. Store-level commands operate on store paths, not
+  /// flakes, and would reject the flag.
+  #[must_use]
+  pub const fn accepts_flake_overrides(self) -> bool {
+    !matches!(
+      self,
+      Self::Store | Self::Copy | Self::PathInfo | Self::Config
+    )
+  }
+
   #[must_use]
   pub const fn spec(self) -> CommandSpec {
     match self {
@@ -145,6 +156,18 @@ impl CommandKind {
       Self::Store => COMMAND_SPECS[12],
     }
   }
+}
+
+/// Whether a `nix flake <sub>` subcommand exists to write `flake.lock`.
+///
+/// `--override-input` implies `--no-write-lock-file`, so injecting it into
+/// these would make them silently stop doing their job. `CommandKind::Flake`
+/// cannot express this on its own: its single variant covers `update`,
+/// `lock`, `check`, `show` and `metadata` alike, so the subcommand itself
+/// has to be inspected.
+#[must_use]
+pub fn is_lock_writing_flake_subcommand(subcommand: &str) -> bool {
+  matches!(subcommand, "update" | "lock")
 }
 
 impl TryFrom<&str> for CommandKind {
