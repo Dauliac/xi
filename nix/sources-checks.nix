@@ -55,6 +55,7 @@ let
       };
       systemd.services = unspecifiedAttrs;
       home-manager.users = unspecifiedAttrs;
+      users.groups = fileAttrs;
     };
     config.lib = { inherit mkSourcesFile; };
   };
@@ -439,16 +440,34 @@ let
             # assertion keeps the line wrapping of its source literal, so
             # a phrase that reads as contiguous in the module is not
             # contiguous in the string.
-          )) "would race on activation";
+          )) "owns activation for every embedded user";
         }
 
         {
-          name = "dual-scope gitops on different remotes is accepted";
+          # Broadened on purpose: an embedded user's daemon races the
+          # one generation system-manager/NixOS already owns activation
+          # for, regardless of which remote either scope tracks - two
+          # different remotes used to be accepted, which this case used
+          # to assert; it is refused now.
+          name = "dual-scope gitops on different remotes is refused too";
+          ok = failsWith (nixosWith (
+            lib.recursiveUpdate enabledSystem {
+              programs.xi.sources.gitops.enable = true;
+              home-manager.users.anon.programs.xi.sources = {
+                enable = true;
+                remote = "git@github.com:you/dotfiles.git";
+                gitops.enable = true;
+              };
+            }
+          )) "owns activation for every embedded user";
+        }
+
+        {
+          name = "embedded gitops alone, with system-scope gitops off, is accepted";
           ok =
             failures (
               nixosWith (
                 lib.recursiveUpdate enabledSystem {
-                  programs.xi.sources.gitops.enable = true;
                   home-manager.users.anon.programs.xi.sources = {
                     enable = true;
                     remote = "git@github.com:you/dotfiles.git";
@@ -465,10 +484,10 @@ let
         }
 
         {
-          name = "system head creates the sources and state dirs 0700 root:root";
+          name = "system head creates the sources dir 0750 and state dir 0770, both root:xi-status";
           ok = lib.all (rule: lib.elem rule systemHappy.systemd.tmpfiles.rules) [
-            "d /var/lib/xi/sources 0700 root root -"
-            "d /var/lib/xi/state 0700 root root -"
+            "d /var/lib/xi/sources 0750 root xi-status -"
+            "d /var/lib/xi/state 0770 root xi-status -"
           ];
         }
 
@@ -814,6 +833,7 @@ in
                   default = [ ];
                 };
                 systemd.services = unspecifiedAttrs;
+                users.groups = fileAttrs;
               };
             };
             evalWith =
@@ -845,6 +865,7 @@ in
                   systemPackagesLength = builtins.length (evalWith head).config.environment.systemPackages;
                   serviceNames = builtins.attrNames (evalWith head).config.systemd.services;
                   tmpfilesRules = (evalWith head).config.systemd.tmpfiles.rules;
+                  groupNames = builtins.attrNames (evalWith head).config.users.groups;
                 } true
               )).success;
             narrowSucceeds = succeeds self.nixosModules.sources;

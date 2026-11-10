@@ -15,16 +15,26 @@ let
   # xi-sources-race).
   hmUsers = config.home-manager.users or { };
 
-  gitopsRemoteAt =
+  gitopsEnabledAt =
     userCfg:
     let
       sources = userCfg.programs.xi.sources or null;
     in
-    if sources == null || !sources.enable || !sources.gitops.enable then null else sources.remote;
+    sources != null && sources.enable && sources.gitops.enable;
 
-  clashingUsers = lib.filter (
-    user: gitopsRemoteAt hmUsers.${user} != null && gitopsRemoteAt hmUsers.${user} == cfg.sources.remote
-  ) (lib.attrNames hmUsers);
+  # Any embedded user with their own gitops daemon on, regardless of
+  # which remote they track. Broader than a same-remote check on
+  # purpose: when home-manager is embedded like this, system-manager/
+  # NixOS already owns activation for every one of `hmUsers` (it is
+  # what builds and switches the combined generation they are part
+  # of), so a user-scope daemon independently re-activating
+  # home-manager on its own schedule races that one generation no
+  # matter whose remote it polls - two daemons touching the same
+  # activation path is the conflict, not two daemons touching the same
+  # git history.
+  gitopsEnabledHmUsers = lib.filter (user: gitopsEnabledAt hmUsers.${user}) (
+    lib.attrNames hmUsers
+  );
 in
 {
   options.programs.xi.sources = lib.mkOption {
@@ -78,14 +88,17 @@ in
       }
 
       {
-        assertion = !cfg.sources.gitops.enable || clashingUsers == [ ];
+        assertion = !cfg.sources.gitops.enable || gitopsEnabledHmUsers == [ ];
         message = ''
           programs.xi.sources.gitops.enable is true at system scope and
-          at user scope for ${lib.concatStringsSep ", " clashingUsers},
-          both tracking ${toString cfg.sources.remote}. Two daemons
-          polling the same remote would race on activation. Enable
-          gitops at exactly one scope, or give the scopes different
-          remotes.
+          at user scope for ${lib.concatStringsSep ", " gitopsEnabledHmUsers}
+          (embedded home-manager on this same host). The gitops daemon
+          can run at exactly one scope here: system-manager/NixOS already
+          owns activation for every embedded user, so an embedded user's
+          own daemon independently re-activating home-manager races that
+          same generation regardless of which remote each scope tracks.
+          Enable gitops at system scope only, or at exactly one embedded
+          user's scope with system-scope gitops left off - never both.
         '';
       }
     ];

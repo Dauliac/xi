@@ -4,6 +4,13 @@
   pkgs,
   ...
 }:
+let
+  cfg = config.programs.xi;
+  configFile = config.lib.mkConfigFile {
+    inherit pkgs;
+    inherit (cfg) settings;
+  };
+in
 {
   options.programs.xi.settings = lib.mkOption {
     type = (config._xi.types.settings pkgs);
@@ -26,5 +33,18 @@
           cache.cachix.push_command = ["cachix" "push" "mycache"];
         };
     '';
+  };
+
+  # The settings-config counterpart to the NixOS/system-manager head's
+  # `environment.etc."xi/config.toml"` (same symmetry, same reasoning).
+  # Lands at `$XDG_CONFIG_HOME/xi/config.toml` (usually
+  # `~/.config/xi/config.toml`), which happens to be exactly
+  # `default_config_path()`'s own non-`XI_CONFIG` fallback
+  # (`crates/xi/src/config.rs`) - so unlike the system-scope `/etc`
+  # file, this one is not purely cosmetic: an unwrapped `xi` run as
+  # this user picks it up on its own, no `programs.xi.wrapper.enable`
+  # required.
+  config = lib.mkIf (cfg.enable && configFile != null) {
+    xdg.configFile."xi/config.toml".source = configFile;
   };
 }
