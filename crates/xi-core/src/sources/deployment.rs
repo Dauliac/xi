@@ -316,8 +316,7 @@ impl HomeActivationMode {
   /// apart.
   #[must_use]
   pub fn overlap_warning(self, username: &str) -> Option<String> {
-    (self == Self::Both)
-      .then(|| home_activation_overlap_warning_text(username))
+    (self == Self::Both).then(|| home_activation_overlap_warning_text(username))
   }
 }
 
@@ -960,7 +959,10 @@ mod home_activation_mode_tests {
   #[test]
   fn non_both_modes_have_no_overlap_warning() {
     assert_eq!(HomeActivationMode::Embedded.overlap_warning("alice"), None);
-    assert_eq!(HomeActivationMode::Standalone.overlap_warning("alice"), None);
+    assert_eq!(
+      HomeActivationMode::Standalone.overlap_warning("alice"),
+      None
+    );
     assert_eq!(HomeActivationMode::None.overlap_warning("alice"), None);
   }
 }

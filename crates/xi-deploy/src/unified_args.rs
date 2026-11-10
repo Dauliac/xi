@@ -571,10 +571,11 @@ mod tests {
   #[test]
   fn two_or_more_positionals_all_land_in_targets() {
     let args = parse(&["web1", "web2", "web3"]).expect("parses");
-    assert_eq!(
-      args.targets,
-      vec!["web1".to_owned(), "web2".to_owned(), "web3".to_owned()]
-    );
+    assert_eq!(args.targets, vec![
+      "web1".to_owned(),
+      "web2".to_owned(),
+      "web3".to_owned()
+    ]);
   }
 
   #[test]

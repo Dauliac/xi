@@ -245,7 +245,8 @@ pub fn relay_stdio<R: Read, W: Write>(
 }
 
 // ---------------------------------------------------------------------------
-// `AdvanceNow` - target-pull's sibling request/reply pair ([[xi-push-target-pull]])
+// `AdvanceNow` - target-pull's sibling request/reply pair
+// ([[xi-push-target-pull]])
 // ---------------------------------------------------------------------------
 
 /// Ask the daemon to fetch and fast-forward right now, instead of waiting
@@ -662,11 +663,15 @@ fn handle_advance(
   end_tick_locked(inner);
 
   let reply = match &outcome {
-    TickOutcome::Advanced { to, .. } => AdvanceReply::Advanced {
-      new_head: to.clone(),
+    TickOutcome::Advanced { to, .. } => {
+      AdvanceReply::Advanced {
+        new_head: to.clone(),
+      }
     },
-    TickOutcome::NoChange { sha } => AdvanceReply::Advanced {
-      new_head: sha.clone(),
+    TickOutcome::NoChange { sha } => {
+      AdvanceReply::Advanced {
+        new_head: sha.clone(),
+      }
     },
     TickOutcome::Degraded(DegradedReason::RemoteForcePush { .. }) => {
       AdvanceReply::NotFastForward
@@ -705,7 +710,10 @@ mod tests {
   /// are never touched, so they do not need to exist.
   fn dummy_context() -> AdvanceContext {
     AdvanceContext {
-      sources_id:      SourcesId::new(Scope::System, "https://example.invalid/unused.git"),
+      sources_id:      SourcesId::new(
+        Scope::System,
+        "https://example.invalid/unused.git",
+      ),
       sources_dir:     PathBuf::from("/nonexistent-xi-lutp-dummy/sources"),
       state_dir:       PathBuf::from("/nonexistent-xi-lutp-dummy/state"),
       remote_url:      "https://example.invalid/unused.git".to_owned(),
@@ -816,7 +824,8 @@ mod tests {
 
   #[test]
   fn pause_while_idle_replies_immediately() {
-    let (server, path, _gate, _tmp) = start(Duration::from_secs(30), dummy_context());
+    let (server, path, _gate, _tmp) =
+      start(Duration::from_secs(30), dummy_context());
 
     let reply = call(&path, &PauseRequest::Pause {
       requester_pid: std::process::id(),
@@ -834,7 +843,8 @@ mod tests {
 
   #[test]
   fn resume_without_a_pause_replies_not_paused() {
-    let (server, path, _gate, _tmp) = start(Duration::from_secs(30), dummy_context());
+    let (server, path, _gate, _tmp) =
+      start(Duration::from_secs(30), dummy_context());
 
     let reply = call(&path, &PauseRequest::Resume {
       requester_pid: std::process::id(),
@@ -847,7 +857,8 @@ mod tests {
 
   #[test]
   fn pause_then_resume_round_trips() {
-    let (server, path, _gate, _tmp) = start(Duration::from_secs(30), dummy_context());
+    let (server, path, _gate, _tmp) =
+      start(Duration::from_secs(30), dummy_context());
     let pid = std::process::id();
 
     let paused = call(&path, &PauseRequest::Pause {
@@ -872,7 +883,8 @@ mod tests {
   /// `bdd_sources_race` suite).
   #[test]
   fn pause_mid_tick_defers_until_end_tick() {
-    let (server, path, _gate, _tmp) = start(Duration::from_secs(30), dummy_context());
+    let (server, path, _gate, _tmp) =
+      start(Duration::from_secs(30), dummy_context());
     let pid = std::process::id();
 
     server.begin_tick();
@@ -909,7 +921,8 @@ mod tests {
 
   #[test]
   fn gate_holds_new_ticks_once_paused() {
-    let (server, path, _gate, _tmp) = start(Duration::from_secs(30), dummy_context());
+    let (server, path, _gate, _tmp) =
+      start(Duration::from_secs(30), dummy_context());
 
     assert_eq!(server.gate(Instant::now()), TickGate::Run);
 
@@ -954,9 +967,7 @@ mod tests {
       requester_pid: std::process::id(),
     })
     .expect("advance");
-    assert_eq!(reply, AdvanceReply::Advanced {
-      new_head: expected,
-    });
+    assert_eq!(reply, AdvanceReply::Advanced { new_head: expected });
 
     // The socket is still healthy for an unrelated `PauseRequest` after a
     // successful advance - confirms the two message types are dispatched
@@ -1011,7 +1022,8 @@ mod tests {
   /// `pause` does.
   #[test]
   fn advance_now_mid_tick_replies_busy_immediately() {
-    let (server, path, gate, _tmp) = start(Duration::from_secs(30), dummy_context());
+    let (server, path, gate, _tmp) =
+      start(Duration::from_secs(30), dummy_context());
 
     let permit = gate.enter();
     server.begin_tick();

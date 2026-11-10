@@ -25,13 +25,19 @@
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
 
 use clap::Parser;
-use color_eyre::Result;
-use color_eyre::eyre::bail;
+use color_eyre::{Result, eyre::bail};
 use tempfile::TempDir;
 use xi_core::sources::{Scope, SourcesContext, SourcesId, secrets::SecretSpec};
 use xi_deploy::{
   push::{
-    args::{BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope},
+    args::{
+      BuildStrategy,
+      CopyVia,
+      PushArgs,
+      PushBackend,
+      PushMode,
+      PushScope,
+    },
     config::PushConfig,
     engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
     orchestrate::execute,
@@ -62,26 +68,26 @@ fn parse(extra: &[&str]) -> DeployArgs {
 /// duplicated here because `push_args()` is private to that crate.
 fn push_args_for(args: &DeployArgs) -> PushArgs {
   PushArgs {
-    targets: vec!["web1".to_owned()],
-    on: args.on.clone(),
-    backend: PushBackend::Auto,
-    phase: "activate".to_owned(),
-    mode: Some(PushMode::Closure),
-    remote_build: args.remote_build,
+    targets:           vec!["web1".to_owned()],
+    on:                args.on.clone(),
+    backend:           PushBackend::Auto,
+    phase:             "activate".to_owned(),
+    mode:              Some(PushMode::Closure),
+    remote_build:      args.remote_build,
     sources_transport: args.sources_transport,
-    retry: args.retry,
-    magic_rollback: 0,
-    parallel: 1,
-    interactive_sudo: false,
-    copy_via: CopyVia::Local,
-    fail_fast: false,
-    force_dirty: false,
-    build_strategy: args.build_strategy,
-    build_only: args.build_only,
-    from_manifest: args.from_manifest.clone(),
-    scope: PushScope::System,
-    reattach: args.reattach.clone(),
-    notify: args.notify.clone(),
+    retry:             args.retry,
+    magic_rollback:    0,
+    parallel:          1,
+    interactive_sudo:  false,
+    copy_via:          CopyVia::Local,
+    fail_fast:         false,
+    force_dirty:       false,
+    build_strategy:    args.build_strategy,
+    build_only:        args.build_only,
+    from_manifest:     args.from_manifest.clone(),
+    scope:             PushScope::System,
+    reattach:          args.reattach.clone(),
+    notify:            args.notify.clone(),
   }
 }
 
@@ -131,7 +137,11 @@ struct FixtureTransport {
 
 impl Transport for FixtureTransport {
   fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
-    self.run_calls.lock().expect("run_calls lock").push(cmd.clone());
+    self
+      .run_calls
+      .lock()
+      .expect("run_calls lock")
+      .push(cmd.clone());
     if cmd.script == "true" || cmd.script.starts_with("command -v") {
       return Ok(Outcome::ok(""));
     }
@@ -263,7 +273,8 @@ fn deploy_build_strategy_batched_build_only_builds_and_writes_a_manifest_but_shi
 /// from the first leg's recorded store path without calling `nix.build`
 /// again.
 #[test]
-fn deploy_from_manifest_ships_without_rebuilding_after_a_batched_build_only_leg() {
+fn deploy_from_manifest_ships_without_rebuilding_after_a_batched_build_only_leg()
+ {
   let build_args = parse(&["--build-strategy", "batched", "--build-only"]);
   let nix = FixtureNix::single_nixos_host();
   let (root, context) = fixture_context();

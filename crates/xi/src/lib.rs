@@ -68,11 +68,13 @@ fn missing_subcommand_help(err: &clap::Error) -> Option<String> {
     error::{ContextKind, ContextValue},
   };
 
-  let path = err.context().find_map(|(kind, value)| match (kind, value) {
-    (ContextKind::InvalidSubcommand, ContextValue::String(path)) => {
-      Some(path.as_str())
-    },
-    _ => None,
+  let path = err.context().find_map(|(kind, value)| {
+    match (kind, value) {
+      (ContextKind::InvalidSubcommand, ContextValue::String(path)) => {
+        Some(path.as_str())
+      },
+      _ => None,
+    }
   })?;
 
   let mut segments = path.split_whitespace().skip(1).peekable();

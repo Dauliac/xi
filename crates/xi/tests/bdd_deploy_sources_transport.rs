@@ -78,8 +78,7 @@ fn git_sources_repo(dir: &std::path::Path) {
   std::fs::write(
     dir.join("flake.nix"),
     "{ outputs = _: { nixosConfigurations.web1 = { }; \
-     nixosConfigurations.web2 = { }; nixosConfigurations.web3 = { }; }; \
-     } \n",
+     nixosConfigurations.web2 = { }; nixosConfigurations.web3 = { }; }; } \n",
   )
   .expect("write flake.nix");
   assert!(git(&["add", "."]).success());
@@ -145,7 +144,7 @@ impl Nix for FixtureNix {
 )]
 struct FixtureTransport {
   copy_calls: Mutex<Vec<(String, String)>>,
-  run_calls: Mutex<Vec<RemoteCommand>>,
+  run_calls:  Mutex<Vec<RemoteCommand>>,
   sync_calls: Mutex<Vec<(String, String)>>,
 }
 
@@ -220,26 +219,26 @@ impl Transport for FixtureTransport {
 /// field-for-field pass-through.
 fn push_args_from(deploy_args: &DeployArgs) -> PushArgs {
   PushArgs {
-    targets: Vec::new(),
-    on: None,
-    backend: PushBackend::Auto,
-    phase: "activate".to_owned(),
-    mode: deploy_args.mode,
-    remote_build: deploy_args.remote_build,
+    targets:           Vec::new(),
+    on:                None,
+    backend:           PushBackend::Auto,
+    phase:             "activate".to_owned(),
+    mode:              deploy_args.mode,
+    remote_build:      deploy_args.remote_build,
     sources_transport: deploy_args.sources_transport,
-    retry: deploy_args.retry,
-    magic_rollback: 0,
-    parallel: 1,
-    interactive_sudo: false,
-    copy_via: CopyVia::Local,
-    fail_fast: false,
-    force_dirty: false,
-    build_strategy: deploy_args.build_strategy,
-    build_only: deploy_args.build_only,
-    from_manifest: deploy_args.from_manifest.clone(),
-    scope: PushScope::System,
-    reattach: deploy_args.reattach.clone(),
-    notify: deploy_args.notify.clone(),
+    retry:             deploy_args.retry,
+    magic_rollback:    0,
+    parallel:          1,
+    interactive_sudo:  false,
+    copy_via:          CopyVia::Local,
+    fail_fast:         false,
+    force_dirty:       false,
+    build_strategy:    deploy_args.build_strategy,
+    build_only:        deploy_args.build_only,
+    from_manifest:     deploy_args.from_manifest.clone(),
+    scope:             PushScope::System,
+    reattach:          deploy_args.reattach.clone(),
+    notify:            deploy_args.notify.clone(),
   }
 }
 
@@ -285,8 +284,8 @@ fn deploy_sources_transport_target_pull_resolves_target_pull_for_every_target()
 
   assert!(
     !report.ok(),
-    "no daemon fixture answers advance_now, so every target must fail \
-     there rather than silently succeeding via another mode: {:?}",
+    "no daemon fixture answers advance_now, so every target must fail there \
+     rather than silently succeeding via another mode: {:?}",
     report.results
   );
   for result in &report.results {
@@ -294,8 +293,7 @@ fn deploy_sources_transport_target_pull_resolves_target_pull_for_every_target()
       .outcome
       .as_ref()
       .expect_err(
-        "every target resolves TargetPull, which this fixture cannot \
-         answer",
+        "every target resolves TargetPull, which this fixture cannot answer",
       )
       .to_string();
     assert!(

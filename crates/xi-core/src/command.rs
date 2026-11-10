@@ -1025,7 +1025,10 @@ impl Command {
     let mut cmd = Exec::cmd(&spec.program_path);
 
     if spec.program_kind.supports_askpass()
-      && !matches!(first.elevate.as_ref(), Some(ElevationStrategy::Passwordless))
+      && !matches!(
+        first.elevate.as_ref(),
+        Some(ElevationStrategy::Passwordless)
+      )
       && let Ok(askpass) = env::var("XI_SUDO_ASKPASS")
     {
       cmd = cmd.env("SUDO_ASKPASS", askpass);
@@ -1761,7 +1764,10 @@ mod tests {
 
     // Exactly one sudo invocation...
     assert_eq!(
-      cmdline.split_whitespace().filter(|t| t.ends_with("sudo")).count(),
+      cmdline
+        .split_whitespace()
+        .filter(|t| t.ends_with("sudo"))
+        .count(),
       1
     );
     // ...wrapping a single script that chains both steps with `&&`.
@@ -1786,7 +1792,10 @@ mod tests {
   fn test_run_elevated_batch_without_elevation_runs_each_step() {
     // No elevation set: run_elevated_batch must not require (or
     // resolve) an elevation program at all.
-    let steps = [Command::new("true").dry(true), Command::new("true").dry(true)];
+    let steps = [
+      Command::new("true").dry(true),
+      Command::new("true").dry(true),
+    ];
     Command::run_elevated_batch(&steps)
       .expect("unelevated batch should just run each step");
   }

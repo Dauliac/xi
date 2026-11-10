@@ -218,14 +218,16 @@ impl FromStr for Phase {
       "disko" => Ok(Self::Disko),
       "install" => Ok(Self::Install),
       "activate" => Ok(Self::Activate),
-      other => Err(format!(
-        "unknown phase '{other}'; expected one of {}",
-        Self::ALL
-          .iter()
-          .map(|p| p.as_str())
-          .collect::<Vec<_>>()
-          .join(", ")
-      )),
+      other => {
+        Err(format!(
+          "unknown phase '{other}'; expected one of {}",
+          Self::ALL
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+        ))
+      },
     }
   }
 }
@@ -456,8 +458,8 @@ impl PushArgs {
 
     if self.build_only && self.from_manifest.is_some() {
       return Err(eyre!(
-        "--build-only and --from-manifest cannot both be given: one \
-         builds without shipping, the other ships without building"
+        "--build-only and --from-manifest cannot both be given: one builds \
+         without shipping, the other ships without building"
       ));
     }
 

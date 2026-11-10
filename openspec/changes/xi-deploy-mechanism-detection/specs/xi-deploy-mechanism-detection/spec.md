@@ -6,12 +6,12 @@
 
 Mechanism detection for `Scope::System` MUST first consult host state in this
 order: an explicit override, then `cfg!(target_os = "macos")`, then
-`/etc/NIXOS`, then the system-manager profile path. When none of those
-resolve a mechanism, detection MUST consult the adopted or about-to-be-adopted
-sources: if exactly one of `nixosConfigurations.<hostname>` or
-`systemConfigs.<hostname>` is declared for this host's name, that namespace's
-mechanism resolves. If both are declared, or neither, detection MUST refuse
-and name the ambiguity rather than guessing.
+`/etc/NIXOS`, then the system-manager profile path. When none of those resolve a
+mechanism, detection MUST consult the adopted or about-to-be-adopted sources: if
+exactly one of `nixosConfigurations.<hostname>` or `systemConfigs.<hostname>` is
+declared for this host's name, that namespace's mechanism resolves. If both are
+declared, or neither, detection MUST refuse and name the ambiguity rather than
+guessing.
 
 #### Scenario: A bare host resolves from sources alone
 
@@ -26,8 +26,7 @@ and name the ambiguity rather than guessing.
 
 - **GIVEN** a host with `/etc/NIXOS` present
 - **WHEN** mechanism detection runs, regardless of what the sources declare
-- **THEN** it resolves `nixos` from host state, without consulting the
-  sources
+- **THEN** it resolves `nixos` from host state, without consulting the sources
 
 #### Scenario: An ambiguous declaration refuses
 
@@ -39,18 +38,18 @@ and name the ambiguity rather than guessing.
 ### Requirement: User-scope activation mode is independent of the OS-scope mechanism
 
 Activation-mode resolution for `Scope::User` MUST evaluate two independent
-signals for the target username: whether a `home-manager-<user>.service`
-systemd unit is present (embedded), and whether a `homeConfigurations.<user>@<host>`
-or `homeConfigurations.<user>` output is discoverable in the sources
-(standalone), checking the host-qualified name first. The four combinations
-MUST resolve to `Embedded`, `Standalone`, `Both`, or `None` respectively; none
-of the four is itself a fifth OS-scope mechanism.
+signals for the target username: whether a `home-manager-<user>.service` systemd
+unit is present (embedded), and whether a `homeConfigurations.<user>@<host>` or
+`homeConfigurations.<user>` output is discoverable in the sources (standalone),
+checking the host-qualified name first. The four combinations MUST resolve to
+`Embedded`, `Standalone`, `Both`, or `None` respectively; none of the four is
+itself a fifth OS-scope mechanism.
 
 #### Scenario: Embedded only
 
 - **GIVEN** `home-manager-alice.service` is present
-- **AND** no `homeConfigurations.alice@<host>` or `homeConfigurations.alice`
-  is discoverable
+- **AND** no `homeConfigurations.alice@<host>` or `homeConfigurations.alice` is
+  discoverable
 - **WHEN** activation-mode resolution runs for `alice`
 - **THEN** it resolves `Embedded`
 
@@ -65,7 +64,8 @@ of the four is itself a fifth OS-scope mechanism.
 
 - **GIVEN** `home-manager-alice.service` is present
 - **AND** `homeConfigurations.alice@<host>` is also discoverable
-- **WHEN** activation-mode resolution runs for `alice`, before any `xi home
+- **WHEN** activation-mode resolution runs for `alice`, before any
+  `xi home
   switch` activation proceeds
 - **THEN** it resolves `Both` and surfaces the overlap warning text
   `deployment.rs` already uses in `status`

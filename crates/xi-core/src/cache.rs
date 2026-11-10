@@ -966,7 +966,6 @@ mod push_url_file_tests {
       "expected a Pending-style message, got: {err}"
     );
   }
-
 }
 
 #[cfg(test)]

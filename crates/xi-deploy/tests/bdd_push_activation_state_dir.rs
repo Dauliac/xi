@@ -46,9 +46,7 @@ use xi_core::sources::{
   switch::record_activation_at,
 };
 use xi_deploy::push::{
-  args::{
-    BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope,
-  },
+  args::{BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope},
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate::execute,
@@ -247,26 +245,26 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
   let secrets = BTreeMap::new();
 
   let args = PushArgs {
-    targets:          vec!["web1".to_owned()],
-    on:               None,
-    backend:          PushBackend::Auto,
-    phase:            "activate".to_owned(),
-    mode:             Some(PushMode::Closure),
-    remote_build:     None,
+    targets:           vec!["web1".to_owned()],
+    on:                None,
+    backend:           PushBackend::Auto,
+    phase:             "activate".to_owned(),
+    mode:              Some(PushMode::Closure),
+    remote_build:      None,
     sources_transport: None,
-    magic_rollback:   0,
-    parallel:         1,
-    interactive_sudo: false,
-    copy_via:         CopyVia::Local,
-    fail_fast:        false,
-    force_dirty:      false,
-    build_strategy:   BuildStrategy::Interleaved,
-    build_only:       false,
-    from_manifest:    None,
-    scope:            PushScope::System,
-    retry:            None,
-    reattach:         None,
-    notify:           None,
+    magic_rollback:    0,
+    parallel:          1,
+    interactive_sudo:  false,
+    copy_via:          CopyVia::Local,
+    fail_fast:         false,
+    force_dirty:       false,
+    build_strategy:    BuildStrategy::Interleaved,
+    build_only:        false,
+    from_manifest:     None,
+    scope:             PushScope::System,
+    retry:             None,
+    reattach:          None,
+    notify:            None,
   };
 
   let report = execute(

@@ -68,16 +68,15 @@ allowlist in `crates/xi-core/src/flake_output.rs`
     `pname`/`name`.
   - A package exposed via `apps.<system>.*` with no `meta.mainProgram` set,
     regardless of how many executables its `outPath/bin` actually contains.
-    **Amendment:** this was originally scoped as "more than one binary in
-    `bin/` and no `meta.mainProgram`" (see the original `SC-FD-009` below),
-    but counting entries under `bin/` requires reading a package's *built*
-    output - import-from-derivation - which the one-shot, eval-only
-    `nix eval --apply` design described above is built to avoid. The
-    binary-count precondition was dropped; this check now warns whenever
-    `meta.mainProgram` is unset, for any app-exposed package. The
-    corresponding Requirement/Scenario in
-    `specs/xi-flake-doctor-checks/spec.md` and `SC-FD-009` have been
-    updated to match.
+    **Amendment:** this was originally scoped as "more than one binary in `bin/`
+    and no `meta.mainProgram`" (see the original `SC-FD-009` below), but
+    counting entries under `bin/` requires reading a package's _built_ output -
+    import-from-derivation - which the one-shot, eval-only `nix eval --apply`
+    design described above is built to avoid. The binary-count precondition was
+    dropped; this check now warns whenever `meta.mainProgram` is unset, for any
+    app-exposed package. The corresponding Requirement/Scenario in
+    `specs/xi-flake-doctor-checks/spec.md` and `SC-FD-009` have been updated to
+    match.
   - `meta.insecure` or `meta.knownVulnerabilities` set on a package reachable
     from the flake's default-visible outputs.
 - **Output hygiene checks** (new: cross-reference `nix flake show --json` across
@@ -180,11 +179,11 @@ false-positive rate; bundling them here would blow the scope of a single change.
 - **SC-FD-008**: A package with `version = "unstable"` (or no `version` at all)
   produces a `Warn`.
 - **SC-FD-009**: A package exposed via `apps.<system>.*` with no
-  `meta.mainProgram` produces a `Warn`, regardless of how many binaries it
-  ships in `bin/`. (Amended from the original "two or more binaries in
-  `bin/` and no `meta.mainProgram`" wording - see the "Derivation metadata
-  checks" note above; binary counting would require reading built output,
-  i.e. import-from-derivation, which this check group avoids.)
+  `meta.mainProgram` produces a `Warn`, regardless of how many binaries it ships
+  in `bin/`. (Amended from the original "two or more binaries in `bin/` and no
+  `meta.mainProgram`" wording - see the "Derivation metadata checks" note above;
+  binary counting would require reading built output, i.e.
+  import-from-derivation, which this check group avoids.)
 - **SC-FD-010**: `packages.x86_64-linux.foo` present with no
   `packages.aarch64-darwin.foo`, while both systems are declared in `systems`,
   produces a `Warn` naming the specific package and the system it's missing

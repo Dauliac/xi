@@ -44,26 +44,26 @@ fn parse(args: &[&str]) -> DeployArgs {
 /// validated against.
 fn push_args_from(args: &DeployArgs) -> PushArgs {
   PushArgs {
-    targets: Vec::new(),
-    on: args.on.clone(),
-    backend: args.backend,
-    phase: args.phase.clone(),
-    mode: args.mode,
-    remote_build: args.remote_build,
+    targets:           Vec::new(),
+    on:                args.on.clone(),
+    backend:           args.backend,
+    phase:             args.phase.clone(),
+    mode:              args.mode,
+    remote_build:      args.remote_build,
     sources_transport: args.sources_transport,
-    retry: args.retry,
-    magic_rollback: args.magic_rollback,
-    parallel: args.parallel,
-    interactive_sudo: args.interactive_sudo,
-    copy_via: args.copy_via,
-    fail_fast: args.fail_fast,
-    force_dirty: args.sources.force_dirty,
-    build_strategy: args.build_strategy,
-    build_only: args.build_only,
-    from_manifest: args.from_manifest.clone(),
-    scope: PushScope::System,
-    reattach: args.reattach.clone(),
-    notify: args.notify.clone(),
+    retry:             args.retry,
+    magic_rollback:    args.magic_rollback,
+    parallel:          args.parallel,
+    interactive_sudo:  args.interactive_sudo,
+    copy_via:          args.copy_via,
+    fail_fast:         args.fail_fast,
+    force_dirty:       args.sources.force_dirty,
+    build_strategy:    args.build_strategy,
+    build_only:        args.build_only,
+    from_manifest:     args.from_manifest.clone(),
+    scope:             PushScope::System,
+    reattach:          args.reattach.clone(),
+    notify:            args.notify.clone(),
   }
 }
 
@@ -85,7 +85,7 @@ fn build_only_and_from_manifest_together_refuse_with_pushs_exact_text() {
 
 #[test]
 fn build_only_alone_with_build_strategy_omitted_refuses_with_pushs_exact_text()
- {
+{
   let args = parse(&["--build-only"]);
   assert!(matches!(args.build_strategy, BuildStrategy::Interleaved));
 
@@ -102,8 +102,7 @@ fn build_only_alone_with_build_strategy_omitted_refuses_with_pushs_exact_text()
 #[test]
 fn build_only_alone_with_build_strategy_interleaved_refuses_with_pushs_exact_text()
  {
-  let args =
-    parse(&["--build-only", "--build-strategy", "interleaved"]);
+  let args = parse(&["--build-only", "--build-strategy", "interleaved"]);
 
   let err = push_args_from(&args)
     .validate()

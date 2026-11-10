@@ -59,20 +59,20 @@ pub struct QueueEntry {
 /// degrade to a no-op on retry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SerializableTarget {
-  pub name:         String,
-  pub push_url:     Option<String>,
+  pub name:          String,
+  pub push_url:      Option<String>,
   #[serde(default)]
   pub push_url_file: Option<String>,
-  pub signing_key:  Option<String>,
-  pub push_command: Vec<String>,
+  pub signing_key:   Option<String>,
+  pub push_command:  Vec<String>,
   #[serde(default)]
-  pub provider:     Option<CacheProvider>,
+  pub provider:      Option<CacheProvider>,
   #[serde(default)]
-  pub bucket:       Option<String>,
+  pub bucket:        Option<String>,
   #[serde(default)]
-  pub credentials:  Option<CacheCredentials>,
+  pub credentials:   Option<CacheCredentials>,
   #[serde(default)]
-  pub required:     bool,
+  pub required:      bool,
 }
 
 impl From<&CacheTarget> for SerializableTarget {

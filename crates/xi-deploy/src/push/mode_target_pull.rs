@@ -19,13 +19,12 @@ use super::engine::{TargetAddr, Transport};
 /// its own `xi-sources-daemon` control socket.
 ///
 /// - [`AdvanceReply::Advanced`] is success.
-/// - [`AdvanceReply::NotFastForward`] is a conflict: the target's sources
-///   dir is not an ancestor of `to_sha` (a force-pushed remote, or a
-///   local divergence on the target), which `xi push` cannot resolve
-///   from here.
+/// - [`AdvanceReply::NotFastForward`] is a conflict: the target's sources dir
+///   is not an ancestor of `to_sha` (a force-pushed remote, or a local
+///   divergence on the target), which `xi push` cannot resolve from here.
 /// - [`AdvanceReply::Busy`] means a tick (poll-driven, or a previous
-///   `AdvanceNow`) is already in flight; `AdvanceNow` never queues, so
-///   the caller should retry rather than wait.
+///   `AdvanceNow`) is already in flight; `AdvanceNow` never queues, so the
+///   caller should retry rather than wait.
 ///
 /// # Errors
 ///
@@ -45,17 +44,21 @@ pub fn advance(
   };
   match transport.advance_now(target, scope, &request)? {
     AdvanceReply::Advanced { .. } => Ok(()),
-    AdvanceReply::NotFastForward => bail!(
-      "target-pull on {} refused: its sources dir is not a fast-forward \
-       descendant of the requested commit; resolve the conflict on the \
-       target before retrying",
-      target.name
-    ),
-    AdvanceReply::Busy => bail!(
-      "target-pull on {} is busy (a tick is already in flight); retry the \
-       push",
-      target.name
-    ),
+    AdvanceReply::NotFastForward => {
+      bail!(
+        "target-pull on {} refused: its sources dir is not a fast-forward \
+         descendant of the requested commit; resolve the conflict on the \
+         target before retrying",
+        target.name
+      )
+    },
+    AdvanceReply::Busy => {
+      bail!(
+        "target-pull on {} is busy (a tick is already in flight); retry the \
+         push",
+        target.name
+      )
+    },
   }
 }
 
@@ -170,18 +173,22 @@ mod tests {
 
   #[test]
   fn a_not_fast_forward_reply_is_a_conflict_error() {
-    let transport =
-      RecordingTransport::new(vec![AdvanceReply::NotFastForward]);
-    let err = advance(&transport, &target(), Scope::System, "deadbeef".to_owned())
-      .expect_err("conflict");
-    assert!(format!("{err}").contains("not a fast-forward"), "got: {err}");
+    let transport = RecordingTransport::new(vec![AdvanceReply::NotFastForward]);
+    let err =
+      advance(&transport, &target(), Scope::System, "deadbeef".to_owned())
+        .expect_err("conflict");
+    assert!(
+      format!("{err}").contains("not a fast-forward"),
+      "got: {err}"
+    );
   }
 
   #[test]
   fn a_busy_reply_asks_the_caller_to_retry() {
     let transport = RecordingTransport::new(vec![AdvanceReply::Busy]);
-    let err = advance(&transport, &target(), Scope::System, "deadbeef".to_owned())
-      .expect_err("busy");
+    let err =
+      advance(&transport, &target(), Scope::System, "deadbeef".to_owned())
+        .expect_err("busy");
     assert!(format!("{err}").contains("retry"), "got: {err}");
   }
 

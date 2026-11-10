@@ -118,8 +118,8 @@ Consumed by `xi develop` and its background daemon.
 
 ## Push
 
-| Variable                | Description                                                                                                                                       |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                | Description                                                                                                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `XI_BUILD_FLOOR_REMOTE` | One-release opt-in: unconfigured remote targets default to remote-build instead of closure. See the [remote build guide](../guides/remote-build.md#build-location-floor-opt-in). |
 
 ## Sources (`xi sources`)

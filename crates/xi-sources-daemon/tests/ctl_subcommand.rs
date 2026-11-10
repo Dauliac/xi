@@ -34,7 +34,10 @@ use xi_sources_daemon::{
 /// paths are never touched, so they do not need to exist.
 fn dummy_context() -> AdvanceContext {
   AdvanceContext {
-    sources_id:      SourcesId::new(Scope::System, "https://example.invalid/unused.git"),
+    sources_id:      SourcesId::new(
+      Scope::System,
+      "https://example.invalid/unused.git",
+    ),
     sources_dir:     PathBuf::from("/nonexistent-ctl-subcommand-test/sources"),
     state_dir:       PathBuf::from("/nonexistent-ctl-subcommand-test/state"),
     remote_url:      "https://example.invalid/unused.git".to_owned(),

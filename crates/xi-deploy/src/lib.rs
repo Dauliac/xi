@@ -97,7 +97,10 @@ fn detect_backend(flake_ref: &str) -> Box<dyn DeployBackend> {
 /// stand in for the real `nix` CLI and prove this flake-probing
 /// entrypoint resolves the same backend `push::discover::detect_backend`
 /// (the target-list entrypoint) does for the same flake.
-fn detect_backend_with(nix: &dyn Nix, flake_ref: &str) -> Box<dyn DeployBackend> {
+fn detect_backend_with(
+  nix: &dyn Nix,
+  flake_ref: &str,
+) -> Box<dyn DeployBackend> {
   match resolve_backend(nix, flake_ref) {
     ResolvedBackend::DeployRs => {
       if let Ok(backend) = backend::deploy_rs::DeployRsBackend::new(flake_ref) {
@@ -191,14 +194,18 @@ mod tests {
   /// because the former is now a thin wrapper over the latter rather
   /// than a second, independently maintained precedence check.
   #[test]
-  fn flake_probing_and_target_list_resolve_the_same_backend_for_a_deploy_node() {
+  fn flake_probing_and_target_list_resolve_the_same_backend_for_a_deploy_node()
+  {
     let nix = FixtureNix::only_deploy_node("web1");
 
     let targets = discover::discover(&nix, ".").expect("discovers");
     let colmena_hive_present =
       discover::has_colmena_hive(&nix, ".").expect("checks colmena hive");
-    let target_list_backend =
-      discover::detect_backend(PushBackend::Auto, &targets, colmena_hive_present);
+    let target_list_backend = discover::detect_backend(
+      PushBackend::Auto,
+      &targets,
+      colmena_hive_present,
+    );
     assert_eq!(target_list_backend, ResolvedBackend::DeployRs);
 
     let flake_probing_backend = resolve_backend(&nix, ".");
@@ -213,8 +220,11 @@ mod tests {
     let targets = discover::discover(&nix, ".").expect("discovers");
     let colmena_hive_present =
       discover::has_colmena_hive(&nix, ".").expect("checks colmena hive");
-    let target_list_backend =
-      discover::detect_backend(PushBackend::Auto, &targets, colmena_hive_present);
+    let target_list_backend = discover::detect_backend(
+      PushBackend::Auto,
+      &targets,
+      colmena_hive_present,
+    );
     assert_eq!(target_list_backend, ResolvedBackend::Builtin);
 
     let flake_probing_backend = resolve_backend(&nix, ".");

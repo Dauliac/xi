@@ -20,14 +20,14 @@ If any step reports FAIL, `xi ci` exits non-zero.
 
 `xi ci` groups a validation stage (fast, parallel) and a build stage (slower):
 
-| Step              | What it checks                                       | Skip flag                               |
-| ----------------- | ---------------------------------------------------- | --------------------------------------- |
-| Lock check        | `flake.lock` is in sync with `flake.nix`             | `--no-lock-check`                       |
-| Eval all systems  | Every declared system evaluates cleanly              | `--no-eval`                             |
-| Health check      | `xi doctor` diagnostics (input freshness, branch)    | `--no-health-check`                     |
-| Eval tests        | `lib.runTests` evaluates (assertion failures caught) | `--no-test`                             |
-| Lib eval          | `lib` deep-evaluates                                 | `--no-lib-eval`                         |
-| Build             | Every buildable output builds                        | `--no-build`                            |
+| Step             | What it checks                                       | Skip flag           |
+| ---------------- | ---------------------------------------------------- | ------------------- |
+| Lock check       | `flake.lock` is in sync with `flake.nix`             | `--no-lock-check`   |
+| Eval all systems | Every declared system evaluates cleanly              | `--no-eval`         |
+| Health check     | `xi doctor` diagnostics (input freshness, branch)    | `--no-health-check` |
+| Eval tests       | `lib.runTests` evaluates (assertion failures caught) | `--no-test`         |
+| Lib eval         | `lib` deep-evaluates                                 | `--no-lib-eval`     |
+| Build            | Every buildable output builds                        | `--no-build`        |
 
 Each step reports name, status (ok / warn / FAIL), duration, and detail.
 

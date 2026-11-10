@@ -6,13 +6,13 @@ not instruct. For task-oriented instructions, see the
 
 ## Command groups
 
-| Group            | Commands                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------ |
-| Configuration    | `os`, `home`, `darwin`, `system`                                                                       |
+| Group            | Commands                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| Configuration    | `os`, `home`, `darwin`, `system`                                                        |
 | Flake operations | `build`, `check`, `run`, `fmt`, `show`, `init`, `update`, `ci`, `lib`, `test`, `doctor` |
-| Deployment       | `deploy`                                                                                               |
-| Development      | `develop`, `search`                                                                                    |
-| Maintenance      | `cache`, `clean`, `nix`, `completions`                                                                 |
+| Deployment       | `deploy`                                                                                |
+| Development      | `develop`, `search`                                                                     |
+| Maintenance      | `cache`, `clean`, `nix`, `completions`                                                  |
 
 ## Global options
 

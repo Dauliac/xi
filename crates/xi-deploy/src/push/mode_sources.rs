@@ -214,7 +214,8 @@ pub fn switch(
   );
   let outcome = transport.run(
     &target.addr,
-    &RemoteCommand::elevated(script, interactive_sudo, retry_attempts).non_retryable(),
+    &RemoteCommand::elevated(script, interactive_sudo, retry_attempts)
+      .non_retryable(),
   )?;
   if !outcome.success {
     bail!(
@@ -480,8 +481,7 @@ mod tests {
   }
 
   #[test]
-  fn switch_script_runs_the_remote_switch_entrypoint_against_the_synced_path()
-   {
+  fn switch_script_runs_the_remote_switch_entrypoint_against_the_synced_path() {
     let target = push_target("web1", "nixos-rebuild");
     assert_eq!(
       switch_script(&target, Scope::System, "operator-host"),
@@ -599,8 +599,9 @@ mod tests {
     assert_eq!(
       wrapped,
       "systemd-run --wait --pipe --collect \
-       --unit=xi-push-web1-1700000000-abc123 -- XI_APPLIED_ORIGIN=push:\
-       operator-host xi system switch /etc/xi/sources#web1"
+       --unit=xi-push-web1-1700000000-abc123 -- \
+       XI_APPLIED_ORIGIN=push:operator-host xi system switch \
+       /etc/xi/sources#web1"
     );
   }
 
@@ -707,7 +708,9 @@ mod tests {
 
     let calls = transport.run_calls();
     assert!(
-      calls[0].script.contains("XI_APPLIED_ORIGIN=push:operator-host"),
+      calls[0]
+        .script
+        .contains("XI_APPLIED_ORIGIN=push:operator-host"),
       "got: {}",
       calls[0].script
     );

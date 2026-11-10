@@ -627,4 +627,3 @@ pub struct TestArgs {
   #[arg(last = true)]
   pub extra_args: Vec<String>,
 }
-

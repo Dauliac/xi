@@ -49,11 +49,11 @@ pub const PUSH_HOST_KEYS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushHost {
   /// The name `xi push <name>` matches against.
-  pub name:         String,
+  pub name:              String,
   /// `[user@]hostname[:port]` to connect to for this host.
-  pub ssh:          String,
+  pub ssh:               String,
   /// Per-host override of the `remote-build` rung.
-  pub remote_build: Option<bool>,
+  pub remote_build:      Option<bool>,
   /// Per-host override of the `backend` rung.
   pub backend:           Option<PushBackend>,
   /// Per-host override of the `retry-attempts` rung.
@@ -68,7 +68,7 @@ pub struct PushHost {
 pub struct PushConfig {
   /// `.xi.toml [push] remote-build`, the middle rung of the
   /// build-location ladder.
-  pub remote_build: Option<bool>,
+  pub remote_build:      Option<bool>,
   /// `.xi.toml [push] backend`, the middle rung of the backend ladder.
   pub backend:           Option<PushBackend>,
   /// `.xi.toml [push] retry-attempts`, the table-level rung of the
@@ -78,7 +78,7 @@ pub struct PushConfig {
   /// sources-transport ladder.
   pub sources_transport: Option<SourcesTransport>,
   /// `[[push.hosts]]` entries, in file order.
-  pub hosts: Vec<PushHost>,
+  pub hosts:             Vec<PushHost>,
 }
 
 impl PushConfig {
@@ -123,12 +123,14 @@ impl PushConfig {
 
     let remote_build = match table.get("remote-build") {
       None => None,
-      Some(item) => Some(item.as_bool().ok_or_else(|| {
-        eyre!(
-          "{}: 'remote-build' in [push] must be a boolean",
-          path.display()
-        )
-      })?),
+      Some(item) => {
+        Some(item.as_bool().ok_or_else(|| {
+          eyre!(
+            "{}: 'remote-build' in [push] must be a boolean",
+            path.display()
+          )
+        })?)
+      },
     };
 
     let backend = match table.get("backend") {
@@ -243,13 +245,15 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     .to_owned();
   let remote_build = match entry.get("remote-build") {
     None => None,
-    Some(item) => Some(item.as_bool().ok_or_else(|| {
-      eyre!(
-        "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
+    Some(item) => {
+      Some(item.as_bool().ok_or_else(|| {
+        eyre!(
+          "{}: 'remote-build' in [[push.hosts]] entry '{name}' must be a \
            boolean",
-        path.display()
-      )
-    })?),
+          path.display()
+        )
+      })?)
+    },
   };
 
   let backend = match entry.get("backend") {
@@ -263,8 +267,8 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
       })?;
       Some(PushBackend::from_config_str(raw).ok_or_else(|| {
         eyre!(
-          "{}: 'backend' in [[push.hosts]] entry '{name}' must be one of \
-             {}, got '{raw}'",
+          "{}: 'backend' in [[push.hosts]] entry '{name}' must be one of {}, \
+           got '{raw}'",
           path.display(),
           PushBackend::ALL.join(", ")
         )
@@ -273,11 +277,13 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
   };
   let retry_attempts = match entry.get("retry-attempts") {
     None => None,
-    Some(item) => Some(parse_retry_attempts(
-      path,
-      item,
-      &format!("[[push.hosts]] entry '{name}'"),
-    )?),
+    Some(item) => {
+      Some(parse_retry_attempts(
+        path,
+        item,
+        &format!("[[push.hosts]] entry '{name}'"),
+      )?)
+    },
   };
 
   let sources_transport = match entry.get("sources-transport") {
@@ -285,8 +291,8 @@ fn parse_host(path: &Path, entry: &toml_edit::Table) -> Result<PushHost> {
     Some(item) => {
       let raw = item.as_str().ok_or_else(|| {
         eyre!(
-          "{}: 'sources-transport' in [[push.hosts]] entry '{name}' must be \
-           a string",
+          "{}: 'sources-transport' in [[push.hosts]] entry '{name}' must be a \
+           string",
           path.display()
         )
       })?;
@@ -325,8 +331,8 @@ fn parse_retry_attempts(
   })?;
   u32::try_from(value).map_err(|_| {
     eyre!(
-      "{}: 'retry-attempts' in {context} must be a non-negative integer \
-       that fits in a u32",
+      "{}: 'retry-attempts' in {context} must be a non-negative integer that \
+       fits in a u32",
       path.display()
     )
   })
@@ -962,8 +968,7 @@ mod tests {
     let path = dir.path().join(".xi.toml");
     std::fs::write(&path, "[push]\nretry-attempts = \"five\"\n")
       .expect("write");
-    let err =
-      PushConfig::from_toml_file(&path).expect_err("not an integer");
+    let err = PushConfig::from_toml_file(&path).expect_err("not an integer");
     assert!(format!("{err}").contains("retry-attempts"), "got: {err}");
   }
 
@@ -979,8 +984,8 @@ mod tests {
   #[test]
   fn a_host_level_retry_attempts_parses_in_order() {
     let config = toml_config(
-      "[[push.hosts]]\nname = \"web1\"\nssh = \"deploy@10.0.0.1\"\nretry-attempts \
-       = 7\n",
+      "[[push.hosts]]\nname = \"web1\"\nssh = \
+       \"deploy@10.0.0.1\"\nretry-attempts = 7\n",
     );
     assert_eq!(config.hosts[0].retry_attempts, Some(7));
   }
@@ -1047,8 +1052,8 @@ mod tests {
   #[test]
   fn a_host_level_sources_transport_override_parses() {
     let config = toml_config(
-      "[[push.hosts]]\nname = \"web1\"\nssh = \"deploy@web1\"\n\
-       sources-transport = \"target-pull\"\n",
+      "[[push.hosts]]\nname = \"web1\"\nssh = \
+       \"deploy@web1\"\nsources-transport = \"target-pull\"\n",
     );
     assert_eq!(
       config.hosts[0].sources_transport,
@@ -1076,7 +1081,11 @@ mod tests {
   fn the_cli_flag_wins_sources_transport_over_every_other_rung() {
     let toml = toml_config("[push]\nsources-transport = \"target-pull\"\n");
     assert_eq!(
-      resolve_sources_transport(Some(SourcesTransport::OperatorCopy), "web1", &toml),
+      resolve_sources_transport(
+        Some(SourcesTransport::OperatorCopy),
+        "web1",
+        &toml
+      ),
       SourcesTransport::OperatorCopy
     );
   }
@@ -1093,8 +1102,9 @@ mod tests {
   #[test]
   fn a_per_host_sources_transport_override_outranks_the_table_level_default() {
     let toml = toml_config(
-      "[push]\nsources-transport = \"operator-copy\"\n\n[[push.hosts]]\nname = \
-       \"web1\"\nssh = \"deploy@web1\"\nsources-transport = \"target-pull\"\n",
+      "[push]\nsources-transport = \"operator-copy\"\n\n[[push.hosts]]\nname \
+       = \"web1\"\nssh = \"deploy@web1\"\nsources-transport = \
+       \"target-pull\"\n",
     );
     assert_eq!(
       resolve_sources_transport(None, "web1", &toml),
