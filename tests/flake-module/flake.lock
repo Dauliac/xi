@@ -53,7 +53,41 @@
         "type": "github"
       }
     },
+    "nix-vm-test": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1791914881,
+        "narHash": "sha256-lV7zuX2ABOi4LMvd7b5CNHxbrJGXmj6Ls/ZSJqvnWm0=",
+        "owner": "numtide",
+        "repo": "nix-vm-test",
+        "rev": "ca6eb23e60c78cd5fe89530e0de6a6efedc9bae8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "nix-vm-test",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
+      "locked": {
+        "lastModified": 1776877367,
+        "narHash": "sha256-EHq1/OX139R1RvBzOJ0aMRT3xnWyqtHBRUBuO1gFzjI=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "0726a0ecb6d4e08f6adced58726b95db924cef57",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
       "locked": {
         "lastModified": 1783522502,
         "narHash": "sha256-nFgG4gPQueCgP8LidXsdI2lYPrSwTcmDl6afcVn7F/U=",
@@ -70,7 +104,8 @@
       "inputs": {
         "flake-parts": "flake-parts",
         "get-flake": "get-flake",
-        "nixpkgs": "nixpkgs"
+        "nix-vm-test": "nix-vm-test",
+        "nixpkgs": "nixpkgs_2"
       }
     }
   },

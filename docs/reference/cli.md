@@ -11,7 +11,7 @@ not instruct. For task-oriented instructions, see the
 | Configuration    | `os`, `home`, `darwin`, `system`                                                                       |
 | Flake operations | `build`, `check`, `run`, `fmt`, `show`, `init`, `update`, `ci`, `lib`, `test`, `doctor`, `materialize` |
 | Deployment       | `deploy`                                                                                               |
-| Development      | `develop`, `search`                                                                                    |
+| Development      | `develop`, `search`, `vm`                                                                              |
 | Maintenance      | `cache`, `clean`, `nix`, `completions`                                                                 |
 
 ## Global options
@@ -435,6 +435,28 @@ If no mode is given, uses `--default-search` (or `XI_DEFAULT_SEARCH`, or
 
 `xi search prs` reads a GitHub token from, in order: `GH_TOKEN`,
 `$XDG_STATE_HOME/xi/github-token`, `~/.local/state/xi/github-token`.
+
+### xi vm  -  declarative multi-VM dev-space lifecycle
+
+```
+xi vm [--flake <REF>] <SUBCOMMAND>
+```
+
+Operates on `xi.vm.<name>` entries declared by the flake at `--flake`
+(default `.`). See [`docs/guides/vm.md`](../guides/vm.md).
+
+| Subcommand           | Description                                                  |
+| -------------------- | -------------------------------------------------------------- |
+| `list`               | Every declared VM with its status                            |
+| `build [NAME\|--all]` | `--dev` (default)/`--test`, `-B/--with-bootloader`            |
+| `check [NAME\|--all]` | `--json`, `--build-only` (boot-free pre-check)                |
+| `start [NAME\|--all]` | `--graphical`/`--headless`, `--background`, `--allow-port-fallback`, `-B` |
+| `stop [NAME\|--all]`  | Terminate a backgrounded instance                             |
+| `connect NAME`        | SSH in with the xi-managed keypair; `--console` is unimplemented (see `docs/guides/vm.md`) |
+| `status [NAME\|--all]` | `--json`                                                      |
+
+`kind = "nixos"` only for `start`/`stop`/`connect`; `kind = "distro"`
+supports `list`/`build`/`check`/`start` (foreground only).
 
 ## Maintenance
 

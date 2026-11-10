@@ -117,6 +117,19 @@ enum OsRebuildVariant {
 
 impl OsBuildVmArgs {
   fn build_vm(self, elevation: &ElevationStrategy) -> Result<()> {
+    // Deprecated per [[xi-vm-lifecycle]]: `xi vm build --dev` is the one
+    // implementation now; this command is kept fully functional, with
+    // this one-line notice, for the deprecation window (SC-VM-009). Not
+    // rewired to delegate: doing so needs a resolved
+    // `nixosConfiguration` name matched against `xi.vm.<name>.modules`,
+    // which this command's own installable-resolution path does not
+    // produce today, and `[[xi-vm-lifecycle]]` tasks.md 4.4 tracks that
+    // rewiring as its own step.
+    tracing::warn!(
+      "`xi os build-vm` is deprecated; use `xi vm build --dev <name>` \
+       instead (see xi-vm-lifecycle)"
+    );
+
     let attr = if self.with_bootloader {
       "vmWithBootLoader"
     } else {
