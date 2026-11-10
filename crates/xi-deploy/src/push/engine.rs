@@ -26,7 +26,7 @@ use color_eyre::{
 use nix_command::{CommandKind, NixCommand};
 use tracing::debug;
 use xi_core::{
-  retry::{retry, RetryPolicy},
+  retry::{RetryPolicy, retry},
   sources::{Scope, secrets::SecretSpec},
 };
 use xi_sources_daemon::control::{self, AdvanceNow, AdvanceReply};
@@ -48,16 +48,16 @@ pub struct TargetAddr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteCommand {
   /// The shell script to run on the target.
-  pub script:    String,
+  pub script:         String,
   /// Allocate a PTY (`ssh -t`). Required for an interactive sudo prompt.
-  pub pty:       bool,
+  pub pty:            bool,
   /// Wrap the script in elevation.
-  pub elevate:   Elevate,
+  pub elevate:        Elevate,
   /// Stream the remote output to this process's stdout/stderr.
   ///
   /// Off for probes, whose output is parsed; on for activation, whose
   /// output is the thing the operator is watching.
-  pub streaming: bool,
+  pub streaming:      bool,
   /// Retry attempts for this command's underlying `ssh` spawn.
   ///
   /// Only consulted on the `streaming` path - a probe never retries
@@ -77,7 +77,7 @@ pub struct RemoteCommand {
   /// re-invokes the whole command, and for the `systemd-run`-wrapped one
   /// (no stable `--unit=` name) that spins up a second, independent,
   /// concurrent activation racing the first.
-  pub retryable: bool,
+  pub retryable:      bool,
 }
 
 impl RemoteCommand {
@@ -85,12 +85,12 @@ impl RemoteCommand {
   #[must_use]
   pub fn probe(script: impl Into<String>) -> Self {
     Self {
-      script:    script.into(),
-      pty:       false,
-      elevate:   Elevate::No,
-      streaming: false,
+      script:         script.into(),
+      pty:            false,
+      elevate:        Elevate::No,
+      streaming:      false,
       retry_attempts: 1,
-      retryable: true,
+      retryable:      true,
     }
   }
 
@@ -103,12 +103,12 @@ impl RemoteCommand {
   #[must_use]
   pub fn streaming(script: impl Into<String>) -> Self {
     Self {
-      script:    script.into(),
-      pty:       false,
-      elevate:   Elevate::No,
-      streaming: true,
+      script:         script.into(),
+      pty:            false,
+      elevate:        Elevate::No,
+      streaming:      true,
       retry_attempts: 3,
-      retryable: true,
+      retryable:      true,
     }
   }
 
@@ -120,9 +120,9 @@ impl RemoteCommand {
     retry_attempts: u32,
   ) -> Self {
     Self {
-      script:    script.into(),
-      pty:       interactive_sudo,
-      elevate:   if interactive_sudo {
+      script: script.into(),
+      pty: interactive_sudo,
+      elevate: if interactive_sudo {
         Elevate::Interactive
       } else {
         Elevate::NonInteractive
@@ -138,7 +138,7 @@ impl RemoteCommand {
   /// For an activation/switch command: see [`Self::retryable`] for why
   /// retrying one is unsafe.
   #[must_use]
-  pub fn non_retryable(mut self) -> Self {
+  pub const fn non_retryable(mut self) -> Self {
     self.retryable = false;
     self
   }
@@ -549,7 +549,8 @@ impl Transport for SshTransport {
             .arg(store_path)
             .output()
             .map_err(|e| eyre!("failed to run nix copy: {e}"))?;
-          *last_stderr.borrow_mut() = String::from_utf8_lossy(&output.stderr).into_owned();
+          *last_stderr.borrow_mut() =
+            String::from_utf8_lossy(&output.stderr).into_owned();
           Ok(output.status)
         })?;
         if !status.success() {
@@ -714,11 +715,13 @@ impl Transport for SshTransport {
       if let Some(mut pipe) = child.stderr.take() {
         let _ignore_partial_read = pipe.read_to_string(&mut stderr);
       }
-      return Err(TargetPullUnreachable::new(
-        &target.name,
-        format!("ctl relay exited with {status}: {}", stderr.trim()),
-      )
-      .into());
+      return Err(
+        TargetPullUnreachable::new(
+          &target.name,
+          format!("ctl relay exited with {status}: {}", stderr.trim()),
+        )
+        .into(),
+      );
     }
 
     Ok(reply)

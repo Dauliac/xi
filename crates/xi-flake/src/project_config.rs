@@ -147,7 +147,7 @@ pub struct ProjectDoctorConfig {
   /// all ~17 checks uniformly); the group flags and
   /// `require_official_nixpkgs` predate it and stay for backward
   /// compatibility rather than being folded into this map.
-  pub rules: HashMap<String, RuleSetting>,
+  pub rules:                    HashMap<String, RuleSetting>,
 }
 
 /// Consumer flake configuration.
@@ -182,13 +182,12 @@ impl Default for ProjectConsumerConfig {
 // table and a repo-local `[doctor.rules]` table both survive rather than
 // one replacing the other wholesale):
 //
-//   1. global:      sorted *.toml files in the XDG config dir for `xi`
-//                    (same directory `xi::config::default_config_path()`
-//                    resolves to; `$XI_CONFIG` overrides to a single
-//                    explicit file instead of globbing its directory).
-//   2. repo-shared:  ./xi.toml, then ./.xi.toml (first found; both do NOT
-//                    merge with each other -- pick one spelling), then
-//                    every sorted *.toml in ./.config/xi/.
+//   1. global:      sorted *.toml files in the XDG config dir for `xi` (same
+//      directory `xi::config::default_config_path()` resolves to; `$XI_CONFIG`
+//      overrides to a single explicit file instead of globbing its directory).
+//   2. repo-shared:  ./xi.toml, then ./.xi.toml (first found; both do NOT merge
+//      with each other -- pick one spelling), then every sorted *.toml in
+//      ./.config/xi/.
 //   3. repo-local:   ./.xi.local.toml (personal, meant to be gitignored).
 //
 // This loader is deliberately lenient end to end (unparseable or missing
@@ -225,7 +224,9 @@ fn non_empty_env(name: &str) -> Option<String> {
 fn global_config_dir() -> Option<PathBuf> {
   let base = non_empty_env("XDG_CONFIG_HOME")
     .map(PathBuf::from)
-    .or_else(|| non_empty_env("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    .or_else(|| {
+      non_empty_env("HOME").map(|h| PathBuf::from(h).join(".config"))
+    })?;
   Some(base.join("xi"))
 }
 
@@ -234,7 +235,9 @@ fn global_config_sources() -> Vec<PathBuf> {
   if let Some(explicit) = non_empty_env("XI_CONFIG") {
     return vec![PathBuf::from(explicit)];
   }
-  global_config_dir().map(|dir| glob_toml_files(&dir)).unwrap_or_default()
+  global_config_dir()
+    .map(|dir| glob_toml_files(&dir))
+    .unwrap_or_default()
 }
 
 /// The single repo-shared config file, if any: `xi.toml` takes
@@ -273,7 +276,7 @@ fn repo_local_config_source(dir: &Path) -> Option<PathBuf> {
 /// (whole arrays/scalars, not element-wise) -- "later file wins" applied
 /// per leaf key rather than per top-level table.
 fn merge_table_into(base: &mut toml_edit::Table, incoming: &toml_edit::Table) {
-  for (key, incoming_item) in incoming.iter() {
+  for (key, incoming_item) in incoming {
     let merged_as_table = base
       .get_mut(key)
       .and_then(toml_edit::Item::as_table_mut)
@@ -388,7 +391,7 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
     // [doctor.rules] -- one entry per check code, e.g.
     // `rules.dirty-tree = "off"` or `rules.package-version = false`.
     if let Some(rules) = doctor.get("rules").and_then(|v| v.as_table()) {
-      for (code, item) in rules.iter() {
+      for (code, item) in rules {
         let setting = if let Some(b) = item.as_bool() {
           if b {
             continue; // "on" is the default -- not stored as an override.
@@ -402,17 +405,14 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
             "on" => continue,
             other => {
               warn!(
-                "[doctor.rules.{code}] unknown setting '{other}' (expected \
-                 a bool, or one of \"off\"/\"warn\"/\"fail\"/\"on\"); \
-                 ignoring"
+                "[doctor.rules.{code}] unknown setting '{other}' (expected a \
+                 bool, or one of \"off\"/\"warn\"/\"fail\"/\"on\"); ignoring"
               );
               continue;
             },
           }
         } else {
-          warn!(
-            "[doctor.rules.{code}] must be a bool or a string; ignoring"
-          );
+          warn!("[doctor.rules.{code}] must be a bool or a string; ignoring");
           continue;
         };
         config.doctor.rules.insert(code.to_string(), setting);
@@ -597,10 +597,10 @@ mod tests {
   /// whatever real config happens to exist on the machine running the
   /// test. Restores the previous values on drop.
   struct GlobalConfigGuard {
-    empty_dir:     tempfile::TempDir,
-    prior_xi:      Option<std::ffi::OsString>,
-    prior_xdg:     Option<std::ffi::OsString>,
-    prior_home:    Option<std::ffi::OsString>,
+    empty_dir:  tempfile::TempDir,
+    prior_xi:   Option<std::ffi::OsString>,
+    prior_xdg:  Option<std::ffi::OsString>,
+    prior_home: Option<std::ffi::OsString>,
   }
 
   impl GlobalConfigGuard {
@@ -618,7 +618,12 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", empty_dir.path());
         std::env::remove_var("HOME");
       }
-      Self { empty_dir, prior_xi, prior_xdg, prior_home }
+      Self {
+        empty_dir,
+        prior_xi,
+        prior_xdg,
+        prior_home,
+      }
     }
   }
 
@@ -659,12 +664,17 @@ mod tests {
 
     merge_table_into(&mut base, &incoming);
 
-    let doctor = base.get("doctor").and_then(|v| v.as_table()).expect("doctor table");
+    let doctor = base
+      .get("doctor")
+      .and_then(|v| v.as_table())
+      .expect("doctor table");
     assert_eq!(
-      doctor.get("max-input-age-days").and_then(toml_edit::Item::as_integer),
+      doctor
+        .get("max-input-age-days")
+        .and_then(toml_edit::Item::as_integer),
       Some(30),
-      "the earlier layer's leaf key must survive a later layer's merge \
-       into a sibling nested table, not be wiped by it"
+      "the earlier layer's leaf key must survive a later layer's merge into a \
+       sibling nested table, not be wiped by it"
     );
     assert!(
       doctor.get("rules").and_then(|v| v.as_table()).is_some(),
@@ -687,9 +697,14 @@ mod tests {
 
     merge_table_into(&mut base, &incoming);
 
-    let doctor = base.get("doctor").and_then(|v| v.as_table()).expect("doctor table");
+    let doctor = base
+      .get("doctor")
+      .and_then(|v| v.as_table())
+      .expect("doctor table");
     assert_eq!(
-      doctor.get("require-official-nixpkgs").and_then(toml_edit::Item::as_bool),
+      doctor
+        .get("require-official-nixpkgs")
+        .and_then(toml_edit::Item::as_bool),
       Some(false),
       "a later layer's leaf value must win over an earlier layer's"
     );
@@ -733,8 +748,8 @@ mod tests {
     assert_eq!(
       names,
       vec![".xi.toml", "a.toml", "b.toml"],
-      "the single shared file comes first, then fragment-dir *.toml \
-       files in sorted order, with non-.toml files excluded: {names:?}"
+      "the single shared file comes first, then fragment-dir *.toml files in \
+       sorted order, with non-.toml files excluded: {names:?}"
     );
   }
 
@@ -840,8 +855,8 @@ mod tests {
     assert_eq!(
       config.doctor.rules.get("dirty-tree"),
       Some(&RuleSetting::Off),
-      "the repo-local layer must win over the repo-shared layer for the \
-       same key"
+      "the repo-local layer must win over the repo-shared layer for the same \
+       key"
     );
   }
 }

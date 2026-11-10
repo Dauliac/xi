@@ -240,7 +240,12 @@ impl BuildArgs {
     if let Some(ref out_link) = self.out_link
       && xi_core::cache::is_push_configured(&self.cache)
     {
-      xi_core::cache::push_to_cache(&self.cache, out_link);
+      let pushed = xi_core::cache::push_to_cache(&self.cache, out_link);
+      // A target marked `required = true` must block the operation: that
+      // is the documented contract of `push_to_cache` and what
+      // `enforce_required` exists for. Nothing called it until now, so
+      // `required` silently behaved like best-effort.
+      xi_core::cache::enforce_required(&pushed)?;
     }
 
     Ok(())
@@ -1292,7 +1297,9 @@ pub(crate) fn run_exec_streaming(base_command: Exec) -> Result<()> {
 ///
 /// Returns an error if `nix flake show --json` fails to start, exits
 /// non-zero, or its stdout doesn't parse as JSON.
-pub(crate) fn fetch_flake_show_json(flake_ref: &str) -> Result<serde_json::Value> {
+pub(crate) fn fetch_flake_show_json(
+  flake_ref: &str,
+) -> Result<serde_json::Value> {
   let cmd = NixCommand::new(CommandKind::Flake)
     .arg("show")
     .arg("--json")
@@ -1380,14 +1387,14 @@ fn discover_single_category(
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageMetaInfo {
-  pub has_description:            bool,
-  pub has_license:                bool,
-  pub maintainers_count:          u64,
-  pub has_platforms:              bool,
-  pub version:                    Option<String>,
-  pub pname:                      Option<String>,
-  pub main_program:               Option<String>,
-  pub insecure:                   bool,
+  pub has_description:             bool,
+  pub has_license:                 bool,
+  pub maintainers_count:           u64,
+  pub has_platforms:               bool,
+  pub version:                     Option<String>,
+  pub pname:                       Option<String>,
+  pub main_program:                Option<String>,
+  pub insecure:                    bool,
   pub known_vulnerabilities_count: u64,
 }
 

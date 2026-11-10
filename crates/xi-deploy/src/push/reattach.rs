@@ -66,10 +66,10 @@ pub struct ReceiptRow {
 /// listing's connectivity check has no other discovery-derived detail
 /// (`ssh_opts`, profile kind, ...) to need.
 ///
-/// `Ok` from [`Transport::run`] with a failed [`Outcome`](super::engine::Outcome)
-/// and an `Err` (the local `ssh` could not even be spawned) both read as
-/// unreachable: the listing only needs "can I reach it right now", not
-/// why not.
+/// `Ok` from [`Transport::run`] with a failed
+/// [`Outcome`](super::engine::Outcome) and an `Err` (the local `ssh` could not
+/// even be spawned) both read as unreachable: the listing only needs "can I
+/// reach it right now", not why not.
 fn probe_reachable(transport: &dyn Transport, target: &str) -> bool {
   let addr = TargetAddr {
     name:     target.to_owned(),
@@ -88,7 +88,10 @@ fn probe_reachable(transport: &dyn Transport, target: &str) -> bool {
 ///
 /// Propagates [`receipt::list`]'s error reading or parsing a receipt
 /// file.
-pub fn list(state_dir: &Path, transport: &dyn Transport) -> Result<Vec<ReceiptRow>> {
+pub fn list(
+  state_dir: &Path,
+  transport: &dyn Transport,
+) -> Result<Vec<ReceiptRow>> {
   Ok(
     receipt::list(state_dir)?
       .into_iter()
@@ -148,7 +151,7 @@ pub enum ReattachOutcome {
     exec_main_status: i64,
     /// `ActiveState`/`SubState`/`ExecMainCode`, for an operator-readable
     /// failure message.
-    detail: String,
+    detail:           String,
   },
   /// `systemctl show` has nothing live to report on this unit.
   ///
@@ -224,7 +227,10 @@ fn is_unsettled(active_state: &str) -> bool {
 
 /// Parse the `KEY=VALUE` lines `systemctl show --property=...` emits.
 fn parse_show_output(stdout: &str) -> HashMap<&str, &str> {
-  stdout.lines().filter_map(|line| line.split_once('=')).collect()
+  stdout
+    .lines()
+    .filter_map(|line| line.split_once('='))
+    .collect()
 }
 
 /// Look up `key` in `systemctl show`'s parsed output, or error naming
@@ -384,14 +390,12 @@ fn stream_unit(
 ) -> Result<bool> {
   let script = format!(
     "tmp_dir=$(mktemp -d); fifo=\"$tmp_dir/journal.fifo\"; mkfifo \"$fifo\"; \
-     journalctl -u {} -f --since {} --no-pager > \"$fifo\" & \
-     pid=$!; \
-     while IFS= read -r line; do \
-     printf '%s\\n' \"$line\"; case \"$line\" in \
-     *': Succeeded.'*) kill \"$pid\" 2>/dev/null; rm -rf \"$tmp_dir\"; exit 0 ;; \
-     *': Failed with result'*) kill \"$pid\" 2>/dev/null; rm -rf \"$tmp_dir\"; exit 1 ;; \
-     esac; done < \"$fifo\"; \
-     rm -rf \"$tmp_dir\"; exit 1",
+     journalctl -u {} -f --since {} --no-pager > \"$fifo\" & pid=$!; while \
+     IFS= read -r line; do printf '%s\\n' \"$line\"; case \"$line\" in *': \
+     Succeeded.'*) kill \"$pid\" 2>/dev/null; rm -rf \"$tmp_dir\"; exit 0 ;; \
+     *': Failed with result'*) kill \"$pid\" 2>/dev/null; rm -rf \
+     \"$tmp_dir\"; exit 1 ;; esac; done < \"$fifo\"; rm -rf \"$tmp_dir\"; \
+     exit 1",
     shell_quote(unit_name),
     shell_quote(started_at),
   );
@@ -405,7 +409,9 @@ fn stream_unit(
 /// operator via its own `bail!`, and a broken notify marker must not
 /// swallow that.
 fn notify_failure(state_dir: &Path, push_id: &str, receipt: &PushReceipt) {
-  if let Err(err) = receipt::mark_notified_and_notify(state_dir, push_id, receipt) {
+  if let Err(err) =
+    receipt::mark_notified_and_notify(state_dir, push_id, receipt)
+  {
     warn!(
       push_id,
       error = %err,
@@ -433,7 +439,11 @@ fn notify_failure(state_dir: &Path, push_id: &str, receipt: &PushReceipt) {
 /// [`stream_unit`]), or if the unit is found (by any of those three
 /// paths) to have failed - a failed reattach deliberately exits non-zero
 /// so the operator has to acknowledge it rather than it passing silently.
-pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> {
+pub fn run(
+  id: &str,
+  state_dir: &Path,
+  transport: &dyn Transport,
+) -> Result<()> {
   if id.is_empty() {
     let rows = list(state_dir, transport)?;
     println!("{}", format_rows(&rows));
@@ -457,7 +467,8 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
          (Ctrl-C to stop watching without affecting the unit)",
         receipt.unit_name, receipt.target
       );
-      if stream_unit(transport, &addr, &receipt.unit_name, &receipt.started_at)? {
+      if stream_unit(transport, &addr, &receipt.unit_name, &receipt.started_at)?
+      {
         println!("{} succeeded on {}", receipt.unit_name, receipt.target);
         receipt::remove_and_notify(state_dir, id, &receipt)
       } else {
@@ -484,29 +495,31 @@ pub fn run(id: &str, state_dir: &Path, transport: &dyn Transport) -> Result<()> 
         receipt.target,
       );
     },
-    ReattachOutcome::Collected => match query_journal(
-      transport,
-      &addr,
-      &receipt.unit_name,
-      &receipt.started_at,
-    )? {
-      JournalOutcome::Succeeded => {
-        println!(
-          "{} succeeded on {} (recovered from journalctl - the unit was \
-           already `--collect`ed)",
-          receipt.unit_name, receipt.target
-        );
-        receipt::remove_and_notify(state_dir, id, &receipt)
-      },
-      JournalOutcome::Failed { result } => {
-        notify_failure(state_dir, id, &receipt);
-        bail!(
-          "{} failed on {} (result={result}, recovered from journalctl - \
-           the unit was already `--collect`ed)",
-          receipt.unit_name,
-          receipt.target,
-        );
-      },
+    ReattachOutcome::Collected => {
+      match query_journal(
+        transport,
+        &addr,
+        &receipt.unit_name,
+        &receipt.started_at,
+      )? {
+        JournalOutcome::Succeeded => {
+          println!(
+            "{} succeeded on {} (recovered from journalctl - the unit was \
+             already `--collect`ed)",
+            receipt.unit_name, receipt.target
+          );
+          receipt::remove_and_notify(state_dir, id, &receipt)
+        },
+        JournalOutcome::Failed { result } => {
+          notify_failure(state_dir, id, &receipt);
+          bail!(
+            "{} failed on {} (result={result}, recovered from journalctl - \
+             the unit was already `--collect`ed)",
+            receipt.unit_name,
+            receipt.target,
+          );
+        },
+      }
     },
   }
 }
@@ -531,7 +544,11 @@ mod tests {
   }
 
   impl Transport for FixtureTransport {
-    fn run(&self, target: &TargetAddr, _cmd: &RemoteCommand) -> Result<Outcome> {
+    fn run(
+      &self,
+      target: &TargetAddr,
+      _cmd: &RemoteCommand,
+    ) -> Result<Outcome> {
       self.asked.lock().expect("lock").push(target.name.clone());
       Ok(if self.reachable {
         Outcome::ok("")
@@ -655,7 +672,11 @@ mod tests {
   struct ScriptedTransport(Outcome);
 
   impl Transport for ScriptedTransport {
-    fn run(&self, _target: &TargetAddr, _cmd: &RemoteCommand) -> Result<Outcome> {
+    fn run(
+      &self,
+      _target: &TargetAddr,
+      _cmd: &RemoteCommand,
+    ) -> Result<Outcome> {
       Ok(self.0.clone())
     }
 
@@ -703,10 +724,16 @@ mod tests {
 
   #[test]
   fn a_still_active_unit_is_running() {
-    let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=active\nSubState=running\nExecMainStatus=0\n\
-       ExecMainCode=0\n",
-    ));
+    // One property per line via `concat!`. The previous single long literal
+    // was wrapped by rustfmt across the `\n` escape, which produced a literal
+    // backslash, a real newline and a stray `n` instead of a line break, and
+    // rustfmt could not re-converge on it so `cargo fmt --check` stayed red.
+    let transport = ScriptedTransport(Outcome::ok(concat!(
+      "ActiveState=active\n",
+      "SubState=running\n",
+      "ExecMainStatus=0\n",
+      "ExecMainCode=0\n",
+    )));
     assert_eq!(
       query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
       ReattachOutcome::Running
@@ -715,10 +742,12 @@ mod tests {
 
   #[test]
   fn a_deactivating_unit_is_running() {
-    let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=deactivating\nSubState=stop-sigterm\n\
-       ExecMainStatus=0\nExecMainCode=0\n",
-    ));
+    let transport = ScriptedTransport(Outcome::ok(concat!(
+      "ActiveState=deactivating\n",
+      "SubState=stop-sigterm\n",
+      "ExecMainStatus=0\n",
+      "ExecMainCode=0\n",
+    )));
     assert_eq!(
       query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
       ReattachOutcome::Running
@@ -728,8 +757,7 @@ mod tests {
   #[test]
   fn a_zero_exit_unit_succeeded() {
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-       ExecMainCode=1\n",
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nExecMainCode=1\n",
     ));
     assert_eq!(
       query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
@@ -740,44 +768,35 @@ mod tests {
   #[test]
   fn a_non_zero_exit_unit_failed() {
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
-       ExecMainCode=1\n",
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\nExecMainCode=1\n",
     ));
     let outcome =
       query_unit(&transport, &addr(), "xi-push-web1-1").expect("query");
-    assert_eq!(
-      outcome,
-      ReattachOutcome::Failed {
-        exec_main_status: 1,
-        detail: "ActiveState=failed SubState=failed ExecMainCode=1"
-          .to_owned(),
-      }
-    );
+    assert_eq!(outcome, ReattachOutcome::Failed {
+      exec_main_status: 1,
+      detail:           "ActiveState=failed SubState=failed ExecMainCode=1"
+        .to_owned(),
+    });
   }
 
   #[test]
   fn a_killed_unit_failed() {
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=failed\nSubState=failed\nExecMainStatus=9\n\
-       ExecMainCode=2\n",
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=9\nExecMainCode=2\n",
     ));
     let outcome =
       query_unit(&transport, &addr(), "xi-push-web1-1").expect("query");
-    assert_eq!(
-      outcome,
-      ReattachOutcome::Failed {
-        exec_main_status: 9,
-        detail: "ActiveState=failed SubState=failed ExecMainCode=2"
-          .to_owned(),
-      }
-    );
+    assert_eq!(outcome, ReattachOutcome::Failed {
+      exec_main_status: 9,
+      detail:           "ActiveState=failed SubState=failed ExecMainCode=2"
+        .to_owned(),
+    });
   }
 
   #[test]
   fn a_never_recorded_main_process_reads_as_collected() {
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-       ExecMainCode=0\n",
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nExecMainCode=0\n",
     ));
     assert_eq!(
       query_unit(&transport, &addr(), "xi-push-web1-1").expect("query"),
@@ -799,8 +818,7 @@ mod tests {
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-       ExecMainCode=1\n",
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nExecMainCode=1\n",
     ));
 
     run("web1-push", tmp.path(), &transport).expect("success is not an error");
@@ -823,8 +841,7 @@ mod tests {
       )));
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-       ExecMainCode=1\n",
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nExecMainCode=1\n",
     ));
 
     run("web1-push", tmp.path(), &transport).expect("success is not an error");
@@ -840,8 +857,7 @@ mod tests {
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
-       ExecMainCode=1\n",
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\nExecMainCode=1\n",
     ));
 
     let err = run("web1-push", tmp.path(), &transport)
@@ -851,7 +867,8 @@ mod tests {
       receipt::read(tmp.path(), "web1-push")
         .expect("read")
         .is_some(),
-      "an operator must still acknowledge a failure before its receipt goes away"
+      "an operator must still acknowledge a failure before its receipt goes \
+       away"
     );
   }
 
@@ -870,8 +887,7 @@ mod tests {
       )));
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
     let transport = ScriptedTransport(Outcome::ok(
-      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
-       ExecMainCode=1\n",
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\nExecMainCode=1\n",
     ));
 
     let _ = run("web1-push", tmp.path(), &transport)
@@ -888,11 +904,13 @@ mod tests {
     );
 
     std::fs::remove_file(&marker).expect("clear marker to detect a rerun");
-    let _ = run("web1-push", tmp.path(), &transport)
-      .expect_err("a second reattach against the same still-failed unit still errors");
+    let _ = run("web1-push", tmp.path(), &transport).expect_err(
+      "a second reattach against the same still-failed unit still errors",
+    );
     assert!(
       !marker.exists(),
-      "a second observation of the same confirmed failure must not refire --notify"
+      "a second observation of the same confirmed failure must not refire \
+       --notify"
     );
   }
 
@@ -917,8 +935,7 @@ mod tests {
 
     let state_dir = std::sync::Arc::new(tmp.path().to_owned());
     let transport = std::sync::Arc::new(ScriptedTransport(Outcome::ok(
-      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\n\
-       ExecMainCode=1\n",
+      "ActiveState=failed\nSubState=failed\nExecMainStatus=1\nExecMainCode=1\n",
     )));
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
 
@@ -959,7 +976,11 @@ mod tests {
   }
 
   impl Transport for RoutedTransport {
-    fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+    fn run(
+      &self,
+      _target: &TargetAddr,
+      cmd: &RemoteCommand,
+    ) -> Result<Outcome> {
       Ok(if cmd.script.contains("systemctl show") {
         self.systemctl.clone()
       } else if cmd.streaming {
@@ -1012,8 +1033,8 @@ mod tests {
   fn parse_journal_status_finds_a_trailing_succeeded_line() {
     assert_eq!(
       parse_journal_status(
-        "Nov 06 09:59:00 host systemd[1]: Started xi-push-web1-1.\n\
-         Nov 06 10:00:00 host systemd[1]: xi-push-web1-1.service: Succeeded.\n"
+        "Nov 06 09:59:00 host systemd[1]: Started xi-push-web1-1.\nNov 06 \
+         10:00:00 host systemd[1]: xi-push-web1-1.service: Succeeded.\n"
       ),
       Some(JournalOutcome::Succeeded)
     );
@@ -1024,12 +1045,11 @@ mod tests {
     assert_eq!(
       parse_journal_status(
         "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Main \
-         process exited, code=exited, status=1/FAILURE\n\
-         Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed \
-         with result 'exit-code'.\n"
+         process exited, code=exited, status=1/FAILURE\nNov 06 10:00:05 host \
+         systemd[1]: xi-push-web1-1.service: Failed with result 'exit-code'.\n"
       ),
       Some(JournalOutcome::Failed {
-        result: "exit-code".to_owned()
+        result: "exit-code".to_owned(),
       })
     );
   }
@@ -1075,8 +1095,8 @@ mod tests {
     let transport = RoutedTransport {
       systemctl: Outcome::ok(COLLECTED_SYSTEMCTL),
       journal:   Outcome::ok(
-        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed \
-         with result 'exit-code'.\n",
+        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed with \
+         result 'exit-code'.\n",
       ),
       stream:    Outcome::ok(""),
     };
@@ -1088,12 +1108,14 @@ mod tests {
       receipt::read(tmp.path(), "web1-push")
         .expect("read")
         .is_some(),
-      "an operator must still acknowledge a failure before its receipt goes away"
+      "an operator must still acknowledge a failure before its receipt goes \
+       away"
     );
   }
 
   #[test]
-  fn reattaching_to_a_collected_and_journal_failed_unit_runs_notify_exactly_once() {
+  fn reattaching_to_a_collected_and_journal_failed_unit_runs_notify_exactly_once()
+   {
     let tmp = TempDir::new().expect("tempdir");
     let marker = tmp.path().join("notified");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
@@ -1105,8 +1127,8 @@ mod tests {
     let transport = RoutedTransport {
       systemctl: Outcome::ok(COLLECTED_SYSTEMCTL),
       journal:   Outcome::ok(
-        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed \
-         with result 'exit-code'.\n",
+        "Nov 06 10:00:05 host systemd[1]: xi-push-web1-1.service: Failed with \
+         result 'exit-code'.\n",
       ),
       stream:    Outcome::ok(""),
     };
@@ -1115,7 +1137,8 @@ mod tests {
       .expect_err("a failure recovered via journalctl must still error");
     assert!(
       marker.exists(),
-      "expected --notify to run once the collected unit's failure was recovered"
+      "expected --notify to run once the collected unit's failure was \
+       recovered"
     );
   }
 
@@ -1148,7 +1171,7 @@ mod tests {
 
   #[test]
   fn reattaching_to_a_running_unit_streams_to_success_and_removes_the_receipt()
-   {
+  {
     let tmp = TempDir::new().expect("tempdir");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
@@ -1169,8 +1192,7 @@ mod tests {
   }
 
   #[test]
-  fn reattaching_to_a_running_unit_streams_to_failure_and_keeps_the_receipt()
-   {
+  fn reattaching_to_a_running_unit_streams_to_failure_and_keeps_the_receipt() {
     let tmp = TempDir::new().expect("tempdir");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System);
     receipt::write(tmp.path(), "web1-push", &receipt).expect("write");
@@ -1180,19 +1202,22 @@ mod tests {
       stream:    Outcome::failed(""),
     };
 
-    let err = run("web1-push", tmp.path(), &transport)
-      .expect_err("a stream that ends on the failure marker must not pass silently");
+    let err = run("web1-push", tmp.path(), &transport).expect_err(
+      "a stream that ends on the failure marker must not pass silently",
+    );
     assert!(format!("{err}").contains("failed on web1"), "got: {err}");
     assert!(
       receipt::read(tmp.path(), "web1-push")
         .expect("read")
         .is_some(),
-      "an operator must still acknowledge a failure before its receipt goes away"
+      "an operator must still acknowledge a failure before its receipt goes \
+       away"
     );
   }
 
   #[test]
-  fn reattaching_to_a_running_unit_that_streams_to_failure_runs_notify_exactly_once() {
+  fn reattaching_to_a_running_unit_that_streams_to_failure_runs_notify_exactly_once()
+   {
     let tmp = TempDir::new().expect("tempdir");
     let marker = tmp.path().join("notified");
     let receipt = PushReceipt::new("web1", "xi-push-web1-1", Scope::System)
@@ -1236,8 +1261,7 @@ mod tests {
 
     let state_dir = std::sync::Arc::new(tmp.path().to_owned());
     let transport = std::sync::Arc::new(ScriptedTransport(Outcome::ok(
-      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-       ExecMainCode=1\n",
+      "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nExecMainCode=1\n",
     )));
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
 
@@ -1259,7 +1283,10 @@ mod tests {
       })
     };
 
-    original_process.join().expect("original process thread").expect("remove_and_notify");
+    original_process
+      .join()
+      .expect("original process thread")
+      .expect("remove_and_notify");
     // The loser of the race finds the receipt already gone, which
     // `receipt::read` inside `run` reports as "no receipt found" - not a
     // notify bug, just the expected shape of losing the removal race.
@@ -1268,7 +1295,8 @@ mod tests {
     assert_eq!(
       std::fs::read_to_string(&fire_count).expect("read counter"),
       "x",
-      "--notify must have run exactly once across the original process and the reattach"
+      "--notify must have run exactly once across the original process and \
+       the reattach"
     );
   }
 
@@ -1297,7 +1325,11 @@ mod tests {
   }
 
   impl Transport for LocalShellTransport {
-    fn run(&self, _target: &TargetAddr, cmd: &RemoteCommand) -> Result<Outcome> {
+    fn run(
+      &self,
+      _target: &TargetAddr,
+      cmd: &RemoteCommand,
+    ) -> Result<Outcome> {
       let mut child = std::process::Command::new("sh")
         .arg("-c")
         .arg(&cmd.script)
@@ -1332,10 +1364,12 @@ mod tests {
             Self::TIMEOUT
           ))
         },
-        |status| Outcome {
-          success: status.success(),
-          stdout:  String::new(),
-          stderr:  String::new(),
+        |status| {
+          Outcome {
+            success: status.success(),
+            stdout:  String::new(),
+            stderr:  String::new(),
+          }
         },
       ))
     }
@@ -1385,11 +1419,8 @@ mod tests {
     std::fs::write(
       &path,
       format!(
-        "#!/bin/sh\n\
-         echo 'Nov 06 10:00:00 host systemd[1]: Started xi-push-web1-1.'\n\
-         sleep 0.2\n\
-         echo {}\n\
-         sleep 20\n",
+        "#!/bin/sh\necho 'Nov 06 10:00:00 host systemd[1]: Started \
+         xi-push-web1-1.'\nsleep 0.2\necho {}\nsleep 20\n",
         shell_quote(terminal_line),
       ),
     )
@@ -1416,8 +1447,12 @@ mod tests {
     let transport = LocalShellTransport::with_fixture_bin(bin_dir.path());
 
     let start = std::time::Instant::now();
-    let result =
-      stream_unit(&transport, &addr(), "xi-push-web1-1", "2024-01-01T00:00:00Z");
+    let result = stream_unit(
+      &transport,
+      &addr(),
+      "xi-push-web1-1",
+      "2024-01-01T00:00:00Z",
+    );
     let elapsed = start.elapsed();
 
     assert!(
@@ -1443,8 +1478,12 @@ mod tests {
     let transport = LocalShellTransport::with_fixture_bin(bin_dir.path());
 
     let start = std::time::Instant::now();
-    let result =
-      stream_unit(&transport, &addr(), "xi-push-web1-1", "2024-01-01T00:00:00Z");
+    let result = stream_unit(
+      &transport,
+      &addr(),
+      "xi-push-web1-1",
+      "2024-01-01T00:00:00Z",
+    );
     let elapsed = start.elapsed();
 
     assert!(

@@ -104,13 +104,13 @@ impl CheckResult {
 /// A direct flake input with its locked metadata.
 #[derive(Debug)]
 struct FlakeInput {
-  name:          String,
-  owner:         Option<String>,
-  repo:          Option<String>,
-  git_ref:       Option<String>,
-  last_modified: Option<u64>,
+  name:             String,
+  owner:            Option<String>,
+  repo:             Option<String>,
+  git_ref:          Option<String>,
+  last_modified:    Option<u64>,
   #[allow(dead_code)]
-  source_type:   Option<String>,
+  source_type:      Option<String>,
   /// Whether the input's `original` node in `flake.lock` carried an
   /// explicit `rev` key, i.e. the input was pinned directly to a commit
   /// hash (e.g. `github:owner/repo/abc123...`).
@@ -179,23 +179,23 @@ fn parse_flake_lock(lock_path: &Path) -> Result<Vec<FlakeInput>> {
     let original = node.get("original").and_then(serde_json::Value::as_object);
 
     inputs.push(FlakeInput {
-      name:          input_name.clone(),
-      owner:         locked
+      name:             input_name.clone(),
+      owner:            locked
         .and_then(|l| l.get("owner"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
-      repo:          locked
+      repo:             locked
         .and_then(|l| l.get("repo"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
-      git_ref:       original
+      git_ref:          original
         .and_then(|o| o.get("ref"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
-      last_modified: locked
+      last_modified:    locked
         .and_then(|l| l.get("lastModified"))
         .and_then(serde_json::Value::as_u64),
-      source_type:   locked
+      source_type:      locked
         .and_then(|l| l.get("type"))
         .and_then(serde_json::Value::as_str)
         .map(String::from),
@@ -242,7 +242,7 @@ struct LockGraph {
 }
 
 /// Parse *every* node in `flake.lock` (not just the root's direct
-/// inputs), for checks that need to see transitively-pulled inputs  - 
+/// inputs), for checks that need to see transitively-pulled inputs  -
 /// currently only [`check_duplicate_inputs`].
 fn parse_all_lock_nodes(lock_path: &Path) -> Result<LockGraph> {
   let content = std::fs::read_to_string(lock_path)?;
@@ -264,7 +264,9 @@ fn parse_all_lock_nodes(lock_path: &Path) -> Result<LockGraph> {
   let mut nodes = HashMap::new();
 
   for (node_name, node) in nodes_json {
-    let Some(node) = node.as_object() else { continue };
+    let Some(node) = node.as_object() else {
+      continue;
+    };
     let locked = node.get("locked").and_then(serde_json::Value::as_object);
 
     let mut inputs = Vec::new();
@@ -289,24 +291,21 @@ fn parse_all_lock_nodes(lock_path: &Path) -> Result<LockGraph> {
       }
     }
 
-    nodes.insert(
-      node_name.clone(),
-      LockNodeInfo {
-        owner: locked
-          .and_then(|l| l.get("owner"))
-          .and_then(serde_json::Value::as_str)
-          .map(String::from),
-        repo:  locked
-          .and_then(|l| l.get("repo"))
-          .and_then(serde_json::Value::as_str)
-          .map(String::from),
-        rev:   locked
-          .and_then(|l| l.get("rev"))
-          .and_then(serde_json::Value::as_str)
-          .map(String::from),
-        inputs,
-      },
-    );
+    nodes.insert(node_name.clone(), LockNodeInfo {
+      owner: locked
+        .and_then(|l| l.get("owner"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from),
+      repo: locked
+        .and_then(|l| l.get("repo"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from),
+      rev: locked
+        .and_then(|l| l.get("rev"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from),
+      inputs,
+    });
   }
 
   Ok(LockGraph { nodes, root })
@@ -605,8 +604,8 @@ fn check_duplicate_inputs(graph: &LockGraph) -> Vec<CheckResult> {
         code:   "duplicate-inputs",
         name:   "Duplicate inputs",
         status: CheckStatus::Warn(format!(
-          "multiple inputs resolve to github:{owner}/{repo} at different \
-           revs with no `follows` connecting them: {detail}"
+          "multiple inputs resolve to github:{owner}/{repo} at different revs \
+           with no `follows` connecting them: {detail}"
         )),
       });
     }
@@ -637,7 +636,10 @@ fn fetch_flake_metadata_json(flake_dir: &Path) -> Result<serde_json::Value> {
 
 /// Check whether the flake declares a top-level `description`.
 fn check_flake_description(metadata: &serde_json::Value) -> CheckResult {
-  match metadata.get("description").and_then(serde_json::Value::as_str) {
+  match metadata
+    .get("description")
+    .and_then(serde_json::Value::as_str)
+  {
     Some(desc) if !desc.trim().is_empty() => {
       CheckResult {
         code:   "flake-description",
@@ -710,8 +712,7 @@ fn check_lock_present_and_tracked(flake_dir: &Path) -> CheckResult {
         code:   "lock-tracked",
         name:   "Lock file tracked",
         status: CheckStatus::Fail(
-          "flake.lock is matched by .gitignore and would never be \
-           committed"
+          "flake.lock is matched by .gitignore and would never be committed"
             .to_string(),
         ),
       }
@@ -755,7 +756,7 @@ fn extract_quoted_list(block: &str, key: &str) -> Option<Vec<String>> {
   let close = after_key[open..].find(']')? + open;
   let list_str = &after_key[open + 1..close];
 
-  // Splitting on `"` turns `[ "a" "b" ]` into `["", "a", " ", "b", ""]`  - 
+  // Splitting on `"` turns `[ "a" "b" ]` into `["", "a", " ", "b", ""]`  -
   // the quoted values sit at every odd index.
   Some(
     list_str
@@ -773,7 +774,7 @@ fn extract_quoted_list(block: &str, key: &str) -> Option<Vec<String>> {
 /// `flake.nix` source.
 ///
 /// `nixConfig` is read by the Nix CLI itself before any evaluation
-/// happens, not something `nix eval` can report on as a flake output  - 
+/// happens, not something `nix eval` can report on as a flake output  -
 /// hence the textual extraction rather than an eval-based check.
 fn check_nixconfig_substituter_pairing(flake_nix: &str) -> Vec<CheckResult> {
   let Some(nixconfig_idx) = flake_nix.find("nixConfig") else {
@@ -792,8 +793,7 @@ fn check_nixconfig_substituter_pairing(flake_nix: &str) -> Vec<CheckResult> {
   let substituters =
     extract_quoted_list(block, "extra-substituters").unwrap_or_default();
   let trusted_keys =
-    extract_quoted_list(block, "extra-trusted-public-keys")
-      .unwrap_or_default();
+    extract_quoted_list(block, "extra-trusted-public-keys").unwrap_or_default();
 
   substituters
     .iter()
@@ -804,8 +804,8 @@ fn check_nixconfig_substituter_pairing(flake_nix: &str) -> Vec<CheckResult> {
         code:   "nixconfig-substituter-pairing",
         name:   "Substituter/key pairing",
         status: CheckStatus::Warn(format!(
-          "nixConfig.extra-substituters[{idx}] '{sub}' has no \
-           corresponding extra-trusted-public-keys entry"
+          "nixConfig.extra-substituters[{idx}] '{sub}' has no corresponding \
+           extra-trusted-public-keys entry"
         )),
       }
     })
@@ -1005,8 +1005,9 @@ fn check_per_system_output_gaps(
   let mut results = Vec::new();
 
   for category in PER_SYSTEM_GAP_CATEGORIES {
-    let Some(systems) =
-      show_json.get(category).and_then(serde_json::Value::as_object)
+    let Some(systems) = show_json
+      .get(category)
+      .and_then(serde_json::Value::as_object)
     else {
       continue;
     };
@@ -1017,7 +1018,9 @@ fn check_per_system_output_gaps(
 
     for (system_name, leaves) in systems {
       declared_systems.push(system_name.clone());
-      let Some(leaves) = leaves.as_object() else { continue };
+      let Some(leaves) = leaves.as_object() else {
+        continue;
+      };
       for leaf_name in leaves.keys() {
         leaf_systems
           .entry(leaf_name.clone())
@@ -1044,9 +1047,8 @@ fn check_per_system_output_gaps(
           code:   "per-system-output-gap",
           name:   "Per-system output gap",
           status: CheckStatus::Warn(format!(
-            "{category}.{system}.{leaf_name} is missing, but {leaf_name} \
-             is present under {category} for at least one other declared \
-             system"
+            "{category}.{system}.{leaf_name} is missing, but {leaf_name} is \
+             present under {category} for at least one other declared system"
           )),
         });
       }
@@ -1125,6 +1127,15 @@ fn check_nonstandard_output_keys(
 // ---------------------------------------------------------------------------
 // Run all health checks
 // ---------------------------------------------------------------------------
+
+/// Re-raise a worker thread's panic in the joining thread.
+///
+/// `resume_unwind` rather than `expect`: the panic is re-raised carrying its
+/// original payload and location, instead of being flattened into a generic
+/// "thread panicked" message that discards what actually failed.
+fn rejoin<T>(r: std::thread::Result<T>) -> T {
+  r.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
 
 /// Run all flake health checks and return results.
 pub fn run_health_checks(
@@ -1212,12 +1223,11 @@ pub fn run_health_checks(
       .then(|| scope.spawn(|| crate::fetch_flake_show_json(flake_ref)));
 
     (
-      formatter_handle.join().expect("formatter check thread panicked"),
-      metadata_handle.map(|h| h.join().expect("flake metadata thread panicked")),
-      package_meta_handle
-        .map(|h| h.join().expect("package meta thread panicked")),
-      app_names_handle.map(|h| h.join().expect("app names thread panicked")),
-      show_handle.map(|h| h.join().expect("flake show thread panicked")),
+      rejoin(formatter_handle.join()),
+      metadata_handle.map(|h| rejoin(h.join())),
+      package_meta_handle.map(|h| rejoin(h.join())),
+      app_names_handle.map(|h| rejoin(h.join())),
+      show_handle.map(|h| rejoin(h.join())),
     )
   });
 
@@ -1245,12 +1255,15 @@ pub fn run_health_checks(
 
     // Flake description + dirty-tree checks share the one `nix flake
     // metadata --json` call fetched concurrently above.
-    match metadata_result.expect("structure group is enabled, so the metadata thread was spawned") {
-      Ok(metadata) => {
+    match metadata_result {
+      Some(Ok(metadata)) => {
         results.push(check_flake_description(&metadata));
         results.push(check_dirty_tree(&metadata));
       },
-      Err(e) => debug!("failed to fetch nix flake metadata --json: {e}"),
+      Some(Err(e)) => {
+        debug!("failed to fetch nix flake metadata --json: {e}");
+      },
+      None => debug!("metadata thread was not spawned"),
     }
 
     // nixConfig substituter/trusted-key pairing -- textual flake.nix parse.
@@ -1267,8 +1280,8 @@ pub fn run_health_checks(
   if config.disable_metadata_checks {
     debug!("metadata check group disabled via .xi.toml [doctor]");
   } else {
-    match package_meta_result.expect("metadata group is enabled, so the package-meta thread was spawned") {
-      Ok(package_meta) => {
+    match package_meta_result {
+      Some(Ok(package_meta)) => {
         for (name, info) in &package_meta {
           results.extend(check_package_meta_completeness(name, info));
           if let Some(r) = check_package_version(name, info) {
@@ -1282,8 +1295,8 @@ pub fn run_health_checks(
         // apps.<system>.<name> matched to packages.<system>.<name> by
         // identical attribute name -- see check_app_main_program's doc
         // comment for the heuristic limitation this carries.
-        match app_names_result.expect("metadata group is enabled, so the app-names thread was spawned") {
-          Ok(app_names) => {
+        match app_names_result {
+          Some(Ok(app_names)) => {
             for app_name in &app_names {
               if let Some(info) = package_meta.get(app_name)
                 && let Some(r) = check_app_main_program(app_name, info)
@@ -1292,10 +1305,12 @@ pub fn run_health_checks(
               }
             }
           },
-          Err(e) => debug!("failed to discover app names: {e}"),
+          Some(Err(e)) => debug!("failed to discover app names: {e}"),
+          None => debug!("app-names thread was not spawned"),
         }
       },
-      Err(e) => debug!("failed to discover package meta: {e}"),
+      Some(Err(e)) => debug!("failed to discover package meta: {e}"),
+      None => debug!("package-meta thread was not spawned"),
     }
   }
 
@@ -1305,13 +1320,16 @@ pub fn run_health_checks(
   if config.disable_output_checks {
     debug!("output check group disabled via .xi.toml [doctor]");
   } else {
-    match show_result.expect("output group is enabled, so the flake-show thread was spawned") {
-      Ok(show_json) => {
+    match show_result {
+      Some(Ok(show_json)) => {
         results.extend(check_per_system_output_gaps(&show_json));
         results.push(check_checks_output_present(&show_json));
         results.extend(check_nonstandard_output_keys(&show_json));
       },
-      Err(e) => debug!("failed to fetch nix flake show --json: {e}"),
+      Some(Err(e)) => {
+        debug!("failed to fetch nix flake show --json: {e}");
+      },
+      None => debug!("flake-show thread was not spawned"),
     }
   }
 
@@ -1334,21 +1352,23 @@ fn apply_rule_overrides(
 ) -> Vec<CheckResult> {
   results
     .into_iter()
-    .filter_map(|mut result| match config.rules.get(result.code) {
-      None => Some(result),
-      Some(crate::project_config::RuleSetting::Off) => None,
-      Some(crate::project_config::RuleSetting::Warn) => {
-        if let CheckStatus::Fail(msg) = result.status {
-          result.status = CheckStatus::Warn(msg);
-        }
-        Some(result)
-      },
-      Some(crate::project_config::RuleSetting::Fail) => {
-        if let CheckStatus::Warn(msg) = result.status {
-          result.status = CheckStatus::Fail(msg);
-        }
-        Some(result)
-      },
+    .filter_map(|mut result| {
+      match config.rules.get(result.code) {
+        None => Some(result),
+        Some(crate::project_config::RuleSetting::Off) => None,
+        Some(crate::project_config::RuleSetting::Warn) => {
+          if let CheckStatus::Fail(msg) = result.status {
+            result.status = CheckStatus::Warn(msg);
+          }
+          Some(result)
+        },
+        Some(crate::project_config::RuleSetting::Fail) => {
+          if let CheckStatus::Warn(msg) = result.status {
+            result.status = CheckStatus::Fail(msg);
+          }
+          Some(result)
+        },
+      }
     })
     .collect()
 }
@@ -1437,12 +1457,12 @@ mod tests {
       .as_secs();
 
     FlakeInput {
-      name:          "nixpkgs".to_string(),
-      owner:         Some(owner.to_string()),
-      repo:          Some("nixpkgs".to_string()),
-      git_ref:       Some(branch.to_string()),
-      last_modified: Some(now - (age_days * SECONDS_PER_DAY)),
-      source_type:   Some("github".to_string()),
+      name:             "nixpkgs".to_string(),
+      owner:            Some(owner.to_string()),
+      repo:             Some("nixpkgs".to_string()),
+      git_ref:          Some(branch.to_string()),
+      last_modified:    Some(now - (age_days * SECONDS_PER_DAY)),
+      source_type:      Some("github".to_string()),
       has_explicit_rev: false,
     }
   }
@@ -1512,12 +1532,12 @@ mod tests {
   #[test]
   fn non_nixpkgs_skips_branch_check() {
     let input = FlakeInput {
-      name:          "crane".to_string(),
-      owner:         Some("ipetkov".to_string()),
-      repo:          Some("crane".to_string()),
-      git_ref:       Some("master".to_string()),
-      last_modified: Some(0),
-      source_type:   Some("github".to_string()),
+      name:             "crane".to_string(),
+      owner:            Some("ipetkov".to_string()),
+      repo:             Some("crane".to_string()),
+      git_ref:          Some("master".to_string()),
+      last_modified:    Some(0),
+      source_type:      Some("github".to_string()),
       has_explicit_rev: false,
     };
     let supported: Vec<String> = DEFAULT_SUPPORTED_BRANCHES
@@ -1781,7 +1801,10 @@ mod tests {
 
   // -- 2.4 check_duplicate_inputs -------------------------------------------
 
-  fn write_duplicate_lock(dir: &std::path::Path, follows: bool) -> std::path::PathBuf {
+  fn write_duplicate_lock(
+    dir: &std::path::Path,
+    follows: bool,
+  ) -> std::path::PathBuf {
     let dep_nixpkgs_input = if follows {
       r#""nixpkgs": ["nixpkgs"]"#
     } else {
@@ -1849,7 +1872,11 @@ mod tests {
     let graph = parse_all_lock_nodes(&lock_path).expect("parse graph");
     let results = check_duplicate_inputs(&graph);
 
-    assert_eq!(results.len(), 1, "expected exactly one warning, got {results:?}");
+    assert_eq!(
+      results.len(),
+      1,
+      "expected exactly one warning, got {results:?}"
+    );
     assert!(matches!(results[0].status, CheckStatus::Warn(_)));
   }
 
@@ -1971,12 +1998,19 @@ mod tests {
     let mut info = complete_package_meta();
     info.has_description = false;
     let results = check_package_meta_completeness("foo", &info);
-    assert_eq!(results.len(), 1, "expected exactly one warning, got {results:?}");
+    assert_eq!(
+      results.len(),
+      1,
+      "expected exactly one warning, got {results:?}"
+    );
     assert!(matches!(results[0].status, CheckStatus::Warn(_)));
     let CheckStatus::Warn(ref msg) = results[0].status else {
       unreachable!()
     };
-    assert!(msg.contains("foo"), "message should name the package: {msg}");
+    assert!(
+      msg.contains("foo"),
+      "message should name the package: {msg}"
+    );
     assert!(
       msg.contains("meta.description"),
       "message should name the specific attribute: {msg}"
@@ -1988,7 +2022,11 @@ mod tests {
     let mut info = complete_package_meta();
     info.has_license = false;
     let results = check_package_meta_completeness("foo", &info);
-    assert_eq!(results.len(), 1, "expected exactly one warning, got {results:?}");
+    assert_eq!(
+      results.len(),
+      1,
+      "expected exactly one warning, got {results:?}"
+    );
     let CheckStatus::Warn(ref msg) = results[0].status else {
       unreachable!()
     };
@@ -2000,7 +2038,11 @@ mod tests {
     let mut info = complete_package_meta();
     info.maintainers_count = 0;
     let results = check_package_meta_completeness("foo", &info);
-    assert_eq!(results.len(), 1, "expected exactly one warning, got {results:?}");
+    assert_eq!(
+      results.len(),
+      1,
+      "expected exactly one warning, got {results:?}"
+    );
     let CheckStatus::Warn(ref msg) = results[0].status else {
       unreachable!()
     };
@@ -2012,7 +2054,11 @@ mod tests {
     let mut info = complete_package_meta();
     info.has_platforms = false;
     let results = check_package_meta_completeness("foo", &info);
-    assert_eq!(results.len(), 1, "expected exactly one warning, got {results:?}");
+    assert_eq!(
+      results.len(),
+      1,
+      "expected exactly one warning, got {results:?}"
+    );
     let CheckStatus::Warn(ref msg) = results[0].status else {
       unreachable!()
     };
@@ -2030,8 +2076,7 @@ mod tests {
     assert_eq!(
       results.len(),
       4,
-      "expected one independent warning per missing attribute, got \
-       {results:?}"
+      "expected one independent warning per missing attribute, got {results:?}"
     );
   }
 
@@ -2077,7 +2122,8 @@ mod tests {
     );
   }
 
-  // -- 3.4 check_app_main_program ----------------------------------------------
+  // -- 3.4 check_app_main_program
+  // ----------------------------------------------
 
   #[test]
   fn app_with_main_program_does_not_warn() {
@@ -2097,7 +2143,8 @@ mod tests {
     ));
   }
 
-  // -- 3.5 check_package_insecure ----------------------------------------------
+  // -- 3.5 check_package_insecure
+  // ----------------------------------------------
 
   #[test]
   fn secure_package_does_not_warn() {
@@ -2296,7 +2343,11 @@ mod tests {
     });
 
     let results = check_nonstandard_output_keys(&show_json);
-    assert_eq!(results.len(), 2, "expected one warning per key, got {results:?}");
+    assert_eq!(
+      results.len(),
+      2,
+      "expected one warning per key, got {results:?}"
+    );
   }
 
   // -- 5.1/5.2 group gating (SC-FD-013) --------------------------------------
@@ -2307,8 +2358,8 @@ mod tests {
   /// - no top-level `description`, which triggers the structure group's
   ///   `check_flake_description` warning via `nix flake metadata --json`.
   /// - an empty `outputs` set, which triggers the output group's
-  ///   `check_checks_output_present` warning via `nix flake show --json`
-  ///   (no `checks` output exists at all).
+  ///   `check_checks_output_present` warning via `nix flake show --json` (no
+  ///   `checks` output exists at all).
   fn write_group_gating_fixture(dir: &std::path::Path) {
     std::fs::write(
       dir.join("flake.nix"),
@@ -2348,20 +2399,17 @@ mod tests {
 
     assert!(
       !results.iter().any(|r| r.name == "Flake description"),
-      "structure group's description check must not run at all when the \
-       group is disabled: {results:?}"
+      "structure group's description check must not run at all when the group \
+       is disabled: {results:?}"
     );
-    let checks_output = results
-      .iter()
-      .find(|r| r.name == "Checks output")
-      .expect(
+    let checks_output =
+      results.iter().find(|r| r.name == "Checks output").expect(
         "output group's checks-output check must still run when only the \
          structure group is disabled",
       );
     assert!(
       matches!(checks_output.status, CheckStatus::Warn(_)),
-      "expected a warning for the missing `checks` output: \
-       {checks_output:?}"
+      "expected a warning for the missing `checks` output: {checks_output:?}"
     );
   }
 
@@ -2382,8 +2430,8 @@ mod tests {
       .iter()
       .find(|r| r.name == "Flake description")
       .expect(
-        "structure group's description check must still run when only \
-         the output group is disabled",
+        "structure group's description check must still run when only the \
+         output group is disabled",
       );
     assert!(
       matches!(description.status, CheckStatus::Warn(_)),
@@ -2392,8 +2440,8 @@ mod tests {
     );
     assert!(
       !results.iter().any(|r| r.name == "Checks output"),
-      "output group's checks-output check must not run at all when the \
-       group is disabled: {results:?}"
+      "output group's checks-output check must not run at all when the group \
+       is disabled: {results:?}"
     );
   }
 
@@ -2447,14 +2495,16 @@ mod tests {
     // fixture's undocumented 'foo' package must actually trigger a
     // Package meta warning  -  otherwise the "suppressed" assertion below
     // would be vacuously true.
-    let enabled_results =
-      run_health_checks(dir.path(), &flake_ref, &ProjectDoctorConfig::default())
-        .expect("run health checks (metadata enabled)");
+    let enabled_results = run_health_checks(
+      dir.path(),
+      &flake_ref,
+      &ProjectDoctorConfig::default(),
+    )
+    .expect("run health checks (metadata enabled)");
     assert!(
       enabled_results.iter().any(|r| r.name == "Package meta"),
-      "expected the fixture's undocumented 'foo' package to produce a \
-       Package meta warning when the metadata group is enabled: \
-       {enabled_results:?}"
+      "expected the fixture's undocumented 'foo' package to produce a Package \
+       meta warning when the metadata group is enabled: {enabled_results:?}"
     );
 
     let config = ProjectDoctorConfig {
@@ -2466,15 +2516,15 @@ mod tests {
 
     assert!(
       !results.iter().any(|r| r.name == "Package meta"),
-      "metadata group's package-meta check must not run at all when the \
-       group is disabled: {results:?}"
+      "metadata group's package-meta check must not run at all when the group \
+       is disabled: {results:?}"
     );
     let description = results
       .iter()
       .find(|r| r.name == "Flake description")
       .expect(
-        "structure group's description check must still run when only \
-         the metadata group is disabled",
+        "structure group's description check must still run when only the \
+         metadata group is disabled",
       );
     assert!(
       matches!(description.status, CheckStatus::Warn(_)),
@@ -2491,7 +2541,9 @@ mod tests {
   // ever looks at `code` and `status`.
 
   fn rules_with(
-    pairs: impl IntoIterator<Item = (&'static str, crate::project_config::RuleSetting)>,
+    pairs: impl IntoIterator<
+      Item = (&'static str, crate::project_config::RuleSetting),
+    >,
   ) -> ProjectDoctorConfig {
     ProjectDoctorConfig {
       rules: pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
@@ -2522,7 +2574,9 @@ mod tests {
 
     let overridden = apply_rule_overrides(&config, results);
     assert_eq!(overridden.len(), 1);
-    assert!(matches!(overridden[0].status, CheckStatus::Fail(ref m) if m == "message"));
+    assert!(
+      matches!(overridden[0].status, CheckStatus::Fail(ref m) if m == "message")
+    );
   }
 
   #[test]
@@ -2536,7 +2590,9 @@ mod tests {
 
     let overridden = apply_rule_overrides(&config, results);
     assert_eq!(overridden.len(), 1);
-    assert!(matches!(overridden[0].status, CheckStatus::Warn(ref m) if m == "message"));
+    assert!(
+      matches!(overridden[0].status, CheckStatus::Warn(ref m) if m == "message")
+    );
   }
 
   #[test]

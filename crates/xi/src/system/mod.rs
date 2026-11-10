@@ -119,7 +119,12 @@ impl SystemRebuildArgs {
 
     // Push to cache after successful build (best-effort)
     if xi_core::cache::is_push_configured(&self.common.cache) {
-      xi_core::cache::push_to_cache(&self.common.cache, &out_path);
+      let pushed = xi_core::cache::push_to_cache(&self.common.cache, &out_path);
+      // A target marked `required = true` must block the operation: that
+      // is the documented contract of `push_to_cache` and what
+      // `enforce_required` exists for. Nothing called it until now, so
+      // `required` silently behaved like best-effort.
+      xi_core::cache::enforce_required(&pushed)?;
     }
 
     let target_profile = out_path.clone();

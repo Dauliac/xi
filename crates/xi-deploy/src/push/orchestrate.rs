@@ -944,7 +944,10 @@ const MAX_PUSH_ID_ATTEMPTS: u8 = 10;
 /// # Errors
 ///
 /// Returns an error if every attempt collided.
-fn unique_push_id(state_dir: &std::path::Path, target_name: &str) -> Result<String> {
+fn unique_push_id(
+  state_dir: &std::path::Path,
+  target_name: &str,
+) -> Result<String> {
   unique_push_id_with(state_dir, || mode_sources::push_id(target_name))
 }
 
@@ -1026,7 +1029,9 @@ fn switch_with_receipt(
   );
   match outcome {
     Ok(()) => {
-      if let Err(remove_err) = receipt::remove_and_notify(state_dir, &push_id, &receipt) {
+      if let Err(remove_err) =
+        receipt::remove_and_notify(state_dir, &push_id, &receipt)
+      {
         warn!(
           push_id,
           error = %remove_err,
@@ -1036,7 +1041,9 @@ fn switch_with_receipt(
       Ok(())
     },
     Err(err) => {
-      if let Err(notify_err) = receipt::mark_notified_and_notify(state_dir, &push_id, &receipt) {
+      if let Err(notify_err) =
+        receipt::mark_notified_and_notify(state_dir, &push_id, &receipt)
+      {
         warn!(
           push_id,
           error = %notify_err,
@@ -1072,7 +1079,13 @@ fn upload_secrets(
   for secret in secrets.values().filter(|secret| secret.upload_at == when) {
     let local = secret.source_from(&context.sources_dir);
     transport
-      .upload_secret(&target.addr, &local, secret, interactive_sudo, retry_attempts)
+      .upload_secret(
+        &target.addr,
+        &local,
+        secret,
+        interactive_sudo,
+        retry_attempts,
+      )
       .map_err(|e| {
         eyre!(
           "uploading secret '{}' to {}: {e}",
@@ -1336,9 +1349,13 @@ mod tests {
       interactive_sudo: bool,
       retry_attempts: u32,
     ) -> Result<()> {
-      self
-        .0
-        .upload_secret(target, local, spec, interactive_sudo, retry_attempts)
+      self.0.upload_secret(
+        target,
+        local,
+        spec,
+        interactive_sudo,
+        retry_attempts,
+      )
     }
 
     fn sync_dir(
@@ -1367,9 +1384,9 @@ mod tests {
       _request: &AdvanceNow,
     ) -> Result<AdvanceReply> {
       Err(eyre!(
-        "target-pull on {} is unreachable (ctl relay exited with exit \
-         status: 255: ssh: connect to host {} port 22: Connection \
-         refused); fall back to --sources-transport operator-copy",
+        "target-pull on {} is unreachable (ctl relay exited with exit status: \
+         255: ssh: connect to host {} port 22: Connection refused); fall back \
+         to --sources-transport operator-copy",
         target.name,
         target.ssh_host,
       ))
@@ -1408,9 +1425,13 @@ mod tests {
       interactive_sudo: bool,
       retry_attempts: u32,
     ) -> Result<()> {
-      self
-        .0
-        .upload_secret(target, local, spec, interactive_sudo, retry_attempts)
+      self.0.upload_secret(
+        target,
+        local,
+        spec,
+        interactive_sudo,
+        retry_attempts,
+      )
     }
 
     fn sync_dir(
@@ -1696,8 +1717,10 @@ mod tests {
     let marker = context.state_dir.join("notified");
 
     let mut push_args = args(PushMode::Sources);
-    push_args.notify =
-      Some(format!("touch {}", shell_quote(&marker.display().to_string())));
+    push_args.notify = Some(format!(
+      "touch {}",
+      shell_quote(&marker.display().to_string())
+    ));
 
     let report = execute(
       &push_args,
@@ -1726,10 +1749,10 @@ mod tests {
   /// `run`/`sync_dir` also make), so a test can observe receipt state at
   /// the exact moment that call fires.
   struct SwitchObservingTransport {
-    inner:                  FixtureTransport,
-    state_dir:              std::path::PathBuf,
-    receipt_seen_at_switch: Mutex<Option<bool>>,
-    fail_switch_with_error: bool,
+    inner:                              FixtureTransport,
+    state_dir:                          std::path::PathBuf,
+    receipt_seen_at_switch:             Mutex<Option<bool>>,
+    fail_switch_with_error:             bool,
     /// When set, the `systemd-run`-wrapped switch call answers with a
     /// confirmed non-zero remote exit (an `Ok(Outcome::failed(..))`)
     /// instead of `fail_switch_with_error`'s `Err` - the SSH round-trip
@@ -1767,7 +1790,9 @@ mod tests {
       via: PushCopyVia,
       retry_attempts: u32,
     ) -> Result<()> {
-      self.inner.copy_closure(target, store_path, via, retry_attempts)
+      self
+        .inner
+        .copy_closure(target, store_path, via, retry_attempts)
     }
 
     fn upload_secret(
@@ -1778,9 +1803,13 @@ mod tests {
       interactive_sudo: bool,
       retry_attempts: u32,
     ) -> Result<()> {
-      self
-        .inner
-        .upload_secret(target, local, spec, interactive_sudo, retry_attempts)
+      self.inner.upload_secret(
+        target,
+        local,
+        spec,
+        interactive_sudo,
+        retry_attempts,
+      )
     }
 
     fn sync_dir(
@@ -1811,10 +1840,10 @@ mod tests {
     let nix = FixtureNix::single_nixos_host("web1");
     let (_root, context) = fixture_context();
     let transport = SwitchObservingTransport {
-      inner:                  FixtureTransport::default(),
-      state_dir:              context.state_dir.clone(),
-      receipt_seen_at_switch: Mutex::new(None),
-      fail_switch_with_error: false,
+      inner:                              FixtureTransport::default(),
+      state_dir:                          context.state_dir.clone(),
+      receipt_seen_at_switch:             Mutex::new(None),
+      fail_switch_with_error:             false,
       fail_switch_with_confirmed_failure: false,
     };
     let secrets = BTreeMap::new();
@@ -1855,10 +1884,10 @@ mod tests {
     let nix = FixtureNix::single_nixos_host("web1");
     let (_root, context) = fixture_context();
     let transport = SwitchObservingTransport {
-      inner:                  FixtureTransport::default(),
-      state_dir:              context.state_dir.clone(),
-      receipt_seen_at_switch: Mutex::new(None),
-      fail_switch_with_error: true,
+      inner:                              FixtureTransport::default(),
+      state_dir:                          context.state_dir.clone(),
+      receipt_seen_at_switch:             Mutex::new(None),
+      fail_switch_with_error:             true,
       fail_switch_with_confirmed_failure: false,
     };
     let secrets = BTreeMap::new();
@@ -1898,16 +1927,18 @@ mod tests {
     let (_root, context) = fixture_context();
     let marker = context.state_dir.join("notified");
     let transport = SwitchObservingTransport {
-      inner:                  FixtureTransport::default(),
-      state_dir:              context.state_dir.clone(),
-      receipt_seen_at_switch: Mutex::new(None),
-      fail_switch_with_error: false,
+      inner:                              FixtureTransport::default(),
+      state_dir:                          context.state_dir.clone(),
+      receipt_seen_at_switch:             Mutex::new(None),
+      fail_switch_with_error:             false,
       fail_switch_with_confirmed_failure: true,
     };
     let secrets = BTreeMap::new();
     let mut push_args = args(PushMode::Sources);
-    push_args.notify =
-      Some(format!("touch {}", shell_quote(&marker.display().to_string())));
+    push_args.notify = Some(format!(
+      "touch {}",
+      shell_quote(&marker.display().to_string())
+    ));
 
     let report = execute(
       &push_args,
@@ -1923,7 +1954,10 @@ mod tests {
     )
     .expect("executes");
 
-    assert!(!report.ok(), "the confirmed remote failure must be reported");
+    assert!(
+      !report.ok(),
+      "the confirmed remote failure must be reported"
+    );
     assert!(
       marker.exists(),
       "expected --notify to fire for a confirmed synchronous switch failure"
@@ -1951,10 +1985,15 @@ mod tests {
       _target: &TargetAddr,
       _cmd: &RemoteCommand,
     ) -> Result<Outcome> {
-      Ok(Outcome::ok(
-        "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n\
-         ExecMainCode=1\n",
-      ))
+      // One property per line via `concat!`: a single long literal gets
+      // wrapped by rustfmt across the `\n` escape, which silently turns the
+      // line break into a literal backslash plus a stray `n`.
+      Ok(Outcome::ok(concat!(
+        "ActiveState=inactive\n",
+        "SubState=dead\n",
+        "ExecMainStatus=0\n",
+        "ExecMainCode=1\n",
+      )))
     }
 
     fn copy_closure(
@@ -1992,8 +2031,7 @@ mod tests {
   }
 
   #[test]
-  fn a_simulated_disconnect_then_reattach_to_success_round_trips_the_receipt()
-   {
+  fn a_simulated_disconnect_then_reattach_to_success_round_trips_the_receipt() {
     // xi-enwe.2.5: the full lifecycle a disconnect is supposed to
     // survive - write the receipt before the switch call, lose the
     // connection so it is left behind, then `--reattach` to a unit that
@@ -2001,10 +2039,10 @@ mod tests {
     let nix = FixtureNix::single_nixos_host("web1");
     let (_root, context) = fixture_context();
     let transport = SwitchObservingTransport {
-      inner:                  FixtureTransport::default(),
-      state_dir:              context.state_dir.clone(),
-      receipt_seen_at_switch: Mutex::new(None),
-      fail_switch_with_error: true,
+      inner:                              FixtureTransport::default(),
+      state_dir:                          context.state_dir.clone(),
+      receipt_seen_at_switch:             Mutex::new(None),
+      fail_switch_with_error:             true,
       fail_switch_with_confirmed_failure: false,
     };
     let secrets = BTreeMap::new();
@@ -2039,8 +2077,8 @@ mod tests {
       receipt::read(&context.state_dir, &push_id)
         .expect("read")
         .is_none(),
-      "reattaching to a succeeded unit must remove the receipt the \
-       disconnect left behind"
+      "reattaching to a succeeded unit must remove the receipt the disconnect \
+       left behind"
     );
   }
 
@@ -2143,7 +2181,9 @@ mod tests {
     let message = failures[0]
       .outcome
       .as_ref()
-      .expect_err("target-pull must fail when the control socket refuses the connection")
+      .expect_err(
+        "target-pull must fail when the control socket refuses the connection",
+      )
       .to_string();
     assert!(
       message.contains("target-pull on web1 is unreachable"),
@@ -2155,7 +2195,8 @@ mod tests {
     );
     assert!(
       message.contains("--sources-transport operator-copy"),
-      "the error must name the fallback for the operator to retry with; got: {message}"
+      "the error must name the fallback for the operator to retry with; got: \
+       {message}"
     );
     assert_eq!(
       transport.0.copy_calls.lock().expect("lock").len(),
@@ -2177,7 +2218,7 @@ mod tests {
     let secrets = BTreeMap::new();
     let inventory = PushConfig {
       sources_transport: Some(SourcesTransport::OperatorCopy),
-      hosts:             vec![super::super::config::PushHost {
+      hosts: vec![super::super::config::PushHost {
         name:              "web1".to_owned(),
         ssh:               "web1".to_owned(),
         remote_build:      None,
@@ -2630,12 +2671,14 @@ mod tests {
       "web1-1700000000-bbbbbb".to_owned(),
     ]
     .into_iter();
-    let id =
-      unique_push_id_with(tmp.path(), || candidates.next().expect("enough candidates"))
-        .expect("regenerates past the collision");
+    let id = unique_push_id_with(tmp.path(), || {
+      candidates.next().expect("enough candidates")
+    })
+    .expect("regenerates past the collision");
     assert_eq!(
       id, "web1-1700000000-bbbbbb",
-      "the first (colliding) candidate must be rejected and the second accepted"
+      "the first (colliding) candidate must be rejected and the second \
+       accepted"
     );
   }
 
@@ -2651,9 +2694,14 @@ mod tests {
       "xi-push-web1-1700000000-aaaaaa",
       Scope::System,
     );
-    receipt::write(tmp.path(), "web1-1700000000-aaaaaa", &receipt).expect("seed");
-    receipt::mark_notified_and_notify(tmp.path(), "web1-1700000000-aaaaaa", &receipt)
-      .expect("mark notified");
+    receipt::write(tmp.path(), "web1-1700000000-aaaaaa", &receipt)
+      .expect("seed");
+    receipt::mark_notified_and_notify(
+      tmp.path(),
+      "web1-1700000000-aaaaaa",
+      &receipt,
+    )
+    .expect("mark notified");
     assert!(
       receipt::remove(tmp.path(), "web1-1700000000-aaaaaa").expect("remove"),
       "the receipt itself must be gone, leaving only the marker"
@@ -2664,9 +2712,10 @@ mod tests {
       "web1-1700000000-bbbbbb".to_owned(),
     ]
     .into_iter();
-    let id =
-      unique_push_id_with(tmp.path(), || candidates.next().expect("enough candidates"))
-        .expect("regenerates past the stale marker");
+    let id = unique_push_id_with(tmp.path(), || {
+      candidates.next().expect("enough candidates")
+    })
+    .expect("regenerates past the stale marker");
     assert_eq!(id, "web1-1700000000-bbbbbb");
   }
 
