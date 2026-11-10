@@ -1,10 +1,11 @@
 //! The switch entrypoint: installer pre-check, then source adoption.
 //!
-//! `xi <scope> switch [<remote-url>]` is the single way a machine is
+//! `xi deploy --adopt [<remote-url>]` is the single way a machine is
 //! pointed at a config repo, on a bare machine and on a managed one
-//! alike. [`prepare`] is the shared pre-step every scope's `switch`
-//! runs before it resolves an installable, so all four verbs behave
-//! identically. See `openspec/changes/xi-sources-config/design.md`.
+//! alike - internally still dispatching into each scope's own `Switch`
+//! variant (xi-fxgx.5.4), so [`prepare`]'s role as the shared pre-step
+//! every one of those runs before it resolves an installable is
+//! unchanged. See `openspec/changes/xi-sources-config/design.md`.
 
 use std::{
   io::{self, IsTerminal},

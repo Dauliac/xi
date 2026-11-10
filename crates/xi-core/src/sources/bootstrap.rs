@@ -1745,6 +1745,24 @@ impl SshTarget {
   }
 }
 
+/// The `xi deploy` flags that replay what `xi <verb> switch <remote_url>`
+/// used to do, for each scope verb this module's `verb` parameter
+/// accepts.
+///
+/// `verb` names a scope ("home") or a system-scope mechanism ("os",
+/// "darwin", "system") - the same four strings `xi <verb> switch` used
+/// to accept as its command name, now passed through as `--scope`/
+/// `--mechanism` instead, since `switch` itself no longer parses
+/// (xi-fxgx.5.4).
+fn deploy_args_for_verb(verb: &str) -> &'static [&'static str] {
+  match verb {
+    "home" => &["--scope", "user"],
+    "os" => &["--scope", "system", "--mechanism", "nixos"],
+    "darwin" => &["--scope", "system", "--mechanism", "darwin"],
+    _ => &["--scope", "system", "--mechanism", "system-manager"],
+  }
+}
+
 /// Bootstrap another host over SSH, running the same planner there.
 ///
 /// The transport is three commands and no magic: copy this binary over,
@@ -1792,7 +1810,10 @@ pub fn bootstrap_over_ssh(
     ssh.push(port.to_string());
   }
   ssh.push(dest.clone());
-  ssh.push(format!("{REMOTE_BINARY} {verb} switch {remote_url}"));
+  ssh.push(format!(
+    "{REMOTE_BINARY} deploy {} --adopt {remote_url} {remote_url}",
+    deploy_args_for_verb(verb).join(" ")
+  ));
 
   info!("bootstrapping {dest} from {remote_url}");
   let run = runner.run_streaming(&ssh)?;
@@ -2287,13 +2308,16 @@ mod tests {
     assert!(calls[0].starts_with("scp -P 2222 /usr/bin/xi "));
     assert!(calls[0].contains("admin@example.net:"));
     assert!(calls[1].contains("ssh -p 2222 admin@example.net"));
-    assert!(calls[1].contains("system switch https://git.example/dotfiles"));
+    assert!(calls[1].contains(
+      "deploy --scope system --mechanism system-manager --adopt \
+       https://git.example/dotfiles https://git.example/dotfiles"
+    ));
     assert!(calls[2].contains("rm -f"));
   }
 
   #[test]
   fn a_failed_remote_switch_still_cleans_up_the_copied_binary() {
-    let runner = RecordingRunner::new().failing("system switch", 7);
+    let runner = RecordingRunner::new().failing("deploy", 7);
     let target = SshTarget::parse("ssh://example.net").unwrap();
 
     let err = bootstrap_over_ssh(

@@ -11,9 +11,10 @@
 //!
 //! Today that layer is `xi system uninstall`
 //! ([`xi_core::sources::bootstrap::uninstall`]); the forward bootstrap
-//! dispatch (`xi system switch <remote-url>` on a bare machine) and the
-//! `ssh://` remote form are planner-complete and unit-tested in the
-//! engine but not yet reachable from this binary - see
+//! dispatch (`xi deploy --mechanism system-manager --adopt <remote-url>`
+//! on a bare machine) and the `ssh://` remote form are planner-complete
+//! and unit-tested in the engine but not yet reachable from this binary -
+//! see
 //! `openspec/changes/xi-sources-bootstrap/specs/xi-sources-bootstrap/spec.md`.
 //!
 //! [`RecordingRunner`]: xi_core::sources::bootstrap::RecordingRunner

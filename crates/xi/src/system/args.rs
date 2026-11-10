@@ -50,9 +50,15 @@ impl SystemArgs {
 pub enum SystemSubcommand {
   /// Build and activate a system-manager configuration
   ///
-  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
-  /// functional for the deprecation window, hidden from `--help`.
-  #[command(hide = true)]
+  /// Removed from the CLI (xi-fxgx.5.4, past the deprecation window
+  /// xi-fxgx.5.2 opened): `xi system switch` no longer parses, since no
+  /// variant is named `switch` anymore - renamed rather than deleted
+  /// because `xi deploy`'s internal dispatch
+  /// (`crates/xi/src/deploy.rs::system_args`) still constructs this
+  /// exact variant and calls `.run()` on it directly in Rust, bypassing
+  /// CLI parsing entirely. Deleting the variant outright would break
+  /// that.
+  #[command(hide = true, name = "__deploy_internal_switch")]
   Switch(SystemRebuildArgs),
   /// Build a system-manager configuration
   Build(SystemRebuildArgs),
@@ -64,7 +70,8 @@ pub enum SystemSubcommand {
   /// and the active generation
   Status(xi_core::sources::deployment::DeploymentStatusArgs),
 
-  /// Reverse a prior `xi system switch <remote-url>` bootstrap
+  /// Reverse a prior `xi deploy --mechanism system-manager --adopt
+  /// <remote-url>` bootstrap
   ///
   /// Reads `bootstrap-receipt.json` and undoes every recorded action in
   /// last-applied-first order, including a delegated Nix install.

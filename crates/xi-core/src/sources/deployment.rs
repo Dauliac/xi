@@ -754,8 +754,8 @@ fn print_human(args: PrintHumanArgs<'_>) {
           Icon::Info,
           "sources",
           &format!(
-            "not configured for this scope (`xi {} switch <remote-url>` to \
-             adopt one)",
+            "not configured for this scope (`xi deploy --scope {} --adopt \
+             <remote-url>` to adopt one)",
             scope.as_str()
           )
         )

@@ -85,22 +85,26 @@ pub fn sync(
 }
 
 /// The remote activation invocation `--mode sources` runs after
-/// [`sync`] lands the sources dir: a remote `xi <scope> switch <remote
-/// path>#<target name>` invocation, tagged with
-/// `XI_APPLIED_ORIGIN=push:<origin_host>` so `record_activation_at` can
-/// tell this activation apart from a local interactive switch or a
-/// gitops-daemon tick, e.g.
-/// `XI_APPLIED_ORIGIN=push:operator-host xi system switch
-/// /etc/xi/sources#web1`.
+/// [`sync`] lands the sources dir: a remote `xi deploy --local --scope
+/// <scope> <remote path>#<target name>` invocation (replaying what `xi
+/// <scope> switch` did before xi-fxgx.5.4 removed `switch` from the
+/// CLI), tagged with `XI_APPLIED_ORIGIN=push:<origin_host>` so
+/// `record_activation_at` can tell this activation apart from a local
+/// interactive switch or a gitops-daemon tick, e.g.
+/// `XI_APPLIED_ORIGIN=push:operator-host xi deploy --local --scope
+/// system /etc/xi/sources#web1`.
 ///
 /// The synced sources dir is a flake like any other, so this costs `xi
-/// <scope> switch` nothing it was not already going to do: the
+/// deploy --local` nothing it was not already going to do: the
 /// positional `<remote path>#<target name>` resolves as the same
-/// `reference#attribute` installable shape an interactive `xi <scope>
-/// switch /etc/xi/sources#web1` would parse. `Scope::sources_verb`
-/// picks `system` over naming `nixos`/`darwin` explicitly, which is why
-/// this needs no per-kind branch the way `target.rebuild_tool`
-/// (`nixos-rebuild`/`darwin-rebuild`/`home-manager`) used to.
+/// `reference#attribute` installable shape an interactive `xi deploy
+/// --local /etc/xi/sources#web1` would parse. `--local` forces past the
+/// fleet-rollout branch - the target activates itself, never a further
+/// rollout. No `--mechanism` is passed: unlike a bare-machine bootstrap,
+/// this target is already adopted and provisioned, so `xi deploy`'s own
+/// system-scope auto-detection resolves it on the real host exactly as
+/// `target.rebuild_tool` (`nixos-rebuild`/`darwin-rebuild`/
+/// `home-manager`) already knew which mechanism applied.
 ///
 /// Exposed separately from [`switch`] so the exact script is assertable
 /// without a [`Transport`].
@@ -111,8 +115,8 @@ pub fn switch_script(
   origin_host: &str,
 ) -> String {
   format!(
-    "XI_APPLIED_ORIGIN=push:{origin_host} xi {} switch {}#{}",
-    scope.sources_verb(),
+    "XI_APPLIED_ORIGIN=push:{origin_host} xi deploy --local --scope {} {}#{}",
+    scope.as_str(),
     remote_path(scope),
     target.addr.name
   )
@@ -485,8 +489,8 @@ mod tests {
     let target = push_target("web1", "nixos-rebuild");
     assert_eq!(
       switch_script(&target, Scope::System, "operator-host"),
-      "XI_APPLIED_ORIGIN=push:operator-host xi system switch \
-       /etc/xi/sources#web1"
+      "XI_APPLIED_ORIGIN=push:operator-host xi deploy --local --scope \
+       system /etc/xi/sources#web1"
     );
   }
 
@@ -495,8 +499,8 @@ mod tests {
     let target = push_target("mac1", "darwin-rebuild");
     assert_eq!(
       switch_script(&target, Scope::System, "operator-host"),
-      "XI_APPLIED_ORIGIN=push:operator-host xi system switch \
-       /etc/xi/sources#mac1"
+      "XI_APPLIED_ORIGIN=push:operator-host xi deploy --local --scope \
+       system /etc/xi/sources#mac1"
     );
   }
 
@@ -505,7 +509,7 @@ mod tests {
     let target = push_target("me", "home-manager");
     assert_eq!(
       switch_script(&target, Scope::User, "operator-host"),
-      "XI_APPLIED_ORIGIN=push:operator-host xi home switch \
+      "XI_APPLIED_ORIGIN=push:operator-host xi deploy --local --scope user \
        ~/.local/share/xi/sources#me"
     );
   }
@@ -600,8 +604,8 @@ mod tests {
       wrapped,
       "systemd-run --wait --pipe --collect \
        --unit=xi-push-web1-1700000000-abc123 -- \
-       XI_APPLIED_ORIGIN=push:operator-host xi system switch \
-       /etc/xi/sources#web1"
+       XI_APPLIED_ORIGIN=push:operator-host xi deploy --local --scope \
+       system /etc/xi/sources#web1"
     );
   }
 

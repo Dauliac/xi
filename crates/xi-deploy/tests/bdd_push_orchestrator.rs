@@ -263,7 +263,7 @@ fn xi_push_runs_end_to_end_against_a_real_git_sources_fixture() {
     "got: {last_script}"
   );
   assert!(
-    last_script.contains("xi system switch"),
+    last_script.contains("xi deploy --local"),
     "got: {last_script}"
   );
 }
@@ -324,7 +324,7 @@ fn xi_push_mode_sources_activates_via_the_remote_switch_entrypoint_not_the_old_r
     "got: {last_script}"
   );
   assert!(
-    last_script.contains("xi system switch"),
+    last_script.contains("xi deploy --local"),
     "got: {last_script}"
   );
   assert!(
@@ -438,7 +438,7 @@ fn omitting_build_strategy_dispatches_identically_to_interleaved_given_explicitl
       .script
       .clone();
     assert!(
-      last_script.contains("xi system switch"),
+      last_script.contains("xi deploy --local"),
       "{label} got: {last_script}"
     );
   }

@@ -114,7 +114,7 @@ impl Drop for OriginEnvGuard {
   }
 }
 
-/// Split `"XI_APPLIED_ORIGIN=push:host xi system switch /nix/store/..."`
+/// Split `"XI_APPLIED_ORIGIN=push:host xi deploy --local ... /nix/store/..."`
 /// into the origin tag and the store path - the exact shape
 /// `push::orchestrate::activation_script` emits for `--mode closure`.
 fn parse_activation_script(script: &str) -> (String, String) {

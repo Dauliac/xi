@@ -107,9 +107,14 @@ impl OsArgs {
 pub enum OsSubcommand {
   /// Build and activate the new configuration, and make it the boot default
   ///
-  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
-  /// functional for the deprecation window, hidden from `--help`.
-  #[command(hide = true)]
+  /// Removed from the CLI (xi-fxgx.5.4, past the deprecation window
+  /// xi-fxgx.5.2 opened): `xi os switch` no longer parses, since no
+  /// variant is named `switch` anymore - renamed rather than deleted
+  /// because `xi deploy`'s internal dispatch
+  /// (`crates/xi/src/deploy.rs::os_args`) still constructs this exact
+  /// variant and calls `.run()` on it directly in Rust, bypassing CLI
+  /// parsing entirely. Deleting the variant outright would break that.
+  #[command(hide = true, name = "__deploy_internal_switch")]
   Switch(OsRebuildActivateArgs),
 
   /// Build the new configuration and make it the boot default

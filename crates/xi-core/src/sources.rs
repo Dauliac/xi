@@ -789,7 +789,7 @@ impl ConfigureHint {
     vec![
       Self {
         kind:   HintKind::Command,
-        name:   "xi <scope> switch <remote-url>".to_owned(),
+        name:   "xi deploy --adopt <remote-url>".to_owned(),
         detail: "adopt the config repo for this scope and switch to it"
           .to_owned(),
       },
@@ -1137,7 +1137,7 @@ mod tests {
           configure_with.iter().map(|h| h.name.as_str()).collect();
         assert!(names.iter().any(|n| n.contains("XI_SOURCES_REMOTE")));
         assert!(names.iter().any(|n| n.contains("[sources] remote")));
-        assert!(names.iter().any(|n| n.contains("switch <remote-url>")));
+        assert!(names.iter().any(|n| n.contains("deploy --adopt")));
       },
       other => panic!("expected Missing, got {other:?}"),
     }

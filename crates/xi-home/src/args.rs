@@ -26,9 +26,14 @@ use xi_remote::RemoteHost;
 pub enum HomeSubcommand {
   /// Build and activate a home-manager configuration
   ///
-  /// Deprecated: superseded by `xi deploy` (xi-fxgx.5.2). Kept fully
-  /// functional for the deprecation window, hidden from `--help`.
-  #[command(hide = true)]
+  /// Removed from the CLI (xi-fxgx.5.4, past the deprecation window
+  /// xi-fxgx.5.2 opened): `xi home switch` no longer parses, since no
+  /// variant is named `switch` anymore - renamed rather than deleted
+  /// because `xi deploy`'s internal dispatch
+  /// (`crates/xi/src/deploy.rs::home_args`) still constructs this exact
+  /// variant and calls `.run()` on it directly in Rust, bypassing CLI
+  /// parsing entirely. Deleting the variant outright would break that.
+  #[command(hide = true, name = "__deploy_internal_switch")]
   Switch(HomeRebuildArgs),
 
   /// Build a home-manager configuration

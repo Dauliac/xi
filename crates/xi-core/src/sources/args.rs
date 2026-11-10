@@ -10,7 +10,7 @@
 //! `openspec/changes/xi-sources-config/design.md`.
 //!
 //! This is the operator-maintenance surface, not the way a machine is
-//! set up: that is `xi <scope> switch [<remote-url>]`.
+//! set up: that is `xi deploy --adopt [<remote-url>]`.
 
 use std::path::PathBuf;
 

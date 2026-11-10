@@ -353,5 +353,5 @@ fn deploy_from_manifest_ships_without_rebuilding_after_a_batched_build_only_leg(
     .script
     .clone();
   assert!(last.contains("XI_APPLIED_ORIGIN=push:"), "got: {last}");
-  assert!(last.contains("xi system switch"), "got: {last}");
+  assert!(last.contains("xi deploy --local"), "got: {last}");
 }

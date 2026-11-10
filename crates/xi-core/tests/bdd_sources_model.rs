@@ -81,9 +81,7 @@ fn fresh_machine_returns_missing_and_names_the_configuration_surfaces() {
         "config key not named: {names:?}"
       );
       assert!(
-        names
-          .iter()
-          .any(|name| name.contains("switch <remote-url>")),
+        names.iter().any(|name| name.contains("deploy --adopt")),
         "command not named: {names:?}"
       );
     },

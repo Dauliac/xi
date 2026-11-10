@@ -83,7 +83,8 @@ fn deploy_reattach_lists_receipts_without_running_the_decision_tree() {
   assert!(git(&["add", "-A"]).success());
   assert!(git(&["commit", "-q", "-m", "upstream one"]).success());
 
-  // Adopt the fixture the same way `xi home switch --adopt` does: a
+  // Adopt the fixture the same way `xi deploy --scope user --adopt`
+  // does: a
   // real clone, no inventory, no flake-deploy outputs - the decision
   // tree's own `NothingToFanOutTo` case. The build against the
   // fixture's empty flake fails (no `homeConfigurations`), proving

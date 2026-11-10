@@ -27,7 +27,7 @@ use xi_core::sources::{
 ///
 /// Mirrors `xi sources status`'s remote resolution (config ladder, then
 /// the state dir's recorded `remote-url`, so a machine adopted via
-/// `xi <scope> switch <remote>` without a `.xi.toml` still resolves) so
+/// `xi deploy --adopt <remote>` without a `.xi.toml` still resolves) so
 /// a push sees exactly the source `xi sources status` would report for
 /// the same scope.
 ///
@@ -171,7 +171,7 @@ mod tests {
     assert!(message.contains("no sources configured"), "got: {message}");
     assert!(message.contains("system"), "got: {message}");
     assert!(message.contains("XI_SOURCES_REMOTE"), "got: {message}");
-    assert!(message.contains("switch <remote-url>"), "got: {message}");
+    assert!(message.contains("deploy --adopt"), "got: {message}");
   }
 
   #[test]
@@ -194,7 +194,7 @@ mod tests {
     // No `.xi.toml`, no env var, no nix-module `sources.toml` - the only
     // remote this scenario can resolve through is the state dir's
     // `remote-url` file, the same fallback `xi sources status` uses for
-    // a machine adopted via `xi <scope> switch <remote>`.
+    // a machine adopted via `xi deploy --adopt <remote>`.
     let machine = Machine::new(true);
     fs::write(
       machine.paths.state_dir.join("remote-url"),

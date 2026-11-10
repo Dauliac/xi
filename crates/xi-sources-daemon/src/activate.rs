@@ -93,13 +93,14 @@ pub const BOOTED_KERNEL_PATH: &str = "/run/booted-system/kernel";
 /// the operator to say which: it probes the live host once at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitchVerb {
-  /// `xi nixos switch`.
+  /// `xi deploy --local --scope system --mechanism nixos`.
   Nixos,
-  /// `xi darwin switch`.
+  /// `xi deploy --local --scope system --mechanism darwin`.
   Darwin,
-  /// `xi system switch` (system-manager; non-NixOS Linux).
+  /// `xi deploy --local --scope system --mechanism system-manager`
+  /// (system-manager; non-NixOS Linux).
   System,
-  /// `xi home switch`.
+  /// `xi deploy --local --scope user`.
   Home,
 }
 
@@ -112,6 +113,34 @@ impl SwitchVerb {
       Self::Darwin => "darwin",
       Self::System => "system",
       Self::Home => "home",
+    }
+  }
+
+  /// The `xi deploy --local` flags that replay what `xi <verb> switch`
+  /// (no positional, case 2 of `switch::prepare` - an already-adopted
+  /// scope) used to do, since `switch` itself no longer parses
+  /// (xi-fxgx.5.4). `--local` forces the decision tree past its
+  /// fleet-rollout branch regardless of any inventory or discovered
+  /// flake-deploy outputs - this daemon only ever activates the host
+  /// it is running on, never a fleet.
+  #[must_use]
+  pub const fn deploy_args(self) -> &'static [&'static str] {
+    match self {
+      Self::Nixos => {
+        &["deploy", "--local", "--scope", "system", "--mechanism", "nixos"]
+      },
+      Self::Darwin => &[
+        "deploy", "--local", "--scope", "system", "--mechanism", "darwin",
+      ],
+      Self::System => &[
+        "deploy",
+        "--local",
+        "--scope",
+        "system",
+        "--mechanism",
+        "system-manager",
+      ],
+      Self::Home => &["deploy", "--local", "--scope", "user"],
     }
   }
 }
@@ -260,7 +289,7 @@ pub fn run(exec: &dyn Exec, inputs: &ActivateInputs<'_>) -> ActivateOutcome {
     };
   }
 
-  let invocation = Invocation::new("xi", [inputs.verb.as_str(), "switch"]);
+  let invocation = Invocation::new("xi", inputs.verb.deploy_args());
 
   let outcome = match exec.run(&invocation) {
     Ok(outcome) => outcome,
@@ -559,7 +588,7 @@ mod tests {
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
     ]);
   }
 
@@ -574,7 +603,7 @@ mod tests {
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
       format!(
         "nix-env --profile {} --set /nix/store/abc-config",
         world.profile.display()
@@ -594,7 +623,7 @@ mod tests {
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
     ]);
   }
 
@@ -642,7 +671,7 @@ mod tests {
     // No `nix-env` call followed the failed switch.
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
     ]);
   }
 
@@ -679,7 +708,7 @@ mod tests {
         "xi home build --out-link {}",
         world.probe_out_link.display()
       ),
-      "xi home switch".to_owned(),
+      "xi deploy --local --scope user".to_owned(),
     ]);
   }
 
@@ -717,7 +746,7 @@ mod tests {
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
     ]);
   }
 
@@ -761,7 +790,7 @@ mod tests {
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
     ]);
   }
 
@@ -854,7 +883,7 @@ mod tests {
     assert_eq!(outcome, ActivateOutcome::Activated { hook: None });
     assert_eq!(exec.argv_log(), vec![
       probe_invocation(&world),
-      "xi nixos switch".to_owned(),
+      "xi deploy --local --scope system --mechanism nixos".to_owned(),
     ]);
   }
 

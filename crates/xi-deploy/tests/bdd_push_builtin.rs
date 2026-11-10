@@ -314,7 +314,7 @@ fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_ra
     ))
   );
   assert!(
-    last_script.contains("xi system switch"),
+    last_script.contains("xi deploy --local"),
     "got: {last_script}"
   );
   assert!(

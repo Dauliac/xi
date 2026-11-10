@@ -1,4 +1,5 @@
-//! BDD: the switch entrypoint and CLI topology from
+//! BDD: the `xi deploy` entrypoint (superseding each scope's own
+//! `switch`, xi-fxgx.5.4) and CLI topology from
 //! `openspec/changes/xi-sources-config/specs/xi-sources-config/spec.md`.
 //!
 //! These drive the built `xi` binary rather than the library, because
@@ -76,21 +77,19 @@ fn the_scope_flag_is_rejected() {
   }
 }
 
-// -- Requirement: Switch is the sources entrypoint ------------------------
+// -- Requirement: `xi deploy` is the sources entrypoint -------------------
 
-/// The adoption flags are on every scope's `switch`, since the
-/// entrypoint has to behave the same across all four verbs.
+/// The adoption flags live on `xi deploy` now, the one entrypoint that
+/// replaced every scope's own `switch`.
 #[test]
-fn every_switch_carries_the_adoption_flags() {
-  for verb in ["home", "system", "nixos", "darwin"] {
-    let (out, ok) = run(&[verb, "switch", "--help"]);
-    assert!(ok, "`xi {verb} switch --help` failed: {out}");
-    for flag in ["--adopt", "--no-adopt", "--force"] {
-      assert!(
-        out.contains(flag),
-        "`xi {verb} switch` should carry {flag}, got: {out}"
-      );
-    }
+fn deploy_carries_the_adoption_flags() {
+  let (out, ok) = run(&["deploy", "--help"]);
+  assert!(ok, "`xi deploy --help` failed: {out}");
+  for flag in ["--adopt", "--no-adopt", "--force"] {
+    assert!(
+      out.contains(flag),
+      "`xi deploy` should carry {flag}, got: {out}"
+    );
   }
 }
 
@@ -99,7 +98,7 @@ fn every_switch_carries_the_adoption_flags() {
 /// whether their machine gets repointed.
 #[test]
 fn adopt_and_no_adopt_conflict() {
-  let (out, ok) = run(&["home", "switch", "--adopt", "--no-adopt"]);
+  let (out, ok) = run(&["deploy", "--adopt", "--no-adopt"]);
   assert!(!ok, "--adopt with --no-adopt must be rejected");
   assert!(
     out.contains("cannot be used with"),
@@ -131,8 +130,8 @@ fn missing_status_names_the_switch_entrypoint() {
 
   assert!(stdout.contains("\"status\": \"missing\""), "got: {stdout}");
   assert!(
-    stdout.contains("switch <remote-url>"),
-    "the hint must name the switch entrypoint, got: {stdout}"
+    stdout.contains("xi deploy --adopt"),
+    "the hint must name the xi deploy entrypoint, got: {stdout}"
   );
   assert!(
     !stdout.contains("sources init"),
@@ -140,7 +139,7 @@ fn missing_status_names_the_switch_entrypoint() {
   );
 }
 
-// -- Requirement: Switch is the sources entrypoint, adoption half --------
+// -- Requirement: `xi deploy` is the sources entrypoint, adoption half ---
 
 /// A throwaway git repo to adopt.
 fn fixture_repo(at: &std::path::Path, label: &str) -> String {
@@ -200,7 +199,7 @@ impl Machine {
   ) -> (String, bool) {
     let mut cmd = Command::new(xi());
     cmd
-      .args(["home", "switch", "--adopt"])
+      .args(["deploy", "--scope", "user", "--adopt"])
       .args(extra)
       .env("XI_NO_CHECKS", "1")
       .env("HOME", &self.home)
