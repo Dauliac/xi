@@ -1,5 +1,5 @@
-//! Transience classification for [`SshTransport`](super::engine::SshTransport)'s
-//! raw process results.
+//! Transience classification for
+//! [`SshTransport`](super::engine::SshTransport)'s raw process results.
 //!
 //! `run`, `copy_closure` and `sync_dir` are the only code that sees the raw
 //! `ssh`/`rsync`/`nix copy` exit status, which is why the classifier lives
@@ -27,12 +27,12 @@ use xi_core::retry::Transience;
 /// no partial remote state to worry about preserving.
 #[must_use]
 pub fn classify_ssh_exit(result: &Result<ExitStatus>) -> Transience {
-  result
-    .as_ref()
-    .map_or(Transience::Transient, |status| match status.code() {
+  result.as_ref().map_or(Transience::Transient, |status| {
+    match status.code() {
       Some(255) | None => Transience::Transient,
       _ => Transience::Permanent,
-    })
+    }
+  })
 }
 
 #[cfg(test)]

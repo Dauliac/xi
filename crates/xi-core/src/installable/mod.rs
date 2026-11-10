@@ -345,6 +345,24 @@ fn test_parse_attribute() {
 }
 
 impl InstallableArgs {
+  /// The explicit flake reference the invoking command was given, if
+  /// any  -  for `xi-binary-cache-match`'s resolution ladder, which
+  /// outranks the git remote of the current working directory with
+  /// this when present.
+  ///
+  /// Deliberately narrow: only [`Installable::Flake`] counts. A
+  /// `Store`/`File`/`Expression` installable has no git-remote-shaped
+  /// identity to match a `[cache.<name>].match` glob against.
+  #[must_use]
+  pub const fn explicit_flake_ref(&self) -> Option<&str> {
+    match self {
+      Self::Specified(Installable::Flake { reference, .. }) => {
+        Some(reference.as_str())
+      },
+      Self::Specified(_) | Self::Unspecified => None,
+    }
+  }
+
   /// Build directly from a raw positional string, outside of clap
   /// parsing.
   ///

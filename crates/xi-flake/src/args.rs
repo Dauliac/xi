@@ -63,15 +63,17 @@ pub struct NixPassthroughArgs {
   #[arg(skip)]
   pub connect_timeout: Option<u64>,
 
-  /// Overrides resolved from the config cascade (global `config.toml`,
-  /// `.xi.toml`, `.xi.local.toml`, `XI_OVERRIDE_INPUT`), keyed by input
-  /// name and already normalized to flakerefs.
-  ///
-  /// Not a CLI flag  -  injected via `apply_override_input_defaults`. Kept
-  /// separate from `override_input` so a `--override-input` flag can
-  /// replace a configured entry by name at emission time.
+  /// Resolved substituter URLs for every matched cache target.
+  /// Injected as additive `--option extra-substituters`. Not a CLI
+  /// flag; applied via `apply_cache_pull_flags`.
   #[arg(skip)]
-  pub config_override_input: std::collections::BTreeMap<String, String>,
+  pub extra_substituters: Vec<String>,
+
+  /// Resolved trusted public keys for every matched cache target.
+  /// Injected as additive `--option extra-trusted-public-keys`. Not a
+  /// CLI flag; applied via `apply_cache_pull_flags`.
+  #[arg(skip)]
+  pub extra_trusted_public_keys: Vec<String>,
 }
 
 impl NixPassthroughArgs {
@@ -101,10 +103,12 @@ impl NixPassthroughArgs {
     if self.refresh {
       args.push("--refresh".into());
     }
-    for (name, flakeref) in self.effective_override_input() {
+    for pair in self.override_input.chunks(2) {
       args.push("--override-input".into());
-      args.push(name);
-      args.push(flakeref);
+      args.push(pair[0].clone());
+      if pair.len() > 1 {
+        args.push(pair[1].clone());
+      }
     }
     // Inject connect-timeout before user --option pairs so explicit
     // `--option connect-timeout N` from the CLI takes precedence.
@@ -124,8 +128,30 @@ impl NixPassthroughArgs {
         args.push(pair[1].clone());
       }
     }
+    if !self.extra_substituters.is_empty() {
+      args.push("--option".into());
+      args.push("extra-substituters".into());
+      args.push(self.extra_substituters.join(" "));
+    }
+    if !self.extra_trusted_public_keys.is_empty() {
+      args.push("--option".into());
+      args.push("extra-trusted-public-keys".into());
+      args.push(self.extra_trusted_public_keys.join(" "));
+    }
 
     args
+  }
+
+  /// Apply the resolved pull configuration from every matched
+  /// `[cache.<name>]` target. See
+  /// `xi_core::args::NixBuildPassthroughArgs::apply_cache_pull_flags`.
+  pub fn apply_cache_pull_flags(
+    &mut self,
+    substituters: Vec<String>,
+    trusted_public_keys: Vec<String>,
+  ) {
+    self.extra_substituters = substituters;
+    self.extra_trusted_public_keys = trusted_public_keys;
   }
 
   /// Apply defaults from config file. Config values only take effect
@@ -164,37 +190,6 @@ impl NixPassthroughArgs {
     if self.connect_timeout.is_none() {
       self.connect_timeout = connect_timeout;
     }
-  }
-
-  /// Resolve `--override-input` flags against config-derived overrides,
-  /// merging by input name so a flag replaces only the entry it names and
-  /// leaves the rest of the configured set applied.
-  ///
-  /// Sorted, so the emitted argv and the report are deterministic.
-  #[must_use]
-  pub fn effective_override_input(&self) -> Vec<(String, String)> {
-    let mut merged: std::collections::BTreeMap<String, String> =
-      self.config_override_input.clone();
-
-    for pair in self.override_input.chunks(2) {
-      if pair.len() == 2 {
-        merged.insert(pair[0].clone(), pair[1].clone());
-      }
-    }
-
-    merged.into_iter().collect()
-  }
-
-  /// Install overrides resolved from the config cascade.
-  ///
-  /// A separate method rather than a parameter on `apply_build_defaults`:
-  /// that one is `pub const fn` and merges scalars by field, and a map
-  /// merge cannot happen in a const fn.
-  pub fn apply_override_input_defaults(
-    &mut self,
-    overrides: &std::collections::BTreeMap<String, String>,
-  ) {
-    self.config_override_input = overrides.clone();
   }
 }
 
@@ -666,4 +661,3 @@ pub struct TestArgs {
   #[arg(last = true)]
   pub extra_args: Vec<String>,
 }
-

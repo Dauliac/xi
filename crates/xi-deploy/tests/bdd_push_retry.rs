@@ -35,7 +35,7 @@ use std::{
 
 use serial_test::serial;
 use xi_deploy::push::{
-  config::{resolve_retry_attempts, PushConfig},
+  config::{PushConfig, resolve_retry_attempts},
   engine::{RemoteCommand, SshTransport, TargetAddr, Transport},
 };
 
@@ -46,14 +46,9 @@ use xi_deploy::push::{
 fn write_scripted_ssh(dir: &Path, fail_count: u32) {
   let count_file = dir.join("attempts");
   let script = format!(
-    "#!/bin/sh\n\
-     count=$(cat '{count}' 2>/dev/null || echo 0)\n\
-     count=$((count + 1))\n\
-     echo \"$count\" > '{count}'\n\
-     if [ \"$count\" -le {fail_count} ]; then\n\
-     \texit 255\n\
-     fi\n\
-     exit 0\n",
+    "#!/bin/sh\ncount=$(cat '{count}' 2>/dev/null || echo 0)\ncount=$((count \
+     + 1))\necho \"$count\" > '{count}'\nif [ \"$count\" -le {fail_count} ]; \
+     then\n\texit 255\nfi\nexit 0\n",
     count = count_file.display(),
   );
   let ssh_path = dir.join("ssh");
@@ -74,7 +69,14 @@ fn attempt_count(dir: &Path) -> u32 {
 /// `std::env::set_var` is process-wide, which is why every caller of this
 /// helper is `#[serial]`.
 fn with_scripted_ssh_on_path<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
-  with_path(&format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default()), f)
+  with_path(
+    &format!(
+      "{}:{}",
+      dir.display(),
+      std::env::var("PATH").unwrap_or_default()
+    ),
+    f,
+  )
 }
 
 /// Replace `PATH` outright (no fallback to the real one) for the
@@ -184,7 +186,8 @@ fn a_connection_that_fails_twice_then_succeeds_completes_with_only_retry_log_lin
 
 #[test]
 #[serial]
-fn retry_0_makes_exactly_one_attempt_and_the_failure_surfaces_with_no_retry_log_lines() {
+fn retry_0_makes_exactly_one_attempt_and_the_failure_surfaces_with_no_retry_log_lines()
+ {
   let dir = tempfile::tempdir().expect("tempdir");
   // Would eventually succeed if retried - this proves `--retry 0` really
   // disables retrying rather than happening to run out of attempts at
@@ -192,7 +195,8 @@ fn retry_0_makes_exactly_one_attempt_and_the_failure_surfaces_with_no_retry_log_
   write_scripted_ssh(dir.path(), 10);
   let (logs, _guard) = capture_logs();
 
-  let resolved = resolve_retry_attempts(Some(0), "web1", &PushConfig::default());
+  let resolved =
+    resolve_retry_attempts(Some(0), "web1", &PushConfig::default());
   assert_eq!(resolved, 0, "the CLI flag ladder resolves --retry 0 to 0");
 
   let outcome = with_scripted_ssh_on_path(dir.path(), || {
@@ -216,7 +220,8 @@ fn retry_0_makes_exactly_one_attempt_and_the_failure_surfaces_with_no_retry_log_
 
 #[test]
 #[serial]
-fn with_no_retry_flag_configured_up_to_the_compiled_floor_of_3_attempts_are_made() {
+fn with_no_retry_flag_configured_up_to_the_compiled_floor_of_3_attempts_are_made()
+ {
   let dir = tempfile::tempdir().expect("tempdir");
   write_scripted_ssh(dir.path(), 10); // never succeeds within 3 attempts
   let (logs, _guard) = capture_logs();
@@ -231,11 +236,16 @@ fn with_no_retry_flag_configured_up_to_the_compiled_floor_of_3_attempts_are_made
   .expect("a remote-visible failure is an Outcome, not an Err");
 
   assert!(!outcome.success, "every attempt failed");
-  assert_eq!(attempt_count(dir.path()), 3, "up to 3 attempts, then giving up");
+  assert_eq!(
+    attempt_count(dir.path()),
+    3,
+    "up to 3 attempts, then giving up"
+  );
   assert_eq!(
     logs.retry_log_line_count(),
     2,
-    "a retry line after attempt 1 and after attempt 2, none after the last: got {:?}",
+    "a retry line after attempt 1 and after attempt 2, none after the last: \
+     got {:?}",
     logs.contents()
   );
 }

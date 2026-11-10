@@ -19,7 +19,7 @@ use std::{
   time::Duration,
 };
 
-use color_eyre::{eyre::Context, Result};
+use color_eyre::{Result, eyre::Context};
 use tracing::debug;
 
 /// Whether an attempt's result is worth retrying.
@@ -95,7 +95,8 @@ impl RetryPolicy {
   /// attempt (`0` for the delay after the first attempt).
   fn delay_for(&self, retry_index: u32) -> Duration {
     let factor = 1u64.checked_shl(retry_index).unwrap_or(u64::MAX);
-    let base_ms = u64::try_from(self.base_delay.as_millis()).unwrap_or(u64::MAX);
+    let base_ms =
+      u64::try_from(self.base_delay.as_millis()).unwrap_or(u64::MAX);
     let cap_ms = u64::try_from(self.cap.as_millis()).unwrap_or(u64::MAX);
     let scheduled_ms = base_ms.saturating_mul(factor).min(cap_ms);
     let scheduled = Duration::from_millis(scheduled_ms);
@@ -191,7 +192,12 @@ mod tests {
   use super::*;
 
   fn immediate(max_attempts: u32) -> RetryPolicy {
-    RetryPolicy::new(max_attempts, Duration::from_millis(1), Duration::from_millis(5), false)
+    RetryPolicy::new(
+      max_attempts,
+      Duration::from_millis(1),
+      Duration::from_millis(5),
+      false,
+    )
   }
 
   fn always_transient_on_err<T>(result: &Result<T>) -> Transience {
@@ -231,10 +237,11 @@ mod tests {
   #[test]
   fn exhausts_attempts_and_wraps_with_attempt_count() {
     let calls = AtomicU32::new(0);
-    let result: Result<()> = retry(&immediate(3), always_transient_on_err, || {
-      calls.fetch_add(1, Ordering::SeqCst);
-      Err(eyre!("always fails"))
-    });
+    let result: Result<()> =
+      retry(&immediate(3), always_transient_on_err, || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Err(eyre!("always fails"))
+      });
     let err = result.unwrap_err();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert!(err.to_string().contains("gave up after 3 attempts"));
@@ -244,10 +251,11 @@ mod tests {
   #[test]
   fn single_attempt_policy_never_retries_and_returns_bare_error() {
     let calls = AtomicU32::new(0);
-    let result: Result<()> = retry(&RetryPolicy::once(), always_transient_on_err, || {
-      calls.fetch_add(1, Ordering::SeqCst);
-      Err(eyre!("bare failure"))
-    });
+    let result: Result<()> =
+      retry(&RetryPolicy::once(), always_transient_on_err, || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Err(eyre!("bare failure"))
+      });
     let err = result.unwrap_err();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(err.to_string(), "bare failure");
@@ -271,8 +279,12 @@ mod tests {
 
   #[test]
   fn delay_for_grows_exponentially_and_respects_cap() {
-    let policy =
-      RetryPolicy::new(10, Duration::from_millis(100), Duration::from_secs(1), false);
+    let policy = RetryPolicy::new(
+      10,
+      Duration::from_millis(100),
+      Duration::from_secs(1),
+      false,
+    );
     assert_eq!(policy.delay_for(0), Duration::from_millis(100));
     assert_eq!(policy.delay_for(1), Duration::from_millis(200));
     assert_eq!(policy.delay_for(2), Duration::from_millis(400));

@@ -313,7 +313,10 @@ fn a_sources_mode_push_activates_via_the_remote_switch_entrypoint_not_the_old_ra
       "operator-host"
     ))
   );
-  assert!(last_script.contains("xi system switch"), "got: {last_script}");
+  assert!(
+    last_script.contains("xi system switch"),
+    "got: {last_script}"
+  );
   assert!(
     !last_script.contains("nixos-rebuild switch --flake"),
     "the old raw rebuild script must not run: {last_script}"

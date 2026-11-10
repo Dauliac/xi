@@ -198,18 +198,17 @@ fn gather_facts(
     push::config::PushConfig::from_toml_file(xi_toml_path).unwrap_or_default();
   let inventory_configured = !inventory.hosts.is_empty();
 
-  let my_hostname = xi_core::util::get_hostname(None).ok();
-  let host_is_fleet_member = my_hostname.is_some_and(|hostname| {
-    inventory
-      .hosts
-      .iter()
-      .any(|host| host.name == hostname || host.ssh == hostname)
-  });
-
   let discovered =
     push::discover::discover(&nix, &flake_ref).unwrap_or_default();
   let colmena_hive_present =
     push::discover::has_colmena_hive(&nix, &flake_ref).unwrap_or(false);
+
+  let my_hostname = xi_core::util::get_hostname(None).ok();
+  let host_is_fleet_member = resolve_host_is_fleet_member(
+    my_hostname.as_deref(),
+    &inventory,
+    &discovered,
+  );
   let flake_deploy_outputs_present =
     !discovered.is_empty() || colmena_hive_present;
 
@@ -240,6 +239,32 @@ fn gather_facts(
     },
     known_targets,
   )
+}
+
+/// Whether `hostname` identifies this host as a fleet member: either a
+/// `.xi.toml` inventory entry (push's own remote-destination list), or
+/// the name of a flake-discovered target (`nixosConfigurations.<name>`
+/// and friends) - the common dotfiles pattern of one flake declaring a
+/// config per machine, with no separate push inventory at all. Either
+/// match means this host has its own config to activate locally rather
+/// than being lumped into a fleet rollout that also targets every
+/// *other* discovered name. A `None` hostname (hostname lookup failed)
+/// resolves to `false`.
+fn resolve_host_is_fleet_member(
+  hostname: Option<&str>,
+  inventory: &push::config::PushConfig,
+  discovered: &[push::discover::PushTarget],
+) -> bool {
+  let Some(hostname) = hostname else {
+    return false;
+  };
+  inventory
+    .hosts
+    .iter()
+    .any(|host| host.name == hostname || host.ssh == hostname)
+    || discovered
+      .iter()
+      .any(|target| target.addr.name == hostname)
 }
 
 /// Dispatch a local activation for `scope`: resolve the installable
@@ -472,6 +497,93 @@ mod tests {
   struct TestCli {
     #[command(flatten)]
     args: DeployArgs,
+  }
+
+  /// Answers only a `nixosConfigurations` output, mirroring the common
+  /// dotfiles pattern this fixture regression-tests: one flake, one
+  /// `nixosConfigurations.<name>` per machine, no push inventory at
+  /// all (`crates/xi-deploy/src/push/discover.rs`'s own
+  /// `SystemConfigsFixtureNix` test fixture, adapted).
+  struct NixosConfigurationsFixtureNix;
+
+  impl push::engine::Nix for NixosConfigurationsFixtureNix {
+    fn eval_json(
+      &self,
+      installable: &str,
+      _apply: Option<&str>,
+    ) -> Result<Option<serde_json::Value>> {
+      if installable == ".#nixosConfigurations" {
+        Ok(Some(serde_json::json!(["gary", "spongebob"])))
+      } else {
+        Ok(None)
+      }
+    }
+
+    fn build(&self, _installable: &str) -> Result<String> {
+      Ok(String::new())
+    }
+  }
+
+  /// Regression for the bug report behind this change: a dotfiles
+  /// flake declaring `nixosConfigurations.gary` and
+  /// `.spongebob`, with no `.xi.toml` inventory, must recognize the
+  /// local hostname as a fleet member when it matches one of the
+  /// *discovered* names, not only an inventory entry - otherwise `xi
+  /// deploy` on host `gary` rolls out to both hosts instead of
+  /// activating `gary` alone.
+  #[test]
+  fn a_hostname_matching_a_discovered_target_name_is_a_fleet_member() {
+    let discovered =
+      push::discover::discover(&NixosConfigurationsFixtureNix, ".")
+        .expect("discovers");
+    let inventory = push::config::PushConfig::default();
+
+    assert!(resolve_host_is_fleet_member(
+      Some("gary"),
+      &inventory,
+      &discovered
+    ));
+    assert!(resolve_host_is_fleet_member(
+      Some("spongebob"),
+      &inventory,
+      &discovered
+    ));
+    assert!(!resolve_host_is_fleet_member(
+      Some("elsewhere"),
+      &inventory,
+      &discovered
+    ));
+  }
+
+  /// Existing behavior preserved: an inventory entry still counts, even
+  /// with nothing discovered from the flake.
+  #[test]
+  fn a_hostname_matching_an_inventory_host_is_still_a_fleet_member() {
+    let inventory = push::config::PushConfig {
+      hosts: vec![push::config::PushHost {
+        name:              "web1".to_owned(),
+        ssh:               "web1.example.com".to_owned(),
+        remote_build:      None,
+        backend:           None,
+        retry_attempts:    None,
+        sources_transport: None,
+      }],
+      ..push::config::PushConfig::default()
+    };
+
+    assert!(resolve_host_is_fleet_member(Some("web1"), &inventory, &[]));
+    assert!(!resolve_host_is_fleet_member(
+      Some("elsewhere"),
+      &inventory,
+      &[]
+    ));
+  }
+
+  /// No hostname at all (lookup failed) never claims fleet membership.
+  #[test]
+  fn no_hostname_is_never_a_fleet_member() {
+    let inventory = push::config::PushConfig::default();
+    assert!(!resolve_host_is_fleet_member(None, &inventory, &[]));
   }
 
   // Task xi-6mf6.2.1: push_args() passes the seven push-only flags

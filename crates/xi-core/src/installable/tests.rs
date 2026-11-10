@@ -780,3 +780,25 @@ fn test_resolve_or_default_env_takes_priority_over_cwd() {
     _ => panic!("Expected Flake, got {resolved:?}"),
   }
 }
+
+#[test]
+fn explicit_flake_ref_returns_the_reference_for_a_flake_installable() {
+  let installable = InstallableArgs::Specified(Installable::Flake {
+    reference: "github:dauliac/xi".to_string(),
+    attribute: vec![],
+  });
+  assert_eq!(installable.explicit_flake_ref(), Some("github:dauliac/xi"));
+}
+
+#[test]
+fn explicit_flake_ref_is_none_for_unspecified() {
+  assert_eq!(InstallableArgs::Unspecified.explicit_flake_ref(), None);
+}
+
+#[test]
+fn explicit_flake_ref_is_none_for_a_store_installable() {
+  let installable = InstallableArgs::Specified(Installable::Store {
+    path: PathBuf::from("/nix/store/abc-pkg"),
+  });
+  assert_eq!(installable.explicit_flake_ref(), None);
+}

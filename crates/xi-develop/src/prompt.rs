@@ -155,7 +155,7 @@ fn handle_parent(args: &PromptArgs, shell: ShellType) -> Result<()> {
   // Generate subshell spawn command — simple: set env vars + spawn shell
   let xi_bin = resolve_xi_bin();
   let spawn_cmd =
-    subshell::generate_spawn_command(shell, flake_root, &cwd, &xi_bin);
+    subshell::generate_spawn_command(shell, flake_root, &cwd, &xi_bin, true);
 
   // Output spawn command to stdout (shell evals this)
   println!("{spawn_cmd}");
@@ -226,7 +226,7 @@ fn handle_subshell(args: &PromptArgs, shell: ShellType) -> Result<()> {
 
         let xi_bin = resolve_xi_bin();
         let spawn_cmd =
-          subshell::generate_spawn_command(shell, nearest, &cwd, &xi_bin);
+          subshell::generate_spawn_command(shell, nearest, &cwd, &xi_bin, false);
         println!("{spawn_cmd}");
         return Ok(());
       }

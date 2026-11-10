@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish                = true
 
 [dependencies]
+anstream.workspace      = true
+anstyle.workspace       = true
 chrono                  = { features = [ "serde" ], workspace = true }
 clap.workspace          = true
 clap_complete.workspace = true

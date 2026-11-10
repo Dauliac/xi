@@ -112,9 +112,9 @@ pub fn build_and_resolve_path(installable: &str) -> Result<PathBuf> {
     .arg("--no-link")
     .arg("--print-out-paths");
 
-  let output = query.output().map_err(|e| {
-    color_eyre::eyre::eyre!("failed to resolve store path: {e}")
-  })?;
+  let output = query
+    .output()
+    .map_err(|e| color_eyre::eyre::eyre!("failed to resolve store path: {e}"))?;
   if !output.status.success() {
     bail!(
       "nix build --print-out-paths failed:\n{}",

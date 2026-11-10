@@ -579,7 +579,32 @@ fn is_nix_store_direct_child(path: &Path) -> bool {
     .is_ok_and(|suffix| suffix.components().count() == 1)
 }
 
+/// Whether `dst` is itself a nix profile generation symlink (e.g.
+/// `home-manager-10-link`, `profile-276-link`), as opposed to a one-off
+/// build artifact like `./result` or a `.direnv` layout link.
+///
+/// An indirect gcroot under `/nix/var/nix/gcroots/auto/` that targets one
+/// of these protects a generation whose lifecycle is already decided by
+/// [`cleanable_generations`]'s own `keep`/`keep_since` logic elsewhere in
+/// this module. It must never also be subject to this function's
+/// separate, blunter age-based staleness heuristic - for a profile that
+/// lives outside `/nix/var/nix/profiles` (e.g. an XDG-state-home profile
+/// such as `~/.local/state/nix/profiles/home-manager`), this indirect
+/// root is the *only* thing keeping that generation reachable; deleting
+/// it here, right before `nix store gc` runs, would GC away a generation
+/// the keep logic just decided to retain.
+fn is_profile_generation_link(dst: &Path) -> bool {
+  dst
+    .file_name()
+    .and_then(|name| name.to_str())
+    .is_some_and(|name| GENERATION_REGEX.is_match(name))
+}
+
 fn gcroot_matches_filter(src: &Path, dst: &Path, regexes: &[&Regex]) -> bool {
+  if is_profile_generation_link(dst) {
+    return false;
+  }
+
   let resolved_dst = if dst.is_symlink() {
     dst.read_link().unwrap_or_else(|_| dst.to_path_buf())
   } else {
@@ -672,6 +697,45 @@ mod tests {
     let dst = Path::new("/nix/store/abc123zzz-foo-1.0");
     let regexes = [&*DIRENV_REGEX];
     assert!(gcroot_matches_filter(src, dst, &regexes));
+  }
+
+  #[test]
+  fn profile_generation_link_name_is_recognized() {
+    assert!(is_profile_generation_link(Path::new(
+      "/home/user/.local/state/nix/profiles/home-manager-10-link"
+    )));
+    assert!(is_profile_generation_link(Path::new(
+      "/nix/var/nix/profiles/system-manager-3-link"
+    )));
+  }
+
+  #[test]
+  fn non_generation_link_name_is_not_a_profile_generation_link() {
+    assert!(!is_profile_generation_link(Path::new(
+      "/nix/store/abc123zzz-foo-1.0"
+    )));
+    assert!(!is_profile_generation_link(Path::new(
+      "/home/user/project/result"
+    )));
+  }
+
+  #[test]
+  fn gcroot_filter_never_prunes_an_indirect_root_protecting_a_profile_generation()
+   {
+    // The shape that caused real data loss: an indirect root under
+    // `/nix/var/nix/gcroots/auto/` whose target is an XDG-state-home
+    // profile generation link (e.g. home-manager driven by
+    // system-manager, which has no `/nix/var/nix/profiles` entry of its
+    // own). Even though its resolved destination is a direct
+    // `/nix/store` child - the same shape `gcroot_filter_passes_auto_store_direct_child`
+    // asserts IS prunable for a one-off build result - this one must
+    // never match, because deleting it would orphan a generation the
+    // keep/keep-since generation logic already decided to retain.
+    let src = Path::new("/nix/var/nix/gcroots/auto/example");
+    let dst =
+      Path::new("/home/user/.local/state/nix/profiles/home-manager-10-link");
+    let regexes = [&*DIRENV_REGEX];
+    assert!(!gcroot_matches_filter(src, dst, &regexes));
   }
 
   #[test]

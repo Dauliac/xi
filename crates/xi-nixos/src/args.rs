@@ -8,12 +8,14 @@ use xi_core::{
     DiffType,
     HasBuildArgs,
     HasCacheArgs,
+    HasInstallableArgs,
     NixBuildPassthroughArgs,
   },
   checks::{
     FeatureRequirements,
     FlakeFeatures,
     LegacyFeatures,
+    NoFeatures,
     ReplFeatures,
     ReplVariant,
   },
@@ -60,8 +62,9 @@ impl OsArgs {
         })
       },
       // `sources` only reads config and the state dir; it never
-      // evaluates a flake, so it needs no Nix features.
-      OsSubcommand::Sources(_) => Box::new(FlakeFeatures),
+      // evaluates a flake, so it needs no Nix features, and critically
+      // no working `nix` binary either.
+      OsSubcommand::Sources(_) => Box::new(NoFeatures),
       OsSubcommand::Switch(args)
       | OsSubcommand::Boot(args)
       | OsSubcommand::Test(args) => {
@@ -225,6 +228,23 @@ impl OsRebuildArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.common.installable.uses_flakes(CommandContext::Os)
+  }
+}
+
+impl HasInstallableArgs for OsArgs {
+  fn installable(&self) -> Option<&xi_core::installable::InstallableArgs> {
+    match &self.subcommand {
+      OsSubcommand::Switch(a)
+      | OsSubcommand::Boot(a)
+      | OsSubcommand::Test(a) => Some(&a.rebuild.common.installable),
+      OsSubcommand::Build(a) => Some(&a.common.installable),
+      OsSubcommand::BuildVm(a) => Some(&a.common.common.installable),
+      OsSubcommand::BuildImage(a) => Some(&a.common.common.installable),
+      OsSubcommand::Sources(_)
+      | OsSubcommand::Repl(_)
+      | OsSubcommand::Info(_)
+      | OsSubcommand::Rollback(_) => None,
+    }
   }
 }
 

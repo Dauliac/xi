@@ -36,6 +36,9 @@
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } (_: {
+      # devShells, packages, and checks all come from here via import-tree
+      # (flake-parts modules under ./nix/flake-parts, including devShells
+      # from nix/devShells.nix and modules/flake-parts/devshell.nix).
       imports = [
         ./nix
       ];

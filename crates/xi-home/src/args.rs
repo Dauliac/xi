@@ -6,12 +6,14 @@ use xi_core::{
     CommonRebuildArgs,
     HasBuildArgs,
     HasCacheArgs,
+    HasInstallableArgs,
     NixBuildPassthroughArgs,
   },
   checks::{
     FeatureRequirements,
     FlakeFeatures,
     LegacyFeatures,
+    NoFeatures,
     ReplFeatures,
     ReplVariant,
   },
@@ -69,9 +71,10 @@ impl HomeArgs {
         }
       },
       // `sources` and `status` only read config and the state dir;
-      // neither evaluates a flake, so they need no Nix features.
+      // neither evaluates a flake, so they need no Nix features, and
+      // critically no working `nix` binary either.
       HomeSubcommand::Sources(_) | HomeSubcommand::Status(_) => {
-        Box::new(FlakeFeatures)
+        Box::new(NoFeatures)
       },
     }
   }
@@ -143,6 +146,19 @@ impl HomeReplArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.installable.uses_flakes(CommandContext::Home)
+  }
+}
+
+impl HasInstallableArgs for HomeArgs {
+  fn installable(&self) -> Option<&InstallableArgs> {
+    match &self.subcommand {
+      HomeSubcommand::Switch(a) | HomeSubcommand::Build(a) => {
+        Some(&a.common.installable)
+      },
+      HomeSubcommand::Repl(_)
+      | HomeSubcommand::Sources(_)
+      | HomeSubcommand::Status(_) => None,
+    }
   }
 }
 

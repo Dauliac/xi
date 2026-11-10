@@ -28,12 +28,6 @@
           modules = [ ./vm-module.nix ];
           checks = [ ./vm-check.py ];
         };
-
-        vm.e2e-debian = {
-          kind = "distro";
-          distro = "debian";
-          version = "13";
-        };
       };
 
       # Test 1: the standalone "xi" devshell is created

@@ -126,7 +126,10 @@ pub fn read(state_dir: &Path, push_id: &str) -> Result<Option<PushReceipt>> {
     Err(err) => return Err(err.into()),
   };
   let receipt: PushReceipt = serde_json::from_str(&raw).map_err(|e| {
-    color_eyre::eyre::eyre!("push receipt {} is not valid JSON: {e}", path.display())
+    color_eyre::eyre::eyre!(
+      "push receipt {} is not valid JSON: {e}",
+      path.display()
+    )
   })?;
   Ok(Some(receipt))
 }
@@ -229,7 +232,11 @@ pub fn mark_notified_and_notify(
 ) -> Result<()> {
   std::fs::create_dir_all(state_dir.join(RECEIPTS_DIR))?;
   let path = notified_marker_path(state_dir, push_id);
-  match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+  match std::fs::OpenOptions::new()
+    .write(true)
+    .create_new(true)
+    .open(&path)
+  {
     Ok(_) => {
       if let Some(command) = &receipt.notify {
         run_notify(command);
@@ -244,7 +251,11 @@ pub fn mark_notified_and_notify(
 /// Run `command` through the shell, logging rather than propagating a
 /// spawn failure or a non-zero exit.
 fn run_notify(command: &str) {
-  match std::process::Command::new("sh").arg("-c").arg(command).status() {
+  match std::process::Command::new("sh")
+    .arg("-c")
+    .arg(command)
+    .status()
+  {
     Ok(status) if status.success() => {},
     Ok(status) => {
       warn!(command, %status, "--notify command exited non-zero");
@@ -392,7 +403,9 @@ mod tests {
   fn removing_an_already_removed_receipt_reports_false() {
     let tmp = TempDir::new().expect("tempdir");
     write(tmp.path(), "web1-1700000000-abc123", &receipt()).expect("writes");
-    assert!(remove(tmp.path(), "web1-1700000000-abc123").expect("first remove"));
+    assert!(
+      remove(tmp.path(), "web1-1700000000-abc123").expect("first remove")
+    );
     assert!(
       !remove(tmp.path(), "web1-1700000000-abc123").expect("second remove"),
       "a second remove of the same push_id must not report true again - this \
@@ -433,7 +446,10 @@ mod tests {
     )
     .expect("write legacy receipt");
     assert_eq!(
-      read(tmp.path(), "legacy").expect("read").expect("some").notify,
+      read(tmp.path(), "legacy")
+        .expect("read")
+        .expect("some")
+        .notify,
       None
     );
   }
@@ -442,8 +458,10 @@ mod tests {
   fn remove_and_notify_only_runs_the_command_for_the_call_that_removes() {
     let tmp = TempDir::new().expect("tempdir");
     let marker = tmp.path().join("fired");
-    let receipt = receipt()
-      .with_notify(Some(format!("touch {}", shell_quote(&marker.display().to_string()))));
+    let receipt = receipt().with_notify(Some(format!(
+      "touch {}",
+      shell_quote(&marker.display().to_string())
+    )));
     write(tmp.path(), "web1-1700000000-abc123", &receipt).expect("writes");
 
     remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
@@ -454,8 +472,9 @@ mod tests {
     );
 
     std::fs::remove_file(&marker).expect("clear marker to detect a rerun");
-    remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
-      .expect("second call finds the receipt already gone, which is not an error");
+    remove_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt).expect(
+      "second call finds the receipt already gone, which is not an error",
+    );
     assert!(
       !marker.exists(),
       "a call that finds the receipt already gone must not rerun --notify"
@@ -475,8 +494,10 @@ mod tests {
   fn mark_notified_and_notify_fires_once_and_leaves_the_receipt_in_place() {
     let tmp = TempDir::new().expect("tempdir");
     let marker = tmp.path().join("fired");
-    let receipt = receipt()
-      .with_notify(Some(format!("touch {}", shell_quote(&marker.display().to_string()))));
+    let receipt = receipt().with_notify(Some(format!(
+      "touch {}",
+      shell_quote(&marker.display().to_string())
+    )));
     write(tmp.path(), "web1-1700000000-abc123", &receipt).expect("writes");
 
     mark_notified_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
@@ -489,7 +510,9 @@ mod tests {
 
     std::fs::remove_file(&marker).expect("clear marker to detect a rerun");
     mark_notified_and_notify(tmp.path(), "web1-1700000000-abc123", &receipt)
-      .expect("second call finds the marker already there, which is not an error");
+      .expect(
+        "second call finds the marker already there, which is not an error",
+      );
     assert!(
       !marker.exists(),
       "a second call must not rerun --notify for the same push_id"

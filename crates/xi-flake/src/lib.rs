@@ -255,7 +255,8 @@ impl BuildArgs {
     if let Some(ref out_link) = self.out_link
       && xi_core::cache::is_push_configured(&self.cache)
     {
-      xi_core::cache::push_to_cache(&self.cache, out_link);
+      let push_result = xi_core::cache::push_to_cache(&self.cache, out_link);
+      xi_core::cache::enforce_required(&push_result)?;
     }
 
     Ok(())

@@ -6,12 +6,14 @@ use xi_core::{
     CommonRebuildArgs,
     HasBuildArgs,
     HasCacheArgs,
+    HasInstallableArgs,
     NixBuildPassthroughArgs,
   },
   checks::{
     FeatureRequirements,
     FlakeFeatures,
     LegacyFeatures,
+    NoFeatures,
     ReplFeatures,
     ReplVariant,
   },
@@ -42,8 +44,9 @@ impl DarwinArgs {
         })
       },
       // `sources` only reads config and the state dir; it never
-      // evaluates a flake, so it needs no Nix features.
-      DarwinSubcommand::Sources(_) => Box::new(FlakeFeatures),
+      // evaluates a flake, so it needs no Nix features, and critically
+      // no working `nix` binary either.
+      DarwinSubcommand::Sources(_) => Box::new(NoFeatures),
       DarwinSubcommand::Switch(args) | DarwinSubcommand::Build(args) => {
         if args.uses_flakes() {
           Box::new(FlakeFeatures)
@@ -124,6 +127,17 @@ impl DarwinReplArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.installable.uses_flakes(CommandContext::Darwin)
+  }
+}
+
+impl HasInstallableArgs for DarwinArgs {
+  fn installable(&self) -> Option<&InstallableArgs> {
+    match &self.subcommand {
+      DarwinSubcommand::Switch(a) | DarwinSubcommand::Build(a) => {
+        Some(&a.common.installable)
+      },
+      DarwinSubcommand::Repl(_) | DarwinSubcommand::Sources(_) => None,
+    }
   }
 }
 

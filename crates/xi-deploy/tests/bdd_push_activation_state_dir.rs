@@ -46,7 +46,7 @@ use xi_core::sources::{
   switch::record_activation_at,
 };
 use xi_deploy::push::{
-  args::{CopyVia, PushArgs, PushBackend, PushMode, PushScope},
+  args::{BuildStrategy, CopyVia, PushArgs, PushBackend, PushMode, PushScope},
   config::PushConfig,
   engine::{Nix, Outcome, RemoteCommand, TargetAddr, Transport},
   orchestrate::execute,
@@ -174,7 +174,7 @@ impl Transport for FixtureTransport {
       state_dir:   self.target_state_dir.clone(),
       config_file: self.target_state_dir.join("sources.toml"),
     };
-    record_activation_at(&paths, std::path::Path::new(&store_path))
+    record_activation_at(&paths, std::path::Path::new(&store_path), false)
       .expect("the target's own record_activation_at must succeed");
     drop(guard);
 
@@ -241,24 +241,30 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
     run_calls:        Mutex::new(Vec::new()),
     target_state_dir: target_root.path().join("state"),
   };
-  let (_operator_root, context) = operator_context();
+  let (operator_root, context) = operator_context();
   let secrets = BTreeMap::new();
 
   let args = PushArgs {
-    targets:          vec!["web1".to_owned()],
-    on:               None,
-    backend:          PushBackend::Auto,
-    phase:            "activate".to_owned(),
-    mode:             Some(PushMode::Closure),
-    remote_build:     None,
-    magic_rollback:   0,
-    parallel:         1,
-    interactive_sudo: false,
-    copy_via:         CopyVia::Local,
-    fail_fast:        false,
-    force_dirty:      false,
-    scope:            PushScope::System,
-    retry:            None,
+    targets:           vec!["web1".to_owned()],
+    on:                None,
+    backend:           PushBackend::Auto,
+    phase:             "activate".to_owned(),
+    mode:              Some(PushMode::Closure),
+    remote_build:      None,
+    sources_transport: None,
+    magic_rollback:    0,
+    parallel:          1,
+    interactive_sudo:  false,
+    copy_via:          CopyVia::Local,
+    fail_fast:         false,
+    force_dirty:       false,
+    build_strategy:    BuildStrategy::Interleaved,
+    build_only:        false,
+    from_manifest:     None,
+    scope:             PushScope::System,
+    retry:             None,
+    reattach:          None,
+    notify:            None,
   };
 
   let report = execute(
@@ -268,6 +274,8 @@ fn a_closure_mode_push_leaves_the_targets_applied_origin_marker_behind() {
     &secrets,
     &PushConfig::default(),
     None,
+    None,
+    &operator_root.path().join(".xi.toml"),
     &nix,
     &transport,
   )

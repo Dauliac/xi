@@ -274,9 +274,47 @@ pub fn run(socket_path: &Path, state: &Arc<ServerState>) -> Result<()> {
   }
 
   let listener = UnixListener::bind(socket_path)?;
-  listener.set_nonblocking(true)?;
 
   info!("Daemon listening on {}", socket_path.display());
+
+  // Connection accept runs on its own thread with a real blocking accept(),
+  // so a client's prompt/status/trust round-trip is answered as soon as it
+  // arrives instead of waiting for the next tick of the housekeeping loop
+  // below. Previously both lived in one non-blocking-accept-plus-sleep
+  // loop (WATCHER_POLL_MS = 200ms between accept attempts), so every
+  // client call paid up to ~200ms just to be noticed - and every prompt
+  // tick makes 2-3 separate round trips (lifecycle::ensure's is_alive +
+  // status check, then the actual prompt call), compounding that into the
+  // few-hundred-ms-per-keystroke latency that made devshell activation
+  // feel synchronous. Housekeeping (idle timeout, watcher, eval
+  // scheduling, queue drain) doesn't need sub-200ms responsiveness, so it
+  // keeps its own poll loop below, now freed from gating client I/O.
+  {
+    let accept_state = Arc::clone(state);
+    std::thread::spawn(move || {
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            *accept_state
+              .last_activity
+              .lock()
+              .unwrap_or_else(std::sync::PoisonError::into_inner) =
+              Instant::now();
+            let state = Arc::clone(&accept_state);
+            std::thread::spawn(move || {
+              if let Err(e) = handle_connection(&stream, &state) {
+                debug!("Connection handler error: {e}");
+              }
+            });
+          },
+          Err(e) => {
+            error!("Accept error: {e}");
+            break;
+          },
+        }
+      }
+    });
+  }
 
   // Set up git-aware file watcher
   let watcher = match GitWatcher::new(&state.flake_root, &state.watch_extra) {
@@ -322,28 +360,7 @@ pub fn run(socket_path: &Path, state: &Arc<ServerState>) -> Result<()> {
     // Periodically drain the cache push queue
     maybe_drain_cache_queue(state);
 
-    // Accept connection (non-blocking)
-    match listener.accept() {
-      Ok((stream, _)) => {
-        *state
-          .last_activity
-          .lock()
-          .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
-        let state = Arc::clone(state);
-        std::thread::spawn(move || {
-          if let Err(e) = handle_connection(&stream, &state) {
-            debug!("Connection handler error: {e}");
-          }
-        });
-      },
-      Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-        std::thread::sleep(Duration::from_millis(WATCHER_POLL_MS));
-      },
-      Err(e) => {
-        error!("Accept error: {e}");
-        std::thread::sleep(Duration::from_millis(100));
-      },
-    }
+    std::thread::sleep(Duration::from_millis(WATCHER_POLL_MS));
   }
 
   let _ = std::fs::remove_file(socket_path);
@@ -473,19 +490,31 @@ fn handle_cache_push(
   std::thread::spawn(move || {
     let store_path = std::path::Path::new(&req.store_path);
     let cache = xi_core::args::CacheArgs {
-      push_to:        if req.cache_url.is_empty() {
+      push_to:           if req.cache_url.is_empty() {
         None
       } else {
         Some(req.cache_url)
       },
-      push_command:   req.push_command,
-      sign_key:       req.sign_key,
-      no_push:        false,
-      async_push:     false,
-      config_targets: Vec::new(),
+      push_command:      req.push_command,
+      sign_key:          req.sign_key,
+      no_push:           false,
+      async_push:        false,
+      config_targets:    Vec::new(),
+      match_candidate:   None,
+      max_parallel_jobs: None,
     };
 
-    xi_core::cache::push_to_cache(&cache, store_path);
+    let push_result = xi_core::cache::push_to_cache(&cache, store_path);
+    if push_result.required_failed() {
+      // This push already ran detached from whatever command triggered
+      // it; there is no live exit code left to flip. Surface it loudly
+      // instead of silently matching the non-required warning path.
+      error!(
+        "[cache] required push failed for {}; retry queued but this build's \
+         exit code already returned",
+        req.store_path
+      );
+    }
     info!("[cache] push complete for {}", req.store_path);
 
     // Remove from active list
@@ -997,6 +1026,30 @@ fn compute_input_hash(
   }
 }
 
+/// Guarantee the env/hook generation counters exist at least once.
+///
+/// `should_source_env`/`should_source_hook` treat a missing counter file as
+/// generation 0 - indistinguishable from a brand-new consumer's default
+/// `last_env_gen`/`last_hook_gen`. A daemon that warm-starts from a cached
+/// `input_hash` matching the current flake (the common case: restart with
+/// `flake.lock` unchanged) takes the Step 0 fast-path in [`run_full_eval`]
+/// and never calls [`dirs::bump_env_generation`] at all, so without this,
+/// the counter can stay permanently absent and no shell that attaches after
+/// that point is ever told to source - even though a real env file already
+/// exists on disk from a previous eval. Called from both the Step 0
+/// fast-path and the Step 1b content-unchanged dedup, so either one leaves
+/// the counters in a state new consumers can catch up from.
+fn ensure_generation_files_exist(state: &ServerState, target: &str) {
+  if !state.state_dir.join("env-generation").exists() {
+    dirs::bump_env_generation(&state.state_dir);
+  }
+  if state.state_dir.join(format!("hook-{target}.sh")).exists()
+    && !state.state_dir.join("hook-generation").exists()
+  {
+    dirs::bump_hook_generation(&state.state_dir);
+  }
+}
+
 /// Run nix eval + hook execution + write files + switch symlinks.
 fn run_full_eval(
   state: &ServerState,
@@ -1019,6 +1072,7 @@ fn run_full_eval(
         state.eval_cache_mode,
         &current[..16.min(current.len())]
       );
+      ensure_generation_files_exist(state, target);
       *state
         .eval_state
         .write()
@@ -1048,6 +1102,12 @@ fn run_full_eval(
     && !dev_env.env_hash.is_empty();
 
   if env_unchanged {
+    // See ensure_generation_files_exist: dedup intentionally skips the real
+    // bump below (no content change, no need to re-source already-attached
+    // shells), but a new consumer attaching after this point still needs
+    // the counter to exist at all.
+    ensure_generation_files_exist(state, target);
+
     debug!(
       "Eval completed in {:.1}s — env unchanged (hash: {}), skipping file \
        writes",

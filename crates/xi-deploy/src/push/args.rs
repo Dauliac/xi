@@ -5,7 +5,7 @@
 //! top-level verb, so unlike `xi <scope> sources` it has no parent verb
 //! to inherit the scope from and has to be able to say it.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use clap::Args;
 use color_eyre::{Result, eyre::eyre};
@@ -36,6 +36,24 @@ impl PushBackend {
       Self::Builtin => "builtin",
     }
   }
+
+  /// Every accepted `.xi.toml [push] backend` spelling, in the order
+  /// listed in errors.
+  pub const ALL: &'static [&'static str] =
+    &["auto", "deploy-rs", "colmena", "builtin"];
+
+  /// Parse from the `.xi.toml` spelling (the same strings [`Self::as_str`]
+  /// produces).
+  #[must_use]
+  pub fn from_config_str(raw: &str) -> Option<Self> {
+    match raw {
+      "auto" => Some(Self::Auto),
+      "deploy-rs" => Some(Self::DeployRs),
+      "colmena" => Some(Self::Colmena),
+      "builtin" => Some(Self::Builtin),
+      _ => None,
+    }
+  }
 }
 
 /// Whether the operator or the target does the evaluation.
@@ -46,6 +64,62 @@ pub enum PushMode {
   Closure,
   /// The sources dir is synced to the target, which rebuilds from it.
   Sources,
+  /// The target pulls its own sources via its `xi-sources-daemon`
+  /// control socket, instead of the operator copying anything to it
+  /// ([[xi-push-target-pull]]).
+  TargetPull,
+}
+
+/// How a push gets a target's sources onto it.
+///
+/// Orthogonal to [`PushMode`]'s `Closure`/`Sources` split (where the
+/// *build* happens): this picks whether the operator moves bytes to the
+/// target at all, or the target pulls them itself via its own
+/// `xi-sources-daemon` control socket
+/// ([`PushMode::TargetPull`], [[xi-push-target-pull]]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum SourcesTransport {
+  /// The operator copies a closure or syncs the sources dir to the
+  /// target, per the resolved [`PushMode`].
+  #[default]
+  OperatorCopy,
+  /// The target pulls its own sources via its `xi-sources-daemon`
+  /// control socket, instead of receiving anything from the operator.
+  TargetPull,
+}
+
+impl SourcesTransport {
+  /// The CLI/TOML spelling of this transport.
+  #[must_use]
+  pub const fn as_str(self) -> &'static str {
+    match self {
+      Self::OperatorCopy => "operator-copy",
+      Self::TargetPull => "target-pull",
+    }
+  }
+}
+
+impl fmt::Display for SourcesTransport {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl FromStr for SourcesTransport {
+  type Err = String;
+
+  fn from_str(raw: &str) -> Result<Self, String> {
+    match raw.trim() {
+      "operator-copy" => Ok(Self::OperatorCopy),
+      "target-pull" => Ok(Self::TargetPull),
+      other => {
+        Err(format!(
+          "unknown sources-transport '{other}'; expected one of \
+           operator-copy, target-pull"
+        ))
+      },
+    }
+  }
 }
 
 /// Who pulls the closure's store paths.
@@ -56,6 +130,17 @@ pub enum CopyVia {
   Local,
   /// The target substitutes from its own binary caches.
   Target,
+}
+
+/// When the build step runs relative to shipping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum BuildStrategy {
+  /// Build, copy, and activate each target in sequence (today's behavior).
+  #[default]
+  Interleaved,
+  /// Build every selected target upfront, producing a manifest, then ship
+  /// already-built targets in a second phase.
+  Batched,
 }
 
 /// Which half of the machine the push governs.
@@ -210,6 +295,17 @@ pub struct PushArgs {
   #[arg(long)]
   pub remote_build: Option<bool>,
 
+  /// Order the target to pull its own sources, or have the operator copy them
+  ///
+  /// Left unset, the sources-transport ladder decides instead: a per-host
+  /// `.xi.toml [[push.hosts]]` override, then the table-level `.xi.toml
+  /// [push] sources-transport` default, then the compiled floor
+  /// `operator-copy`. `target-pull` is only correct when the target's own
+  /// `xi-sources-daemon` can reach the configured remote directly; an
+  /// explicit `--mode` still outranks whatever this resolves to.
+  #[arg(long, value_enum)]
+  pub sources_transport: Option<SourcesTransport>,
+
   /// Retry attempts for a transient SSH/rsync/`nix copy` failure
   ///
   /// Left unset, the retry-attempts ladder decides instead: `.xi.toml
@@ -242,6 +338,28 @@ pub struct PushArgs {
   /// Push even though the working dir has uncommitted changes
   #[arg(long)]
   pub force_dirty: bool,
+
+  /// Build every target upfront, or interleave building with shipping
+  #[arg(long, value_enum, default_value_t = BuildStrategy::Interleaved)]
+  pub build_strategy: BuildStrategy,
+
+  /// Build every selected target upfront, write its manifest, and stop
+  /// before shipping anything
+  ///
+  /// Only meaningful with `--build-strategy batched`: there is nothing to
+  /// build upfront under the default interleaved strategy. The manifest
+  /// is written into the push's state dir, where a later `--from-manifest`
+  /// invocation reads it back.
+  #[arg(long)]
+  pub build_only: bool,
+
+  /// Ship a previously built manifest instead of building anything
+  ///
+  /// Skips `nix build` entirely: every target the manifest names is
+  /// copied and activated from its recorded store path. Written by an
+  /// earlier `--build-strategy batched --build-only` invocation.
+  #[arg(long, value_name = "PATH")]
+  pub from_manifest: Option<PathBuf>,
 
   /// Which half of the machine to push
   ///
@@ -284,19 +402,28 @@ impl PushArgs {
   }
 
   /// The mode this push actually runs under: `--mode` if given,
-  /// otherwise the build-location ladder's answer.
+  /// otherwise the sources-transport ladder's answer if it resolved to
+  /// `target-pull`, otherwise the build-location ladder's answer.
   ///
-  /// `remote_build` is the ladder's already-resolved verdict (see
-  /// `push::config::resolve_remote_build`), not re-derived here: this
-  /// method only owns the one remaining precedence rule the ladder
-  /// itself does not know about - an explicit `--mode` outranks every
-  /// rung of it.
+  /// `remote_build` and `sources_transport` are each ladder's
+  /// already-resolved verdict (see `push::config::resolve_remote_build`
+  /// and `push::config::resolve_sources_transport`), not re-derived
+  /// here: this method only owns the one remaining precedence rule
+  /// neither ladder knows about on its own - an explicit `--mode`
+  /// outranks every rung of both.
   #[must_use]
-  pub const fn effective_mode(&self, remote_build: bool) -> PushMode {
-    match self.mode {
-      Some(mode) => mode,
-      None if remote_build => PushMode::Sources,
-      None => PushMode::Closure,
+  pub const fn effective_mode(
+    &self,
+    remote_build: bool,
+    sources_transport: SourcesTransport,
+  ) -> PushMode {
+    if let Some(mode) = self.mode {
+      return mode;
+    }
+    match sources_transport {
+      SourcesTransport::TargetPull => PushMode::TargetPull,
+      SourcesTransport::OperatorCopy if remote_build => PushMode::Sources,
+      SourcesTransport::OperatorCopy => PushMode::Closure,
     }
   }
 
@@ -329,6 +456,27 @@ impl PushArgs {
       ));
     }
 
+    if self.build_only && self.from_manifest.is_some() {
+      return Err(eyre!(
+        "--build-only and --from-manifest cannot both be given: one builds \
+         without shipping, the other ships without building"
+      ));
+    }
+
+    if self.build_only && self.build_strategy != BuildStrategy::Batched {
+      return Err(eyre!(
+        "--build-only only makes sense with --build-strategy batched"
+      ));
+    }
+
+    if self.from_manifest.is_some()
+      && self.build_strategy != BuildStrategy::Batched
+    {
+      return Err(eyre!(
+        "--from-manifest only makes sense with --build-strategy batched"
+      ));
+    }
+
     Ok(())
   }
 }
@@ -336,6 +484,8 @@ impl PushArgs {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "Fine in tests")]
 mod tests {
+  use clap::Parser as _;
+
   use super::*;
 
   #[test]
@@ -373,6 +523,7 @@ mod tests {
       phase: "activate".to_owned(),
       mode,
       remote_build: None,
+      sources_transport: None,
       retry: None,
       magic_rollback: 0,
       parallel: 1,
@@ -380,6 +531,9 @@ mod tests {
       copy_via: CopyVia::Local,
       fail_fast: false,
       force_dirty: false,
+      build_strategy: BuildStrategy::Interleaved,
+      build_only: false,
+      from_manifest: None,
       scope: PushScope::System,
       reattach: None,
       notify: None,
@@ -389,21 +543,52 @@ mod tests {
   #[test]
   fn an_explicit_mode_outranks_the_build_location_ladder() {
     assert_eq!(
-      args(Some(PushMode::Closure)).effective_mode(true),
+      args(Some(PushMode::Closure))
+        .effective_mode(true, SourcesTransport::OperatorCopy),
       PushMode::Closure,
       "--mode closure must win even though the ladder says remote-build"
     );
     assert_eq!(
-      args(Some(PushMode::Sources)).effective_mode(false),
+      args(Some(PushMode::Sources))
+        .effective_mode(false, SourcesTransport::OperatorCopy),
       PushMode::Sources,
       "--mode sources must win even though the ladder says local-build"
     );
   }
 
   #[test]
+  fn an_explicit_mode_outranks_the_sources_transport_ladder() {
+    assert_eq!(
+      args(Some(PushMode::Closure))
+        .effective_mode(false, SourcesTransport::TargetPull),
+      PushMode::Closure,
+      "--mode closure must win even though the ladder says target-pull"
+    );
+  }
+
+  #[test]
   fn with_no_mode_flag_the_ladder_answer_picks_the_mode() {
-    assert_eq!(args(None).effective_mode(true), PushMode::Sources);
-    assert_eq!(args(None).effective_mode(false), PushMode::Closure);
+    assert_eq!(
+      args(None).effective_mode(true, SourcesTransport::OperatorCopy),
+      PushMode::Sources
+    );
+    assert_eq!(
+      args(None).effective_mode(false, SourcesTransport::OperatorCopy),
+      PushMode::Closure
+    );
+  }
+
+  #[test]
+  fn with_no_mode_flag_a_target_pull_transport_picks_target_pull_mode() {
+    assert_eq!(
+      args(None).effective_mode(true, SourcesTransport::TargetPull),
+      PushMode::TargetPull,
+      "target-pull must win over the build-location ladder's remote-build=true"
+    );
+    assert_eq!(
+      args(None).effective_mode(false, SourcesTransport::TargetPull),
+      PushMode::TargetPull
+    );
   }
 
   #[test]
@@ -412,6 +597,19 @@ mod tests {
     push_args.copy_via = CopyVia::Target;
     let err = push_args.validate().expect_err("conflicting flags");
     assert!(format!("{err}").contains("--copy-via target"), "got: {err}");
+  }
+
+  #[derive(clap::Parser)]
+  struct PushArgsHarness {
+    #[command(flatten)]
+    push: PushArgs,
+  }
+
+  #[test]
+  fn with_no_build_strategy_flag_the_default_is_interleaved() {
+    let harness = PushArgsHarness::try_parse_from(["push"])
+      .expect("bare `push` invocation should parse");
+    assert_eq!(harness.push.build_strategy, BuildStrategy::Interleaved);
   }
 
   #[test]
@@ -423,6 +621,80 @@ mod tests {
       "the static check only fires on an explicit --mode sources; the \
        ladder's own answer is resolved later, with the sources context this \
        layer does not have"
+    );
+  }
+
+  // -- --build-only / --from-manifest ------------------------------------
+
+  #[test]
+  fn build_only_requires_the_batched_strategy() {
+    let mut push_args = args(None);
+    push_args.build_only = true;
+    let err = push_args
+      .validate()
+      .expect_err("interleaved + --build-only");
+    assert!(format!("{err}").contains("--build-only"), "got: {err}");
+  }
+
+  #[test]
+  fn from_manifest_requires_the_batched_strategy() {
+    let mut push_args = args(None);
+    push_args.from_manifest = Some(PathBuf::from("/tmp/push-manifest.json"));
+    let err = push_args
+      .validate()
+      .expect_err("interleaved + --from-manifest");
+    assert!(format!("{err}").contains("--from-manifest"), "got: {err}");
+  }
+
+  #[test]
+  fn build_only_and_from_manifest_conflict() {
+    let mut push_args = args(None);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.build_only = true;
+    push_args.from_manifest = Some(PathBuf::from("/tmp/push-manifest.json"));
+    let err = push_args.validate().expect_err("conflicting flags");
+    let message = format!("{err}");
+    assert!(message.contains("--build-only"), "got: {message}");
+    assert!(message.contains("--from-manifest"), "got: {message}");
+  }
+
+  #[test]
+  fn build_only_alone_under_batched_is_valid() {
+    let mut push_args = args(None);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.build_only = true;
+    assert!(push_args.validate().is_ok());
+  }
+
+  #[test]
+  fn from_manifest_alone_under_batched_is_valid() {
+    let mut push_args = args(None);
+    push_args.build_strategy = BuildStrategy::Batched;
+    push_args.from_manifest = Some(PathBuf::from("/tmp/push-manifest.json"));
+    assert!(push_args.validate().is_ok());
+  }
+
+  #[test]
+  fn build_only_and_from_manifest_parse_from_the_cli() {
+    let harness = PushArgsHarness::try_parse_from([
+      "push",
+      "--build-strategy",
+      "batched",
+      "--build-only",
+    ])
+    .expect("parses");
+    assert!(harness.push.build_only);
+    assert!(harness.push.from_manifest.is_none());
+
+    let harness = PushArgsHarness::try_parse_from([
+      "push",
+      "--from-manifest",
+      "/tmp/push-manifest.json",
+    ])
+    .expect("parses");
+    assert_eq!(
+      harness.push.from_manifest,
+      Some(PathBuf::from("/tmp/push-manifest.json"))
     );
   }
 }

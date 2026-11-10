@@ -193,7 +193,9 @@ impl DarwinRebuildArgs {
 
     // Push to cache after successful build (best-effort)
     if xi_core::cache::is_push_configured(&self.common.cache) {
-      xi_core::cache::push_to_cache(&self.common.cache, &out_path);
+      let push_result =
+        xi_core::cache::push_to_cache(&self.common.cache, &out_path);
+      xi_core::cache::enforce_required(&push_result)?;
     }
 
     let target_profile = out_path.clone();

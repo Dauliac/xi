@@ -3560,6 +3560,7 @@ dependencies = [
  "xi-home",
  "xi-nixos",
  "xi-search",
+ "xi-vm",
  "yansi",
 ]
 
@@ -3599,6 +3600,8 @@ dependencies = [
 name = "xi-core"
 version = "4.4.0"
 dependencies = [
+ "anstream",
+ "anstyle",
  "chrono",
  "clap",
  "clap_complete",
@@ -3856,6 +3859,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "xi-vm"
+version = "4.4.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "color-eyre",
+ "nix",
+ "nix-command",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "xi-core",
+]
+
+[[package]]
 name = "xtask"
 version = "4.4.0"
 dependencies = [
@@ -3865,6 +3884,7 @@ dependencies = [
  "clap_mangen",
  "roff",
  "xi",
+ "xi-core",
 ]
 
 [[package]]

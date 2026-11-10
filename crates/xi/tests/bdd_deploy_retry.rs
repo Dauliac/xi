@@ -27,7 +27,7 @@ use clap::Parser;
 use serial_test::serial;
 use xi_deploy::{
   push::{
-    config::{resolve_retry_attempts, PushConfig},
+    config::{PushConfig, resolve_retry_attempts},
     engine::{RemoteCommand, SshTransport, TargetAddr, Transport},
   },
   unified_args::DeployArgs,
@@ -41,14 +41,9 @@ use xi_deploy::{
 fn write_scripted_ssh(dir: &Path, fail_count: u32) {
   let count_file = dir.join("attempts");
   let script = format!(
-    "#!/bin/sh\n\
-     count=$(cat '{count}' 2>/dev/null || echo 0)\n\
-     count=$((count + 1))\n\
-     echo \"$count\" > '{count}'\n\
-     if [ \"$count\" -le {fail_count} ]; then\n\
-     \texit 255\n\
-     fi\n\
-     exit 0\n",
+    "#!/bin/sh\ncount=$(cat '{count}' 2>/dev/null || echo 0)\ncount=$((count \
+     + 1))\necho \"$count\" > '{count}'\nif [ \"$count\" -le {fail_count} ]; \
+     then\n\texit 255\nfi\nexit 0\n",
     count = count_file.display(),
   );
   let ssh_path = dir.join("ssh");
@@ -73,10 +68,7 @@ fn with_scripted_ssh_on_path<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
   // SAFETY: serialized via #[serial] - no other thread observes PATH
   // while this closure runs.
   unsafe {
-    std::env::set_var(
-      "PATH",
-      format!("{}:{original_path}", dir.display()),
-    );
+    std::env::set_var("PATH", format!("{}:{original_path}", dir.display()));
   }
   let result = f();
   unsafe {
@@ -175,7 +167,8 @@ fn deploy_retry_0_makes_exactly_one_attempt_per_fleet_host_with_no_retry_log_lin
     write_scripted_ssh(dir.path(), 10);
     let (logs, _guard) = capture_logs();
 
-    let resolved = resolve_retry_attempts(parsed.retry, host, &PushConfig::default());
+    let resolved =
+      resolve_retry_attempts(parsed.retry, host, &PushConfig::default());
     assert_eq!(
       resolved, 0,
       "{host}: the deploy verb's CLI flag ladder resolves --retry 0 to 0"
@@ -183,9 +176,14 @@ fn deploy_retry_0_makes_exactly_one_attempt_per_fleet_host_with_no_retry_log_lin
 
     let outcome = with_scripted_ssh_on_path(dir.path(), || {
       let transport = SshTransport;
-      transport.run(&target(host), &RemoteCommand::elevated("true", false, resolved))
+      transport.run(
+        &target(host),
+        &RemoteCommand::elevated("true", false, resolved),
+      )
     })
-    .expect("run does not error on a remote exit, only on a local spawn failure");
+    .expect(
+      "run does not error on a remote exit, only on a local spawn failure",
+    );
 
     assert!(
       !outcome.success,

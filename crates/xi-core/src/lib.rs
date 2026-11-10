@@ -5,6 +5,7 @@ pub mod cache_posthook;
 pub mod cache_queue;
 pub mod cache_registry;
 pub mod checks;
+pub mod cli_help;
 pub mod command;
 pub mod complete;
 pub mod dirs;

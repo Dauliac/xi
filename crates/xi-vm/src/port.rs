@@ -114,8 +114,8 @@ mod tests {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     let free_port = listener.local_addr().expect("local_addr").port();
     drop(listener);
-    let resolved =
-      resolve_app_port(Some(free_port), false, SSH_BASE_PORT).expect("resolve");
+    let resolved = resolve_app_port(Some(free_port), false, SSH_BASE_PORT)
+      .expect("resolve");
     assert_eq!(resolved, free_port);
   }
 

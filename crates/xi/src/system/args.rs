@@ -6,6 +6,7 @@ use xi_core::{
     CommonRebuildArgs,
     HasBuildArgs,
     HasCacheArgs,
+    HasInstallableArgs,
     NixBuildPassthroughArgs,
   },
   checks::{FeatureRequirements, FlakeFeatures, NoFeatures},
@@ -27,13 +28,17 @@ impl SystemArgs {
   #[must_use]
   pub fn get_feature_requirements(&self) -> Box<dyn FeatureRequirements> {
     match &self.subcommand {
-      // `sources` and `status` only read config and the state dir, but
-      // `FlakeFeatures` is the same requirement either way, so they
-      // share this arm with the verbs that actually build a flake.
-      SystemSubcommand::Sources(_)
-      | SystemSubcommand::Status(_)
-      | SystemSubcommand::Switch(_)
-      | SystemSubcommand::Build(_) => Box::new(FlakeFeatures),
+      // `sources` and `status` only read config and the state dir; they
+      // never evaluate a flake, so (unlike `switch`/`build`) they need no
+      // Nix features, and critically no working `nix` binary either -
+      // `sudo xi system status` must succeed even when `nix` isn't on
+      // root's `PATH`.
+      SystemSubcommand::Sources(_) | SystemSubcommand::Status(_) => {
+        Box::new(NoFeatures)
+      },
+      SystemSubcommand::Switch(_) | SystemSubcommand::Build(_) => {
+        Box::new(FlakeFeatures)
+      },
       // `uninstall` replays recorded shell-outs from the bootstrap
       // receipt; it never evaluates a flake either.
       SystemSubcommand::Uninstall => Box::new(NoFeatures),
@@ -99,6 +104,19 @@ impl SystemRebuildArgs {
   #[must_use]
   pub fn uses_flakes(&self) -> bool {
     self.common.installable.uses_flakes(CommandContext::System)
+  }
+}
+
+impl HasInstallableArgs for SystemArgs {
+  fn installable(&self) -> Option<&xi_core::installable::InstallableArgs> {
+    match &self.subcommand {
+      SystemSubcommand::Sources(_)
+      | SystemSubcommand::Status(_)
+      | SystemSubcommand::Uninstall => None,
+      SystemSubcommand::Switch(a) | SystemSubcommand::Build(a) => {
+        Some(&a.common.installable)
+      },
+    }
   }
 }
 

@@ -180,7 +180,8 @@ fn push_args(deploy_args: &DeployArgs, targets: Vec<String>) -> PushArgs {
 
 #[test]
 fn deploy_notify_fires_the_command_exactly_once_per_fleet_host_on_success() {
-  let log = tempfile::NamedTempFile::new().expect("tempfile for the notify log");
+  let log =
+    tempfile::NamedTempFile::new().expect("tempfile for the notify log");
   let log_path = log.path().to_owned();
 
   let parsed = DeployArgsHarness::try_parse_from([
@@ -231,8 +232,8 @@ fn deploy_notify_fires_the_command_exactly_once_per_fleet_host_on_success() {
   assert_eq!(
     fired_count,
     FIXTURE_FLEET.len(),
-    "--notify must fire exactly once per fleet host's terminal outcome, \
-     not zero, twice, or skipped for any host"
+    "--notify must fire exactly once per fleet host's terminal outcome, not \
+     zero, twice, or skipped for any host"
   );
 
   let receipts_dir = context.state_dir.join("push-receipts");
@@ -241,6 +242,7 @@ fn deploy_notify_fires_the_command_exactly_once_per_fleet_host_on_success() {
     .unwrap_or_default();
   assert!(
     leftover.is_empty(),
-    "a successful push's receipt is removed once --notify has fired: {leftover:?}"
+    "a successful push's receipt is removed once --notify has fired: \
+     {leftover:?}"
   );
 }

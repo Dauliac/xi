@@ -67,7 +67,10 @@ fn deploy_reattach_lists_receipts_without_running_the_decision_tree() {
       .arg(&upstream)
       .args(args)
       .env("GIT_AUTHOR_NAME", "xi-reattach-dispatch-test")
-      .env("GIT_AUTHOR_EMAIL", "xi-reattach-dispatch-test@example.invalid")
+      .env(
+        "GIT_AUTHOR_EMAIL",
+        "xi-reattach-dispatch-test@example.invalid",
+      )
       .env("GIT_COMMITTER_NAME", "xi-reattach-dispatch-test")
       .env(
         "GIT_COMMITTER_EMAIL",
@@ -95,13 +98,13 @@ fn deploy_reattach_lists_receipts_without_running_the_decision_tree() {
   ]);
   assert!(
     !adopt_ok,
-    "adopting against a flake with no homeConfigurations must fail to \
-     build: {adopt_out}"
+    "adopting against a flake with no homeConfigurations must fail to build: \
+     {adopt_out}"
   );
   assert!(
     home.join(".local/share/xi/sources/.git").is_dir(),
-    "`xi deploy --adopt` must still have cloned the adopted remote before \
-     the build failed: {adopt_out}"
+    "`xi deploy --adopt` must still have cloned the adopted remote before the \
+     build failed: {adopt_out}"
   );
 
   // Same adopted fixture, no inventory, no flake-deploy outputs - if

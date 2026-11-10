@@ -68,17 +68,26 @@ fn missing_subcommand_help(err: &clap::Error) -> Option<String> {
     error::{ContextKind, ContextValue},
   };
 
-  let path = err.context().find_map(|(kind, value)| match (kind, value) {
-    (ContextKind::InvalidSubcommand, ContextValue::String(path)) => {
-      Some(path.as_str())
-    },
-    _ => None,
+  let path = err.context().find_map(|(kind, value)| {
+    match (kind, value) {
+      (ContextKind::InvalidSubcommand, ContextValue::String(path)) => {
+        Some(path.as_str())
+      },
+      _ => None,
+    }
   })?;
 
   let mut segments = path.split_whitespace().skip(1).peekable();
   segments.peek()?;
 
   let mut cmd = crate::interface::Main::command();
+  // `Command::command()` only augments args/subcommands; it never runs
+  // clap's internal build pass, so a subcommand cloned out of it below
+  // has not yet inherited the parent's styles (propagation happens
+  // during that pass, normally triggered lazily by `get_matches`).
+  // Force it now, before cloning out the subcommand, or its help
+  // renders with clap's default styling instead of `Main`'s.
+  cmd.build();
   for name in segments {
     cmd = cmd.find_subcommand(name)?.clone();
   }
@@ -87,7 +96,7 @@ fn missing_subcommand_help(err: &clap::Error) -> Option<String> {
   // the usage line would show just "cache" instead of "xi cache". Use
   // the path clap's own error already resolved.
   cmd.set_bin_name(path);
-  Some(cmd.render_long_help().to_string())
+  Some(cmd.render_long_help().ansi().to_string())
 }
 
 /// Run xi with arguments parsed from the process environment.
@@ -116,7 +125,7 @@ pub fn main() -> Result<()> {
       if err.kind() == clap::error::ErrorKind::DisplayHelp
         && !has_known_subcommand_token() =>
     {
-      println!("{}", crate::interface::grouped_help());
+      xi_core::cli_help::print_styled(&crate::interface::grouped_help());
       std::process::exit(0)
     },
     // A required subcommand was missing, at ANY depth (`xi cache`, `xi
@@ -126,7 +135,7 @@ pub fn main() -> Result<()> {
     Err(err) if err.kind() == clap::error::ErrorKind::MissingSubcommand => {
       let help = missing_subcommand_help(&err)
         .unwrap_or_else(crate::interface::grouped_help);
-      println!("{help}");
+      xi_core::cli_help::print_styled(&help);
       std::process::exit(err.exit_code())
     },
     Err(err) => err.exit(),
@@ -179,12 +188,19 @@ pub fn main() -> Result<()> {
   // which shells out to `nix --version` and would otherwise fail first
   // with "No output from nix --version command". On a machine that has
   // Nix this is a PATH lookup and nothing more.
-  if let Some(scope) = args.command.sources_scope() {
-    xi_core::sources::switch::ensure_nix_available_for(scope)?;
-  }
+  //
+  // Both are skipped for a command that doesn't need `nix` at all (a
+  // `sources`/`status` read): otherwise `sudo xi system status` fails
+  // here before it ever gets to read anything, because `sudo` resets
+  // `PATH` and drops the invoking user's `nix`.
+  if args.command.needs_nix() {
+    if let Some(scope) = args.command.sources_scope() {
+      xi_core::sources::switch::ensure_nix_available_for(scope)?;
+    }
 
-  // Check Nix version upfront
-  xi_core::checks::verify_nix_environment()?;
+    // Check Nix version upfront
+    xi_core::checks::verify_nix_environment()?;
+  }
 
   // Once we assert required Nix features, validate xi environment checks
   // For now, this is just XI_* variables being set. More checks may be
@@ -199,6 +215,7 @@ pub fn main() -> Result<()> {
           tracing::debug!("Loaded config from {}", store.path().display());
           args.command.apply_cache_config(&config.cache);
           args.command.apply_build_config(&config.build);
+          args.command.apply_cache_pull_config(&config.cache);
           args.command.apply_locate_config(&config.locate);
         },
         Err(e) => {

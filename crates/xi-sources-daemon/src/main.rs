@@ -98,7 +98,8 @@ enum Command {
 #[command(
   name = "xi-sources-daemon",
   about = "Pull-GitOps daemon for xi sources: watches a remote, fast-forwards \
-           the sources dir, runs on_advance."
+           the sources dir, runs on_advance.",
+  styles = xi_core::cli_help::styles()
 )]
 struct Cli {
   /// Which scope's config repo (and, for `ctl`, control socket) to use.

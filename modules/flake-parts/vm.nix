@@ -9,12 +9,12 @@
 let
   cfg = config.xi.vm;
 
-  # Mirrors `crates/xi-core/src/dirs.rs::xdg_state_dir`: the same impure
-  # fallback chain, read at eval time so the guest-account module and the
-  # Rust CLI agree on one path without either side hardcoding the
-  # other's default. Only used to locate a *public* key, so reading it
-  # into the store (via `vm-guest.nix`'s `lib.fileContents`) carries no
-  # secret-leak risk.
+  # Mirrors `crates/xi-core/src/sources/config.rs::xdg_state_home`: the
+  # same impure fallback chain, read at eval time so the guest-account
+  # module and the Rust CLI agree on one path without either side
+  # hardcoding the other's default. Only used to locate a *public* key,
+  # so reading it into the store (via `vm-guest.nix`'s `lib.fileContents`)
+  # carries no secret-leak risk.
   stateDir =
     let
       xdg = builtins.getEnv "XDG_STATE_HOME";

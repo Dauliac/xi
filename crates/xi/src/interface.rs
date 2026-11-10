@@ -1,10 +1,9 @@
-use std::{fmt::Write as _, io};
+use std::io;
 
-use anstyle::Style;
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::Styles};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::InfoLevel;
 use xi_core::{
-  args::{HasBuildArgs, HasCacheArgs},
+  args::{HasBuildArgs, HasCacheArgs, HasInstallableArgs},
   checks::{FeatureRequirements, NoFeatures},
   command::ElevationStrategy,
 };
@@ -15,20 +14,12 @@ use crate::{
   config::{BuildConfig, CacheConfig},
 };
 
-const fn make_style() -> Styles {
-  Styles::plain().header(Style::new().bold()).literal(
-    Style::new()
-      .bold()
-      .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow))),
-  )
-}
-
 #[derive(Parser, Debug)]
 #[command(
     version = crate::long_version(),
     about,
     long_about = None,
-    styles=make_style(),
+    styles=xi_core::cli_help::styles(),
     propagate_version = false,
     help_template = "
 {name} {version}
@@ -112,6 +103,7 @@ pub enum XiCommand {
   // -- Development --
   Develop(xi_develop::args::DevelopArgs),
   Search(xi_search::args::SearchArgs),
+  Vm(xi_vm::args::VmArgs),
 
   // -- Agentic --
   Agent(xi_agent::args::AgentArgs),
@@ -128,12 +120,13 @@ pub enum XiCommand {
 /// Bounded-context groups for the top-level command list, in display order.
 ///
 /// clap has no native concept of subcommand groups (only a single
-/// app-wide `subcommand_help_heading`), so [`grouped_help`] renders
-/// clap's own help text and splices these headings into the `Commands:`
-/// section by matching each line's command name against this table. Keep
-/// it in sync with the `// -- Group --` comments on [`XiCommand`] above  -
-/// those comments are what a human reads when adding a command; this
-/// table is what the renderer reads.
+/// app-wide `subcommand_help_heading`), so [`grouped_help`] delegates to
+/// [`xi_core::cli_help::grouped_help`], which renders clap's own help
+/// text and splices these headings into the `Commands:` section by
+/// matching each line's command name against this table. Keep it in
+/// sync with the `// -- Group --` comments on [`XiCommand`] above  - those
+/// comments are what a human reads when adding a command; this table is
+/// what the renderer reads.
 const COMMAND_GROUPS: &[(&str, &[&str])] = &[
   ("Config mgmt", &["os", "home", "darwin", "system"]),
   ("Flake ops", &[
@@ -141,7 +134,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
     "test", "doctor",
   ]),
   ("Deployment", &["deploy", "deploy-legacy", "push"]),
-  ("Development", &["develop", "search"]),
+  ("Development", &["develop", "search", "vm"]),
   ("Agentic", &["agent", "auth"]),
   ("Other", &["cache", "clean", "nix", "completions"]),
 ];
@@ -151,56 +144,15 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
 /// clap renders by default.
 ///
 /// Delegates all formatting (column alignment, wrapping, color styling)
-/// to clap's own renderer and only splices group headings into the
-/// `Commands:` block, so this stays correct as commands are added,
-/// renamed, or re-described without any hand-maintained duplicate text.
+/// to [`xi_core::cli_help::grouped_help`], which renders clap's own long
+/// help and only splices group headings into the `Commands:` block, so
+/// this stays correct as commands are added, renamed, or re-described
+/// without any hand-maintained duplicate text, and stays in sync with
+/// clap's own `--help` styling.
 #[must_use]
 pub fn grouped_help() -> String {
   let mut cmd = <Main as CommandFactory>::command();
-  let rendered = cmd.render_long_help().to_string();
-  splice_command_groups(&rendered)
-}
-
-fn splice_command_groups(help: &str) -> String {
-  let Some(commands_start) = help.find("Commands:") else {
-    return help.to_owned();
-  };
-  let section_start = commands_start + "Commands:".len();
-  let Some(options_rel) = help[section_start..].find("Options:") else {
-    return help.to_owned();
-  };
-  let options_start = section_start + options_rel;
-
-  let mut heading_before: std::collections::HashMap<&str, &str> =
-    std::collections::HashMap::new();
-  for (group, names) in COMMAND_GROUPS {
-    if let Some(&first) = names.first() {
-      heading_before.insert(first, group);
-    }
-  }
-
-  let mut body = String::new();
-  for line in help[section_start..options_start].lines() {
-    if line.trim().is_empty() {
-      continue;
-    }
-    let name = line.split_whitespace().next().unwrap_or("");
-    if let Some(group) = heading_before.get(name) {
-      if !body.is_empty() {
-        body.push('\n');
-      }
-      let _ = writeln!(body, "  \x1b[1m[{group}]\x1b[0m");
-    }
-    body.push_str("  ");
-    body.push_str(line);
-    body.push('\n');
-  }
-
-  format!(
-    "{}Commands:\n\n{body}\n{}",
-    &help[..commands_start],
-    &help[options_start..]
-  )
+  xi_core::cli_help::grouped_help(&mut cmd, COMMAND_GROUPS)
 }
 
 #[derive(Parser, Debug)]
@@ -226,24 +178,49 @@ pub enum CompletionShell {
 /// Named here so the five deprecated verbs' wording never drifts; see
 /// `xi-deploy-unified-verb`'s deprecation window (xi-fxgx.5.2).
 fn deprecated_verb_notice(old: &str) {
-  eprintln!("xi: `{old}` is deprecated and will be removed; use `xi deploy` instead");
+  eprintln!(
+    "xi: `{old}` is deprecated and will be removed; use `xi deploy` instead"
+  );
 }
 
 impl XiCommand {
-  /// The sources scope this command deploys, if it is a scope verb.
+  /// The sources scope this command deploys, if it is a scope verb that
+  /// actually needs `nix` on `PATH`.
   ///
   /// The four config-management verbs have a fixed scope; `push` is a
   /// fifth, with a per-invocation scope from its own `--scope` flag
   /// (`push` has no parent verb to inherit one from). Everything else
   /// (`build`, `search`, `agent`, ...) is scope-less and skips the
   /// installer pre-check entirely.
+  ///
+  /// Each verb's `Sources`/`Status` subcommand only reads config and the
+  /// state dir - it never evaluates a flake - so it is exempted here too,
+  /// the same way `get_feature_requirements` exempts it from needing a
+  /// real flake context despite sharing `FlakeFeatures`' classification.
+  /// Without this, `sudo xi system status` fails on "nix is not on PATH"
+  /// before it ever gets to read anything, because `sudo` resets `PATH`
+  /// and drops the invoking user's `nix`.
   #[must_use]
   pub fn sources_scope(&self) -> Option<xi_core::sources::Scope> {
     match self {
-      Self::Os(..) => Some(xi_nixos::args::OsArgs::scope()),
-      Self::Home(..) => Some(xi_home::args::HomeArgs::scope()),
-      Self::Darwin(..) => Some(xi_darwin::args::DarwinArgs::scope()),
-      Self::System(..) => Some(crate::system::args::SystemArgs::scope()),
+      Self::Os(args) => match &args.subcommand {
+        xi_nixos::args::OsSubcommand::Sources(_) => None,
+        _ => Some(xi_nixos::args::OsArgs::scope()),
+      },
+      Self::Home(args) => match &args.subcommand {
+        xi_home::args::HomeSubcommand::Sources(_)
+        | xi_home::args::HomeSubcommand::Status(_) => None,
+        _ => Some(xi_home::args::HomeArgs::scope()),
+      },
+      Self::Darwin(args) => match &args.subcommand {
+        xi_darwin::args::DarwinSubcommand::Sources(_) => None,
+        _ => Some(xi_darwin::args::DarwinArgs::scope()),
+      },
+      Self::System(args) => match &args.subcommand {
+        crate::system::args::SystemSubcommand::Sources(_)
+        | crate::system::args::SystemSubcommand::Status(_) => None,
+        _ => Some(crate::system::args::SystemArgs::scope()),
+      },
       Self::Push(args) => Some(args.sources_scope()),
       Self::Deploy(args) => {
         Some(match args.scope {
@@ -254,6 +231,41 @@ impl XiCommand {
         })
       },
       _ => None,
+    }
+  }
+
+  /// Whether this invocation needs `nix` on `PATH` at all.
+  ///
+  /// `false` for exactly the `Sources`/`Status` subcommands [`sources_scope`]
+  /// already exempts from the installer pre-check - they only read config
+  /// and the state dir - plus `Completions`, which short-circuits before
+  /// any check runs. Everything else, scope verb or not, still needs `nix`
+  /// (a scope-less command like `build` has no [`sources_scope`] either,
+  /// but unlike `status` it genuinely evaluates a flake).
+  ///
+  /// [`sources_scope`]: Self::sources_scope
+  #[must_use]
+  pub fn needs_nix(&self) -> bool {
+    match self {
+      Self::Os(args) => {
+        !matches!(args.subcommand, xi_nixos::args::OsSubcommand::Sources(_))
+      },
+      Self::Home(args) => !matches!(
+        args.subcommand,
+        xi_home::args::HomeSubcommand::Sources(_)
+          | xi_home::args::HomeSubcommand::Status(_)
+      ),
+      Self::Darwin(args) => !matches!(
+        args.subcommand,
+        xi_darwin::args::DarwinSubcommand::Sources(_)
+      ),
+      Self::System(args) => !matches!(
+        args.subcommand,
+        crate::system::args::SystemSubcommand::Sources(_)
+          | crate::system::args::SystemSubcommand::Status(_)
+      ),
+      Self::Completions(..) => false,
+      _ => true,
     }
   }
 
@@ -279,6 +291,7 @@ impl XiCommand {
       | Self::Deploy(..)
       | Self::DeployLegacy(..)
       | Self::Push(..) => Box::new(xi_core::checks::FlakeFeatures),
+      Self::Vm(args) => args.get_feature_requirements(),
       Self::Agent(..)
       | Self::Switch
       | Self::Search(..)
@@ -303,8 +316,11 @@ impl XiCommand {
     };
 
     if let Some(cache) = cache {
-      cache
-        .apply_config_defaults(&cache_config.targets, cache_config.async_push);
+      cache.apply_config_defaults(
+        &cache_config.targets,
+        cache_config.async_push,
+        cache_config.max_parallel_jobs,
+      );
     }
   }
 
@@ -422,6 +438,86 @@ impl XiCommand {
     }
   }
 
+  /// The explicit flake-ref this invocation was given, if any  -  the
+  /// first rung of `xi-binary-cache-match`'s resolution ladder.
+  fn explicit_flake_ref(&self) -> Option<String> {
+    let installable = match self {
+      Self::Os(args) => args.installable(),
+      Self::Home(args) => args.installable(),
+      Self::Darwin(args) => args.installable(),
+      Self::System(args) => args.installable(),
+      Self::Build(args) => Some(&args.installable),
+      _ => None,
+    };
+    installable
+      .and_then(xi_core::installable::InstallableArgs::explicit_flake_ref)
+      .map(str::to_owned)
+  }
+
+  /// Resolve the git-remote / flake-ref match candidate for this
+  /// invocation (`xi-binary-cache-match`) and apply its effects:
+  /// thread the candidate into the embedded `CacheArgs` so push-side
+  /// matching sees it, and inject the matched targets' `pull_url` +
+  /// resolved public key into every embedded build-passthrough struct
+  /// as additive `extra-substituters`/`extra-trusted-public-keys`
+  /// (`xi-binary-cache-targets`' pull-as-flags requirement).
+  pub fn apply_cache_pull_config(&mut self, cache_config: &CacheConfig) {
+    let explicit_flake_ref = self.explicit_flake_ref();
+    let git_remote = std::env::current_dir().ok().and_then(|cwd| {
+      xi_develop::flake_detect::find_flake_root(&cwd)
+        .and_then(|root| xi_core::cache_match::git_remote_origin_url(&root))
+    });
+    let candidate = xi_core::cache_match::resolve_candidate(
+      explicit_flake_ref.as_deref(),
+      git_remote.as_deref(),
+    );
+
+    let selected = xi_core::cache_match::select_targets(
+      &cache_config.targets,
+      candidate.as_deref(),
+    );
+    let mut substituters = Vec::new();
+    let mut trusted_public_keys = Vec::new();
+    for target in selected {
+      if let Some(url) = &target.pull_url {
+        substituters.push(url.clone());
+      }
+      if let Some(key) = xi_core::cache::resolve_pull_public_key(target) {
+        trusted_public_keys.push(key);
+      }
+    }
+
+    if let Some(cache) = match self {
+      Self::Os(args) => args.cache_args_mut(),
+      Self::Home(args) => args.cache_args_mut(),
+      Self::Darwin(args) => args.cache_args_mut(),
+      Self::System(args) => args.cache_args_mut(),
+      Self::Build(args) => Some(&mut args.cache),
+      _ => None,
+    } {
+      cache.set_match_candidate(candidate);
+    }
+
+    if let Some(passthrough) = match self {
+      Self::Os(args) => args.build_passthrough_mut(),
+      Self::Home(args) => args.build_passthrough_mut(),
+      Self::Darwin(args) => args.build_passthrough_mut(),
+      Self::System(args) => args.build_passthrough_mut(),
+      _ => None,
+    } {
+      passthrough.apply_cache_pull_flags(
+        substituters.clone(),
+        trusted_public_keys.clone(),
+      );
+    }
+
+    if let Self::Build(args) = self {
+      args
+        .passthrough
+        .apply_cache_pull_flags(substituters, trusted_public_keys);
+    }
+  }
+
   /// Apply locate defaults from config.toml to the run command.
   /// Config values are lowest priority (CLI > env > config).
   pub const fn apply_locate_config(
@@ -454,8 +550,7 @@ impl XiCommand {
         args.run(elevation)
       },
       Self::Home(args) => {
-        if matches!(args.subcommand, xi_home::args::HomeSubcommand::Switch(_))
-        {
+        if matches!(args.subcommand, xi_home::args::HomeSubcommand::Switch(_)) {
           deprecated_verb_notice("home switch");
         }
         args.run()
@@ -501,6 +596,7 @@ impl XiCommand {
       },
       Self::Agent(args) => xi_agent::run(args),
       Self::Search(args) => args.run(),
+      Self::Vm(args) => xi_vm::vm::run(args),
       Self::Auth(args) => xi_auth::run(&args),
       Self::Switch => crate::sources::verbless_switch(),
       Self::Cache(proxy) => proxy.run(),

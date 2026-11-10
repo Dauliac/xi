@@ -11,6 +11,7 @@ mod man;
 use comp::CompletionShell;
 
 #[derive(Parser)]
+#[command(styles = xi_core::cli_help::styles())]
 struct Cli {
   #[command(subcommand)]
   command: Command,

@@ -11,3 +11,4 @@ clap_complete_nushell.workspace = true
 clap_mangen.workspace           = true
 roff.workspace                  = true
 xi.workspace                    = true
+xi-core.workspace               = true
