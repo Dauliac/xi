@@ -30,8 +30,8 @@ pub mod subscribe;
 pub use command::{Command, CommandReply, IdempotencyKey};
 pub use envelope::{Envelope, Payload};
 pub use event::{Event, EventPayload, Gap};
-pub use query::{Availability, Query, QueryReply};
-pub use reply::Reply;
+pub use query::{Availability, FLAKE_SCOPE_EXPR, Query, QueryReply};
+pub use reply::{DocResult, ExprEvalResult, Reply};
 pub use subscribe::{Subscribe, Topics};
 
 /// The protocol version served by this module.

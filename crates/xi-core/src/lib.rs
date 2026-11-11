@@ -10,6 +10,8 @@ pub mod complete;
 pub mod dirs;
 pub mod flake_output;
 pub mod installable;
+pub mod nix_value;
+pub mod override_input;
 pub mod progress;
 pub mod retry;
 pub mod sources;

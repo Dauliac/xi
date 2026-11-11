@@ -85,6 +85,10 @@ With a bootloader and immediate launch:
 xi os build-vm --with-bootloader --run
 ```
 
+Deprecated: builds and runs the current flake's `nixosConfiguration` as a
+one-shot VM. For a declarative, named, multi-VM workflow (build, check, start,
+connect, stop), see `xi vm` in [`docs/guides/vm.md`](vm.md).
+
 ## Build a disk image
 
 ```sh

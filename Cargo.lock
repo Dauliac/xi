@@ -205,6 +205,9 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "blake3"
@@ -465,6 +468,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "countme"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7704b5fdd17b18ae31c4c1da5a2e0305a2bf17b5249300a9ee9ed7b72114c636"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -510,6 +519,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "rustix",
+ "serde",
  "signal-hook 0.3.18",
  "signal-hook-mio",
  "winapi",
@@ -629,7 +639,7 @@ dependencies = [
  "diff",
  "dix-diff",
  "eyre",
- "itertools 0.15.0",
+ "itertools",
  "rusqlite",
  "serde",
  "serde_json",
@@ -647,7 +657,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1dfd728a430fa0eca997a9f90f39ff54d520a254b33180fa35739958163845d7"
 dependencies = [
  "derive_more",
- "itertools 0.15.0",
+ "itertools",
  "pathfinding",
 ]
 
@@ -739,6 +749,17 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "fd-lock"
+version = "4.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
+dependencies = [
+ "cfg-if",
+ "rustix",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "filetime"
@@ -937,6 +958,12 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -1359,15 +1386,6 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
@@ -1580,6 +1598,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -1812,7 +1839,7 @@ dependencies = [
  "indexmap",
  "integer-sqrt",
  "num-traits",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "thiserror 2.0.19",
 ]
 
@@ -1902,9 +1929,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.4"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+checksum = "c9f016da56b311cff4659f5e7335c4d5fda5ca86cae4f48b8ce1cf3335246a7d"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -1912,12 +1939,12 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.4"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+checksum = "c9a367f131d93b3395fc6207c11e67098493ab040def4ce3085adbf186687f7e"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -1940,7 +1967,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "rustls",
  "socket2",
  "thiserror 2.0.19",
@@ -1962,7 +1989,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_pcg",
  "ring",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
  "slab",
@@ -2092,6 +2119,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "reedline"
+version = "0.52.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc0282eb061a7d039435f10075f22988e0dd7468901ee247a803021786afc662"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "fd-lock",
+ "nu-ansi-term",
+ "serde",
+ "strip-ansi-escapes",
+ "strum",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2174,10 +2218,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rnix"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5edd5cea08b6d9bc25a8c097e5564594b7a9e86e8f90ee0e0ca11518cb45e3e"
+dependencies = [
+ "rowan",
+]
+
+[[package]]
 name = "roff"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
+
+[[package]]
+name = "rowan"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14b574c58582fa59fa43a2feb6608b8744184659f08a2e0117e4b8224d95ed61"
+dependencies = [
+ "countme",
+ "hashbrown 0.14.5",
+ "memoffset",
+ "rustc-hash 1.1.0",
+ "text-size",
+]
 
 [[package]]
 name = "rsqlite-vfs"
@@ -2209,6 +2275,12 @@ name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -2613,10 +2685,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "strip-ansi-escapes"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a8f8038e7e7969abb3f1b7c2a811225e9296da208539e0f79c5251d6cac0025"
+dependencies = [
+ "vte",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "subprocess"
@@ -2725,6 +2827,12 @@ dependencies = [
  "rustix",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "text-size"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18aa187839b2bdb1ad2fa35ead8c4c2976b64e4363c386d45ac0f7ee85c9233"
 
 [[package]]
 name = "textwrap"
@@ -3132,6 +3240,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vte"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "231fdcd7ef3037e8330d8e17e61011a2c244126acc0a982f4040ac3f9f0bc077"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3528,8 +3645,9 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xi"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
+ "anstream",
  "anstyle",
  "clap",
  "clap-verbosity-flag",
@@ -3559,13 +3677,15 @@ dependencies = [
  "xi-flake",
  "xi-home",
  "xi-nixos",
+ "xi-repl",
  "xi-search",
+ "xi-vm",
  "yansi",
 ]
 
 [[package]]
 name = "xi-agent"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3587,7 +3707,7 @@ dependencies = [
 
 [[package]]
 name = "xi-auth"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -3597,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "xi-core"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3632,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "xi-darwin"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3648,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "xi-deploy"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -3669,7 +3789,7 @@ dependencies = [
 
 [[package]]
 name = "xi-develop"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -3699,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "xi-diff"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "color-eyre",
  "dix",
@@ -3711,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "xi-flake"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3734,7 +3854,7 @@ dependencies = [
 
 [[package]]
 name = "xi-home"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3749,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "xi-nixos"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3767,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "xi-remote"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "color-eyre",
  "dix",
@@ -3785,8 +3905,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "xi-repl"
+version = "4.5.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "nix-command",
+ "nu-ansi-term",
+ "reedline",
+ "rnix",
+ "serde_json",
+ "strsim",
+ "tempfile",
+ "thiserror 2.0.19",
+ "xi-core",
+ "xi-develop",
+ "yansi",
+]
+
+[[package]]
 name = "xi-search"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3811,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "xi-sources-daemon"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3833,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "xi-sources-observability"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -3856,8 +3995,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "xi-vm"
+version = "4.5.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "color-eyre",
+ "nix",
+ "nix-command",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "xi-core",
+]
+
+[[package]]
 name = "xtask"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "clap",
  "clap_complete",

@@ -22,11 +22,61 @@ functionality, under the "Removed" section.
 
 ### Fixed
 
+- `tag.yaml` never declared `permissions:`, so `GITHUB_TOKEN` fell back to this
+  repo's read-only default and `gh release create` failed with
+  `HTTP
+  403: Resource not accessible by integration`. Added
+  `permissions:
+  contents: write` at the workflow level.
+- `tag.yaml`'s `aarch64-darwin` release build used the `macos-14` runner label,
+  which GitHub no longer supports ("configuration 'macos-14-arm64-us-default' is
+  not supported"). Switched to `macos-latest`, matching
+  `build.yaml`/`test.yaml`.
+- `tag.yaml`'s `build` and `release` jobs still skipped on a direct tag push
+  even after the `test`-job fix below, because a job `if` that does not call a
+  status-check function gets an implicit `success()` ANDed in, and `success()`
+  considers the whole transitive `needs` chain, not just the job's direct
+  `needs` - `build` (via `test`) and `release` (via `build`) both transitively
+  depend on the deliberately-skipped `tag` job. Both now check
+  `needs.<job>.result == 'success'` explicitly under `always()`.
+- `tag.yaml`'s `test` job declared `needs: tag`, so a direct `push: tags:
+  v*`
+  event (the `tag` job's own `if` only matches `main` pushes or
+  `workflow_dispatch`) skipped `tag`, which cascade-skipped `test`, `build`, and
+  `release` even though `test`'s own `if` would have matched. Added `always()`
+  to `test`'s `if` so a skipped (not failed) `tag` no longer blocks it.
+- Two public doc comments (`xi-flake::project_config::load_sources_config`,
+  `xi::sources` module docs) linked to module-private items via intra-doc link
+  syntax, which `cargo doc -D warnings` rejects. This was never caught before
+  because CI never ran `cargo doc`; it does now via `tag.yaml`'s release gate.
+
+### Removed
+
+## 4.5.0
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Vale prose linting is now scoped to `docs/` only. `openspec/**/*.md` was in
   scope and contributed 1259 errors, which broke both the `Lint docs` and
   `Deploy Documentation` workflows. Those files are internal design artifacts
   rather than published prose. `CHANGELOG.md` and `CONTRIBUTING.md` also leave
   Vale's scope as a result.
+- `tag.yaml`'s push trigger and `check.yaml`'s PR trigger targeted `master`, a
+  stale branch name left over from the `nh` fork, so auto-tagging and PR checks
+  against the real default branch (`main`) were silently not firing. Both now
+  target `main`.
+- Release binaries built by `tag.yaml` are now built with `nix build .#xi`
+  instead of raw `cargo build`/`cross`, so the artifacts attached to GitHub
+  releases are validated against the flake. `aarch64-linux` builds natively on
+  GitHub's `ubuntu-24.04-arm` runner instead of emulating via `cross`. A new
+  `test` job (nix build of the `xi`/`xi-clippy`/`xi-doc` checks, plus
+  `cargo
+  nextest` via `just test`) gates the build job so releases are cut
+  only after checks and tests pass.
 
 ### Removed
 

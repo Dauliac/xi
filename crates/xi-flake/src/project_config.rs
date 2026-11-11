@@ -9,12 +9,23 @@ use xi_core::sources::config::{ConfigError, SourcesConfig};
 /// Project-level configuration from `.xi.toml`.
 #[derive(Debug, Default)]
 pub struct ProjectConfig {
+  pub build:    ProjectBuildConfig,
   pub ci:       ProjectCiConfig,
   pub consumer: ProjectConsumerConfig,
   pub doctor:   ProjectDoctorConfig,
   pub test:     ProjectTestConfig,
   pub fmt:      ProjectFmtConfig,
   pub sources:  SourcesConfig,
+}
+
+/// Build settings from the `[build]` section of `.xi.toml` or
+/// `.xi.local.toml`.
+#[derive(Debug, Default)]
+pub struct ProjectBuildConfig {
+  /// Flake input overrides, each tagged with the file it was written in so
+  /// a relative value resolves against that file's own directory rather
+  /// than the process working directory.
+  pub override_input: Vec<xi_core::override_input::Entry>,
 }
 
 /// Formatter configuration.
@@ -271,55 +282,73 @@ fn repo_local_config_source(dir: &Path) -> Option<PathBuf> {
   p.is_file().then_some(p)
 }
 
-/// Deep-merge `incoming` into `base`: for a key present as a table on
-/// both sides, recurse; otherwise `incoming`'s value replaces `base`'s
-/// (whole arrays/scalars, not element-wise) -- "later file wins" applied
-/// per leaf key rather than per top-level table.
-fn merge_table_into(base: &mut toml_edit::Table, incoming: &toml_edit::Table) {
-  for (key, incoming_item) in incoming {
-    let merged_as_table = base
-      .get_mut(key)
-      .and_then(toml_edit::Item::as_table_mut)
-      .zip(incoming_item.as_table());
-
-    if let Some((base_table, incoming_table)) = merged_as_table {
-      merge_table_into(base_table, incoming_table);
-    } else {
-      base.insert(key, incoming_item.clone());
-    }
-  }
-}
-
-/// Load and merge every layer (global, repo-shared, repo-local) into one
-/// document. Unreadable or unparseable files are skipped with a warning,
-/// not a hard failure -- consistent with this module's existing leniency.
-fn merged_config_document(flake_dir: &Path) -> toml_edit::DocumentMut {
+/// Every config file that contributes to [`load_project_config`], ordered
+/// lowest precedence first.
+///
+/// Tier 1 the global config, tier 2 the repo-shared files
+/// (`xi.toml`/`.xi.toml` plus `.config/xi/*.toml`), tier 3 the gitignored
+/// repo-local override.
+fn config_source_paths(flake_dir: &Path) -> Vec<PathBuf> {
   let mut sources = global_config_sources();
   sources.extend(repo_shared_config_sources(flake_dir));
   if let Some(local) = repo_local_config_source(flake_dir) {
     sources.push(local);
   }
-
-  let mut doc = toml_edit::DocumentMut::new();
-  for path in sources {
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-      continue;
-    };
-    match raw.parse::<toml_edit::DocumentMut>() {
-      Ok(layer) => merge_table_into(doc.as_table_mut(), layer.as_table()),
-      Err(e) => warn!("Failed to parse {}: {e}", path.display()),
-    }
-  }
-  doc
+  sources
 }
 
-/// Load project config, merging the global and per-repo `.xi.toml`-family
-/// files (see [`merged_config_document`] for the exact tiers/precedence).
+/// Load project config, applying every `.xi.toml`-family layer in
+/// precedence order (see [`config_source_paths`] for the exact tiers).
 pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
   let dir = flake_dir.unwrap_or_else(|| Path::new("."));
-  let doc = merged_config_document(dir);
   let mut config = default_config();
 
+  // Every tier, lowest precedence first: the global config, then the
+  // repo-shared files (`xi.toml`/`.xi.toml` plus `.config/xi/*.toml`), then
+  // the gitignored `.xi.local.toml` carrying machine state that would be
+  // wrong on every other machine and in CI.
+  //
+  // Applied one layer at a time rather than deep-merged into a single
+  // document first, because the `[build]` handler below tags each
+  // `override_input` entry with the file it came from: a relative path
+  // resolves against that file's own directory, so per-layer identity is
+  // load-bearing and a merged document would destroy it.
+  for config_path in config_source_paths(dir) {
+    let file_name = config_path
+      .file_name()
+      .map(|f| f.to_string_lossy().into_owned())
+      .unwrap_or_default();
+    let file = file_name.as_str();
+
+    let Ok(raw) = std::fs::read_to_string(&config_path) else {
+      continue;
+    };
+
+    let doc = match raw.parse::<toml_edit::DocumentMut>() {
+      Ok(d) => d,
+      Err(e) => {
+        warn!("Failed to parse {}: {e}", config_path.display());
+        continue;
+      },
+    };
+
+    apply_project_document(&mut config, &doc, &raw, &config_path, dir, file);
+  }
+
+  debug!(?config, "Loaded project config");
+  config
+}
+
+/// Apply one project file on top of `config`. Called for `.xi.toml` first,
+/// then `.xi.local.toml`, so later values win.
+fn apply_project_document(
+  config: &mut ProjectConfig,
+  doc: &toml_edit::DocumentMut,
+  raw: &str,
+  config_path: &Path,
+  dir: &Path,
+  file: &str,
+) {
   // [ci] section
   if let Some(ci) = doc.get("ci").and_then(|v| v.as_table()) {
     if let Some(backend) = ci.get("backend").and_then(|v| v.as_str()) {
@@ -519,31 +548,69 @@ pub fn load_project_config(flake_dir: Option<&Path>) -> ProjectConfig {
   // never enabled sources. Commands that actually read sources config go
   // through `load_sources_config`, which is strict  -  that is what makes
   // the spec's "fails at config-load time, not at first fetch" hold.
-  //
-  // Deliberately NOT part of the layered global/repo-local merge above:
-  // `SourcesConfig::from_toml_str`'s errors name an exact file and line,
-  // and extending that contract to "whichever of several merged files
-  // held the bad key" is a bigger design question than this change's
-  // scope. This keeps reading only the single repo-shared file, exactly
-  // as before, now accepting either `xi.toml` or `.xi.toml` as its
-  // spelling.
-  if let Some(shared_path) = repo_shared_config_file(dir)
-    && let Ok(raw) = std::fs::read_to_string(&shared_path)
-  {
-    match SourcesConfig::from_toml_str(&shared_path, &raw) {
+  // Only when the file actually carries a `[sources]` table, otherwise a
+  // `.xi.local.toml` without one would reset what `.xi.toml` configured.
+  if doc.get("sources").is_some() {
+    match SourcesConfig::from_toml_str(config_path, raw) {
       Ok(sources) => config.sources = sources,
       Err(e) => warn!("{e}"),
     }
   }
 
-  debug!(?config, "Loaded project config from .xi.toml");
-  config
+  // [build] section. New: `ProjectConfig` had no build settings before.
+  //
+  // Each value is tagged with the file it came from, because a relative
+  // path resolves against that file's own directory. Recording the source
+  // here is what makes the normalizer correct; it cannot be bolted on later.
+  if let Some(build) = doc.get("build").and_then(|v| v.as_table())
+    && let Some(item) = build.get("override_input")
+  {
+    let source = if file == ".xi.local.toml" {
+      xi_core::override_input::OverrideSource::ProjectLocalToml {
+        dir: dir.to_path_buf(),
+      }
+    } else {
+      xi_core::override_input::OverrideSource::ProjectToml {
+        dir: dir.to_path_buf(),
+      }
+    };
+
+    let pairs: Vec<(String, String)> = match item {
+      toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
+        t.iter()
+          .filter_map(|(k, v)| {
+            v.as_str().map(|s| (k.to_string(), s.to_string()))
+          })
+          .collect()
+      },
+      toml_edit::Item::Table(t) => {
+        t.iter()
+          .filter_map(|(k, v)| {
+            v.as_str().map(|s| (k.to_string(), s.to_string()))
+          })
+          .collect()
+      },
+      _ => Vec::new(),
+    };
+
+    for (name, value) in pairs {
+      // A later file replaces an earlier one per input name.
+      config.build.override_input.retain(|e| e.name != name);
+      config
+        .build
+        .override_input
+        .push(xi_core::override_input::Entry::new(
+          name,
+          value,
+          source.clone(),
+        ));
+    }
+  }
 }
 
 /// Load and validate the `.xi.toml [sources]` section, strictly.
 ///
-/// Unlike `load_project_config`, which is crate-private and warns, a
-/// malformed `[sources]` block is an
+/// Unlike `load_project_config`, a malformed `[sources]` block is an
 /// error rather than a warning: an operator who misspells `remote` must
 /// find out at config-load time, not when a gitops daemon silently never
 /// advances. A missing `.xi.toml`, or one without a `[sources]` table, is
@@ -564,6 +631,7 @@ pub fn load_sources_config(
 
 fn default_config() -> ProjectConfig {
   ProjectConfig {
+    build:    ProjectBuildConfig::default(),
     ci:       ProjectCiConfig::default(),
     consumer: ProjectConsumerConfig::default(),
     doctor:   ProjectDoctorConfig {
@@ -645,69 +713,6 @@ mod tests {
       }
       let _ = &self.empty_dir; // kept alive until here
     }
-  }
-
-  // -- merge_table_into ------------------------------------------------
-
-  #[test]
-  fn merge_recurses_into_nested_tables_instead_of_replacing_them() {
-    let mut base = "[doctor]\nmax-input-age-days = 30\n"
-      .parse::<toml_edit::DocumentMut>()
-      .expect("parse base")
-      .as_table()
-      .clone();
-    let incoming = "[doctor.rules]\ndirty-tree = \"off\"\n"
-      .parse::<toml_edit::DocumentMut>()
-      .expect("parse incoming")
-      .as_table()
-      .clone();
-
-    merge_table_into(&mut base, &incoming);
-
-    let doctor = base
-      .get("doctor")
-      .and_then(|v| v.as_table())
-      .expect("doctor table");
-    assert_eq!(
-      doctor
-        .get("max-input-age-days")
-        .and_then(toml_edit::Item::as_integer),
-      Some(30),
-      "the earlier layer's leaf key must survive a later layer's merge into a \
-       sibling nested table, not be wiped by it"
-    );
-    assert!(
-      doctor.get("rules").and_then(|v| v.as_table()).is_some(),
-      "the later layer's nested table must be present after merging"
-    );
-  }
-
-  #[test]
-  fn merge_leaf_key_is_overridden_by_later_layer() {
-    let mut base = "[doctor]\nrequire-official-nixpkgs = true\n"
-      .parse::<toml_edit::DocumentMut>()
-      .expect("parse base")
-      .as_table()
-      .clone();
-    let incoming = "[doctor]\nrequire-official-nixpkgs = false\n"
-      .parse::<toml_edit::DocumentMut>()
-      .expect("parse incoming")
-      .as_table()
-      .clone();
-
-    merge_table_into(&mut base, &incoming);
-
-    let doctor = base
-      .get("doctor")
-      .and_then(|v| v.as_table())
-      .expect("doctor table");
-    assert_eq!(
-      doctor
-        .get("require-official-nixpkgs")
-        .and_then(toml_edit::Item::as_bool),
-      Some(false),
-      "a later layer's leaf value must win over an earlier layer's"
-    );
   }
 
   // -- repo-shared file discovery --------------------------------------

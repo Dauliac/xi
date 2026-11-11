@@ -119,6 +119,19 @@ enum OsRebuildVariant {
 
 impl OsBuildVmArgs {
   fn build_vm(self, elevation: &ElevationStrategy) -> Result<()> {
+    // Deprecated per [[xi-vm-lifecycle]]: `xi vm build --dev` is the one
+    // implementation now; this command is kept fully functional, with
+    // this one-line notice, for the deprecation window (SC-VM-009). Not
+    // rewired to delegate: doing so needs a resolved
+    // `nixosConfiguration` name matched against `xi.vm.<name>.modules`,
+    // which this command's own installable-resolution path does not
+    // produce today, and `[[xi-vm-lifecycle]]` tasks.md 4.4 tracks that
+    // rewiring as its own step.
+    tracing::warn!(
+      "`xi os build-vm` is deprecated; use `xi vm build --dev <name>` instead \
+       (see xi-vm-lifecycle)"
+    );
+
     let attr = if self.with_bootloader {
       "vmWithBootLoader"
     } else {
@@ -903,14 +916,14 @@ impl OsRollbackArgs {
 
     // Instead of direct symlink operations, use a command with proper elevation
     Command::new("ln")
-            .arg("-sfn") // force, symbolic link
-            .arg(&generation_link)
-            .arg(SYSTEM_PROFILE)
-            .elevate(elevate.then_some(elevation.clone()))
-            .message("Setting system profile")
-            .with_required_env()
-            .run()
-            .wrap_err("Failed to set system profile during rollback")?;
+      .arg("-sfn") // force, symbolic link
+      .arg(&generation_link)
+      .arg(SYSTEM_PROFILE)
+      .elevate(elevate.then_some(elevation.clone()))
+      .message("Setting system profile")
+      .with_required_env()
+      .run()
+      .wrap_err("Failed to set system profile during rollback")?;
 
     // Determine the correct profile to use with specialisations
     let final_profile = match &target_specialisation {
@@ -960,14 +973,17 @@ impl OsRollbackArgs {
             .join(format!("system-{}-link", current_generation.number));
 
           Command::new("ln")
-                        .arg("-sfn") // Force, symbolic link
-                        .arg(&current_gen_link)
-                        .arg(SYSTEM_PROFILE)
-                        .elevate(elevate.then_some(elevation))
-                        .message("Rolling back system profile")
-                        .with_required_env()
-                        .run()
-                        .wrap_err("NixOS: Failed to restore previous system profile after failed activation")?;
+            .arg("-sfn") // Force, symbolic link
+            .arg(&current_gen_link)
+            .arg(SYSTEM_PROFILE)
+            .elevate(elevate.then_some(elevation))
+            .message("Rolling back system profile")
+            .with_required_env()
+            .run()
+            .wrap_err(
+              "NixOS: Failed to restore previous system profile after failed \
+               activation",
+            )?;
         }
 
         return Err(eyre!("Activation (switch) failed: {}", e))

@@ -11,6 +11,7 @@ rust-version.workspace = true
 default-run            = "xi"
 
 [dependencies]
+anstream.workspace              = true
 anstyle.workspace               = true
 clap.workspace                  = true
 clap-verbosity-flag.workspace   = true
@@ -38,7 +39,9 @@ xi-diff.workspace               = true
 xi-flake.workspace              = true
 xi-home.workspace               = true
 xi-nixos.workspace              = true
+xi-repl.workspace               = true
 xi-search.workspace             = true
+xi-vm.workspace                 = true
 yansi.workspace                 = true
 
 [dev-dependencies]

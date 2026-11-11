@@ -61,6 +61,7 @@ Jump to the guide that matches your task.
 | [Bootstrap Directly from the OS](guides/bootstrap-direct.md)               | Adopt a config repo and switch on a laptop or workstation you're sitting at |
 | [Push to a Server and Hand Off to GitOps](guides/bootstrap-push-gitops.md) | Push once to a lab or server, then let its own daemon keep it in sync       |
 | [Iterate Without a Push Round-Trip](guides/local-iteration.md)             | Point xi at a local checkout so switches pick up commits with no push       |
+| [Multi-flake Development](guides/multi-flake-development.md)               | Build against a local clone of a flake input                                |
 | [NixOS](guides/nixos.md)                                                   | Switch, boot, test, build, rollback NixOS systems                           |
 | [Home Manager](guides/home-manager.md)                                     | Switch and build Home Manager configurations                                |
 | [Darwin](guides/darwin.md)                                                 | Switch and build nix-darwin configurations                                  |
@@ -90,9 +91,10 @@ Precise, complete specifications for every knob xi exposes.
 
 Read these when you want to understand _why_ xi works the way it does.
 
-| Document                                           | Topic                                                   |
-| -------------------------------------------------- | ------------------------------------------------------- |
-| [Architecture](explanation/architecture.md)        | Design philosophy and how xi works under the hood       |
-| [Community and Heritage](explanation/community.md) | nh lineage, borrowed patterns, and acknowledgments      |
-| [The Xi Specification](explanation/xi-spec.md)     | Conventions and guarantees: naming, cascades, elevation |
-| [The Develop Model](explanation/develop-model.md)  | Daemon, shell integration, trust, and live reload       |
+| Document                                                      | Topic                                                               |
+| ------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [Architecture](explanation/architecture.md)                   | Design philosophy and how xi works under the hood                   |
+| [Community and Heritage](explanation/community.md)            | nh lineage, borrowed patterns, and acknowledgments                  |
+| [The Xi Specification](explanation/xi-spec.md)                | Conventions and guarantees: naming, cascades, elevation             |
+| [Flake Input Overrides](explanation/flake-input-overrides.md) | Why --override-input is the only mechanism, and the traps it leaves |
+| [The Develop Model](explanation/develop-model.md)             | Daemon, shell integration, trust, and live reload                   |

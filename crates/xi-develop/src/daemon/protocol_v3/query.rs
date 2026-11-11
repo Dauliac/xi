@@ -95,7 +95,58 @@ pub enum Query {
     /// The snapshot sequence number to fetch.
     seq: SnapshotSeq,
   },
+  /// Evaluate a nix expression against the daemon's flake context.
+  ///
+  /// `shallow: true` only lists attribute names (`builtins.attrNames`) and
+  /// never forces nested values; `shallow: false` runs a real
+  /// `nix eval --json --expr` and returns the fully forced result. Either
+  /// way this runs synchronously on the connection thread the query arrived
+  /// on (see `v3_handlers::handle_query`'s doc comment on its `ExprEval`
+  /// arm for why that still satisfies the "never blocks the main loop"
+  /// contract) and never mutates `ServerState`'s eval bookkeeping - see
+  /// [`super::reply::ExprEvalResult`] for the response shapes.
+  ExprEval {
+    /// The nix expression to evaluate, e.g. `"1 + 1"` or `"pkgs.hello"`.
+    /// [`FLAKE_SCOPE_EXPR`] is a reserved sentinel value meaning "the
+    /// flake's own top-level output names" instead of a literal
+    /// expression - see its doc comment.
+    expr:    String,
+    /// `true` for the attribute-name-only, never-forcing variant.
+    shallow: bool,
+  },
+  /// Fetch documentation for a nix expression, the same thing real `nix
+  /// repl`'s `:doc <expr>` command prints.
+  ///
+  /// Unlike `ExprEval`, this cannot be answered by `nix eval` at all - a
+  /// primop's doc string lives in `nix`'s own C++ primop registry, not
+  /// anywhere reachable from Nix language code. `v3_handlers::run_expr_doc`
+  /// drives a real, non-interactive `nix repl` subprocess instead (piped
+  /// stdio, not inherited - no terminal to share, so none of the pty
+  /// limitations `xi_repl::raw`'s interactive `:raw` fallback has). Also
+  /// covers non-primop values: `nix repl`'s `:doc` reports "defined at
+  /// `FILE:LINE`" plus any preceding doc comment for those, via the same
+  /// command. See [`super::reply::DocResult`] for the response shapes.
+  ExprDoc {
+    /// The nix expression to fetch documentation for, e.g.
+    /// `"builtins.add"` or `"lib.strings.concatStrings"`.
+    expr: String,
+  },
 }
+
+/// Sentinel [`Query::ExprEval`]'s `expr` value meaning "list the flake's
+/// own top-level output names" (`packages`, `nixosConfigurations`,
+/// `checks`, ...) - the same thing real `nix repl`'s `:lf .` loads into
+/// scope, requested explicitly rather than by evaluating an actual
+/// expression (which an empty or otherwise-unparseable string can't be).
+///
+/// `v3_handlers::run_expr_eval` recognizes this exact string and binds the
+/// classifying wrapper's `v` directly to the already-`with`-bound flake
+/// value instead of trying to parse it as Nix source. Only meaningful when
+/// the daemon's `flake_root` actually has a `flake.nix`; on a daemon
+/// pointed at a flake-less fixture directory this falls through to the
+/// same "no such variable" class of error any other unresolvable
+/// expression gets.
+pub const FLAKE_SCOPE_EXPR: &str = "__xi_repl_flake_scope__";
 
 /// The reply body returned by the daemon for a preceding [`Query`].
 ///
@@ -126,4 +177,8 @@ pub enum QueryReply {
   StateCatalog(Availability<serde_json::Value>),
   /// Reply to [`Query::Snapshot`].
   Snapshot(Availability<serde_json::Value>),
+  /// Reply to [`Query::ExprEval`].
+  ExprEval(Availability<super::reply::ExprEvalResult>),
+  /// Reply to [`Query::ExprDoc`].
+  ExprDoc(Availability<super::reply::DocResult>),
 }
